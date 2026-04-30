@@ -6,21 +6,27 @@
 //! from the iced subscription that owns the loop.
 
 use crate::{Error, Result};
-use tray_icon::menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem};
+use tray_icon::menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem, Submenu};
 use tray_icon::{Icon as TrayIconImage, TrayIcon, TrayIconBuilder};
 
 pub struct Tray {
     _icon: TrayIcon,
-    pub capture_id: tray_icon::menu::MenuId,
+    pub capture_id:  tray_icon::menu::MenuId,
+    pub delay3_id:   tray_icon::menu::MenuId,
+    pub delay5_id:   tray_icon::menu::MenuId,
+    pub delay10_id:  tray_icon::menu::MenuId,
     pub settings_id: tray_icon::menu::MenuId,
-    pub about_id: tray_icon::menu::MenuId,
-    pub exit_id:   tray_icon::menu::MenuId,
+    pub about_id:    tray_icon::menu::MenuId,
+    pub exit_id:     tray_icon::menu::MenuId,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TrayEvent {
     None,
     Capture,
+    /// Capture after N seconds. Lets the user dismiss menus, position
+    /// windows, etc. before the screenshot fires.
+    CaptureDelayed(u32),
     Settings,
     About,
     Exit,
@@ -50,12 +56,28 @@ impl Tray {
         let sep1     = PredefinedMenuItem::separator();
         let sep2     = PredefinedMenuItem::separator();
 
+        // "Capture after delay…" submenu — three preset durations covering
+        // the common screenshot-tool delay use cases (open a menu, focus a
+        // window, dismiss a tooltip, etc.) without a free-form input UI.
+        let delay_menu = Submenu::new("Capture after delay…", true);
+        let delay_3s   = MenuItem::new("3 seconds",  true, None);
+        let delay_5s   = MenuItem::new("5 seconds",  true, None);
+        let delay_10s  = MenuItem::new("10 seconds", true, None);
+
         let capture_id  = capture.id().clone();
+        let delay3_id   = delay_3s.id().clone();
+        let delay5_id   = delay_5s.id().clone();
+        let delay10_id  = delay_10s.id().clone();
         let settings_id = settings.id().clone();
         let about_id    = about.id().clone();
         let exit_id     = exit.id().clone();
 
+        delay_menu.append(&delay_3s ).map_err(|e| Error::Tray(e.to_string()))?;
+        delay_menu.append(&delay_5s ).map_err(|e| Error::Tray(e.to_string()))?;
+        delay_menu.append(&delay_10s).map_err(|e| Error::Tray(e.to_string()))?;
+
         menu.append(&capture).map_err(|e| Error::Tray(e.to_string()))?;
+        menu.append(&delay_menu).map_err(|e| Error::Tray(e.to_string()))?;
         menu.append(&sep1).map_err(|e| Error::Tray(e.to_string()))?;
         menu.append(&settings).map_err(|e| Error::Tray(e.to_string()))?;
         menu.append(&about).map_err(|e| Error::Tray(e.to_string()))?;
@@ -73,6 +95,9 @@ impl Tray {
         Ok(Tray {
             _icon: tray_icon,
             capture_id,
+            delay3_id,
+            delay5_id,
+            delay10_id,
             settings_id,
             about_id,
             exit_id,
@@ -84,6 +109,9 @@ impl Tray {
     pub fn try_recv(&self) -> TrayEvent {
         match MenuEvent::receiver().try_recv() {
             Ok(ev) if ev.id == self.capture_id  => TrayEvent::Capture,
+            Ok(ev) if ev.id == self.delay3_id   => TrayEvent::CaptureDelayed(3),
+            Ok(ev) if ev.id == self.delay5_id   => TrayEvent::CaptureDelayed(5),
+            Ok(ev) if ev.id == self.delay10_id  => TrayEvent::CaptureDelayed(10),
             Ok(ev) if ev.id == self.settings_id => TrayEvent::Settings,
             Ok(ev) if ev.id == self.about_id    => TrayEvent::About,
             Ok(ev) if ev.id == self.exit_id     => TrayEvent::Exit,
