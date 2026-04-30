@@ -59,7 +59,7 @@ impl Tray {
         let record    = MenuItem::new("Record Screen",    true, None);
         let stop_rec  = MenuItem::new("Stop Recording",   false, None);
         let settings  = MenuItem::new("Settings…",        true, None);
-        let about     = MenuItem::new("About Kashot…",    true, None);
+        let about     = MenuItem::new("About",            true, None);
         let exit      = MenuItem::new("Exit",             true, None);
         let sep_rec   = PredefinedMenuItem::separator();
         let sep1      = PredefinedMenuItem::separator();
@@ -68,7 +68,7 @@ impl Tray {
         // "Capture after delay…" submenu — three preset durations covering
         // the common screenshot-tool delay use cases (open a menu, focus a
         // window, dismiss a tooltip, etc.) without a free-form input UI.
-        let delay_menu = Submenu::new("Capture after delay…", true);
+        let delay_menu = Submenu::new("Capture after delay", true);
         let delay_3s   = MenuItem::new("3 seconds",  true, None);
         let delay_5s   = MenuItem::new("5 seconds",  true, None);
         let delay_10s  = MenuItem::new("10 seconds", true, None);
