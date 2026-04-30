@@ -15,17 +15,16 @@ path = "src/main.rs"
 kashot-core     = { path = "../kashot-core" }
 kashot-platform = { path = "../kashot-platform" }
 
-iced        = { workspace = true }
+# Iced / rfd / imageproc / tokio land with the editor port (PLAN.md § R7).
+# Until then the binary only needs winit + the platform shims.
 image       = { workspace = true }
-imageproc   = { version = "0.25", default-features = false }
 chrono      = { workspace = true }
 serde       = { workspace = true }
 serde_json  = { workspace = true }
 anyhow      = { workspace = true }
 thiserror   = { workspace = true }
 directories = { workspace = true }
-rfd         = { version = "0.15", default-features = false, features = ["xdg-portal", "tokio"] }
-tokio       = { version = "1", features = ["rt", "rt-multi-thread", "macros", "time", "sync"] }
+winit       = "0.30"
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.62", features = [
@@ -33,11 +32,3 @@ windows = { version = "0.62", features = [
     "Win32_System_Registry",
     "Win32_UI_Shell",
 ] }
-
-[package.metadata.bundle]
-name        = "Kashot"
-identifier  = "org.kashot.app"
-icon        = ["../../assets/icon.png"]
-category    = "Graphics"
-short_description = "Fast screenshots with annotations"
-copyright   = "© PrateekSingh"
