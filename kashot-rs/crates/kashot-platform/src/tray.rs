@@ -29,7 +29,18 @@ pub enum TrayEvent {
 impl Tray {
     /// Build the tray icon with the default Kashot menu. `tooltip` shows the
     /// current hotkey, e.g. `"Kashot — press PrintScreen to capture"`.
+    ///
+    /// On Linux this calls `gtk::init()` first — the tray-icon backend uses
+    /// libayatana-appindicator which requires GTK to be initialized on the
+    /// main thread before any menu item is constructed. `gtk::init()` is
+    /// idempotent and returns Err only if no display server is reachable, in
+    /// which case we surface that as a regular `Tray` init failure.
     pub fn new(tooltip: impl Into<String>) -> Result<Self> {
+        #[cfg(target_os = "linux")]
+        {
+            gtk::init().map_err(|e| Error::Tray(format!("gtk::init: {e}")))?;
+        }
+
         let menu = Menu::new();
 
         let capture  = MenuItem::new("Capture Screen",   true, None);
@@ -77,6 +88,20 @@ impl Tray {
             Ok(ev) if ev.id == self.about_id    => TrayEvent::About,
             Ok(ev) if ev.id == self.exit_id     => TrayEvent::Exit,
             _ => TrayEvent::None,
+        }
+    }
+
+    /// Pump platform-native event sources that the tray relies on but that
+    /// aren't otherwise driven by our winit loop. On Linux this drains GTK's
+    /// main context so menu-click signals get delivered into the channel that
+    /// `try_recv` reads. No-op on Windows / macOS — the platform event loop
+    /// already drives those backends through winit.
+    pub fn pump_events(&self) {
+        #[cfg(target_os = "linux")]
+        {
+            while gtk::events_pending() {
+                gtk::main_iteration_do(false);
+            }
         }
     }
 }
