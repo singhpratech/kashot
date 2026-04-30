@@ -9,16 +9,9 @@ name: Build C# (Windows)
 on:
   push:
     branches: [ main ]
-    paths:
-      - 'Kashot/**'
-      - 'Installer/**'
-      - '.github/workflows/build-csharp.yml'
-    tags: [ 'v*' ]
+    tags:     [ 'v*' ]
   pull_request:
     branches: [ main ]
-    paths:
-      - 'Kashot/**'
-      - 'Installer/**'
 
 jobs:
   build:

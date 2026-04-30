@@ -83,9 +83,15 @@ jobs:
           path: kashot-rs/dist/kashot-linux-x86_64.tar.gz
           if-no-files-found: error
 
-  # ── 3. Windows native build ────────────────────────────────────────────────
+  # ── 3. Windows compile-check (no artifact upload) ──────────────────────────
+  # The Rust Windows build is kept as a parity invariant — same source must
+  # compile on every platform. We do NOT attach the binary to the release
+  # though: the C# build (build-csharp.yml) is the canonical Windows path
+  # while the Rust port catches up to the editor. Once the Rust editor
+  # reaches feature parity, this job will start uploading too and the C#
+  # workflow can be retired.
   build-windows:
-    name: Windows x64
+    name: Windows x64 (compile-check)
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -97,18 +103,6 @@ jobs:
 
       - name: Run full workspace tests
         run: cargo test --workspace --release
-
-      - name: Stage exe
-        shell: pwsh
-        run: |
-          New-Item -ItemType Directory -Force -Path dist | Out-Null
-          Copy-Item target/release/kashot.exe dist/Kashot-windows-x64.exe
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: Kashot-windows-x64
-          path: kashot-rs/dist/Kashot-windows-x64.exe
-          if-no-files-found: error
 
   # ── 4. macOS universal build (arm64 + x86_64 → one .app, two .dmg) ─────────
   build-macos:
