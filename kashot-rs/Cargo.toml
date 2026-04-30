@@ -1,0 +1,47 @@
+[workspace]
+resolver = "2"
+members  = [
+    "crates/kashot-core",
+    "crates/kashot-platform",
+    "crates/kashot-app",
+]
+
+[workspace.package]
+version      = "0.1.0"
+edition      = "2021"
+authors      = ["singhpratech"]
+license      = "MIT"
+repository   = "https://github.com/singhpratech/kashot"
+description  = "Fast screenshots with annotations — native, cross-platform"
+rust-version = "1.80"
+
+[workspace.dependencies]
+# Serialization / files
+serde       = { version = "1", features = ["derive"] }
+serde_json  = "1"
+directories = "6"
+chrono      = { version = "0.4", default-features = false, features = ["clock", "std"] }
+
+# Imaging / clipboard
+image       = { version = "0.25", default-features = false, features = ["png", "jpeg", "bmp"] }
+arboard     = "3"
+
+# Platform integrations
+xcap          = "0.9"
+global-hotkey = "0.7"
+tray-icon     = "0.23"
+
+# UI
+iced = { version = "0.14", features = ["canvas", "image", "tokio", "advanced"] }
+
+# Errors
+thiserror = "1"
+anyhow    = "1"
+
+# These knobs apply to release builds of any crate in the workspace.
+[profile.release]
+opt-level     = 3
+lto           = "thin"
+codegen-units = 1
+strip         = "symbols"
+panic         = "abort"

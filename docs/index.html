@@ -1,0 +1,563 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="color-scheme" content="dark light" />
+  <title>Kashot — fast screenshots with annotations</title>
+  <meta name="description" content="Kashot is a fast, free, tray-resident screenshot tool with a built-in annotation editor. Native on Windows. Linux and macOS soon." />
+  <meta name="theme-color" content="#0c0c0e" />
+
+  <meta property="og:title" content="Kashot — fast screenshots with annotations" />
+  <meta property="og:description" content="A free, fast, tray-resident screenshot tool with a built-in annotation editor. Native on Windows. Linux and macOS soon." />
+  <meta property="og:type" content="website" />
+  <meta property="og:url" content="https://kashot.org/" />
+  <meta property="og:image" content="https://kashot.org/assets/og.svg" />
+  <meta name="twitter:card" content="summary_large_image" />
+
+  <link rel="icon" href="assets/icon.svg" type="image/svg+xml" />
+  <link rel="apple-touch-icon" href="assets/icon.svg" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+
+<header class="nav">
+  <a class="brand" href="/" aria-label="Kashot home">
+    <span class="brand-icon" aria-hidden="true">
+      <svg viewBox="0 0 64 64" width="28" height="28">
+        <defs>
+          <linearGradient id="navGrad" x1="0" y1="0" x2="1" y2="1">
+            <stop offset="0" stop-color="#ffe600"/>
+            <stop offset="1" stop-color="#00e6c0"/>
+          </linearGradient>
+        </defs>
+        <rect x="3" y="3" width="58" height="58" rx="13" fill="url(#navGrad)"/>
+        <g stroke="#fff" stroke-width="4.5" stroke-linecap="round" fill="none">
+          <path d="M16 22 L16 16 L22 16"/>
+          <path d="M48 22 L48 16 L42 16"/>
+          <path d="M16 42 L16 48 L22 48"/>
+          <path d="M48 42 L48 48 L42 48"/>
+        </g>
+        <circle cx="32" cy="32" r="3.4" fill="#fff"/>
+      </svg>
+    </span>
+    <span class="brand-text">Kashot</span>
+  </a>
+
+  <nav class="nav-links" aria-label="Primary">
+    <a href="#features">Features</a>
+    <a href="#download">Download</a>
+    <a href="#shortcuts">Shortcuts</a>
+    <a href="https://github.com/singhpratech/kashot" target="_blank" rel="noopener">GitHub</a>
+  </nav>
+
+  <button class="theme-toggle" type="button" aria-label="Toggle color theme" title="Toggle color theme">
+    <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
+      <path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z" fill="currentColor"/>
+    </svg>
+  </button>
+</header>
+
+<main>
+
+  <section class="hero">
+    <div class="hero-icon" aria-hidden="true">
+      <svg viewBox="0 0 256 256" width="160" height="160">
+        <defs>
+          <linearGradient id="heroGrad" x1="0" y1="0" x2="1" y2="1">
+            <stop offset="0%"   stop-color="#ffe600"/>
+            <stop offset="55%"  stop-color="#7df0a8"/>
+            <stop offset="100%" stop-color="#00e6c0"/>
+          </linearGradient>
+          <filter id="heroShadow" x="-20%" y="-20%" width="140%" height="140%">
+            <feGaussianBlur in="SourceAlpha" stdDeviation="10"/>
+            <feOffset dy="8"/>
+            <feComponentTransfer><feFuncA type="linear" slope="0.35"/></feComponentTransfer>
+            <feMerge><feMergeNode/><feMergeNode in="SourceGraphic"/></feMerge>
+          </filter>
+        </defs>
+        <g filter="url(#heroShadow)">
+          <rect x="14" y="14" width="228" height="228" rx="52" fill="url(#heroGrad)"/>
+          <g stroke="#fff" stroke-width="14" stroke-linecap="round" fill="none">
+            <path d="M70 92 L70 70 L92 70"/>
+            <path d="M186 92 L186 70 L164 70"/>
+            <path d="M70 164 L70 186 L92 186"/>
+            <path d="M186 164 L186 186 L164 186"/>
+          </g>
+          <circle cx="128" cy="128" r="11" fill="#fff"/>
+        </g>
+      </svg>
+    </div>
+
+    <h1 class="hero-title">Kashot</h1>
+    <p class="hero-tagline">
+      Fast screenshots with a real annotation editor.
+      <br/>Tray-resident, hotkey-driven, free.
+    </p>
+
+    <div class="hero-cta">
+      <a id="download-btn"
+         class="btn btn-primary btn-lg"
+         href="https://github.com/singhpratech/kashot/releases/latest/download/Kashot.msi"
+         data-fallback="https://github.com/singhpratech/kashot/releases/latest">
+        <svg class="btn-icon" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
+          <path fill="currentColor" d="M3 3h8.5v8.5H3zM12.5 3H21v8.5h-8.5zM3 12.5h8.5V21H3zM12.5 12.5H21V21h-8.5z"/>
+        </svg>
+        <span class="btn-text">
+          <span class="btn-line">Download for Windows</span>
+          <span class="btn-sub" id="download-sub">v0.1 · 64-bit · MSI</span>
+        </span>
+      </a>
+
+      <a class="btn btn-ghost"
+         href="https://github.com/singhpratech/kashot/releases"
+         target="_blank" rel="noopener">
+        All releases
+      </a>
+    </div>
+
+    <p class="hero-meta">
+      Windows 10 / 11 · 64-bit · ~30 MB ·
+      <a href="https://github.com/singhpratech/kashot" target="_blank" rel="noopener">open source on GitHub</a>
+    </p>
+
+    <div class="platforms" role="list">
+      <div class="platform platform-active" role="listitem">
+        <span class="platform-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="22" height="22"><path fill="currentColor" d="M3 5l7-1v7H3zM11 3.9l10-1.4V11H11zM3 13h7v6.1l-7-1zM11 13h10v8.5l-10-1.4z"/></svg>
+        </span>
+        <span class="platform-text">
+          <strong>Windows</strong>
+          <span>Available now</span>
+        </span>
+      </div>
+      <div class="platform platform-active" role="listitem">
+        <span class="platform-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="22" height="22"><path fill="currentColor" d="M12 3c1.7 0 3 1.6 3 3.5 0 .6-.1 1.2-.3 1.6.9.4 1.6 1.1 2 2 .8-.5 1.6-1 2.3-1 1.5 0 2 1.6 2 3 0 1.4-.6 2.5-1.4 3.4-.4 2.6-2.5 4.5-5.5 4.5h-4.2C7 20 4.9 18.1 4.4 15.5 3.6 14.6 3 13.5 3 12c0-1.4.5-3 2-3 .8 0 1.6.5 2.4 1 .4-.9 1.1-1.6 2-2-.2-.4-.4-1-.4-1.5C9 4.6 10.3 3 12 3z"/></svg>
+        </span>
+        <span class="platform-text">
+          <strong>Linux</strong>
+          <span>Native, x86_64</span>
+        </span>
+      </div>
+      <div class="platform platform-active" role="listitem">
+        <span class="platform-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="22" height="22"><path fill="currentColor" d="M16.4 12.5c0-2.7 2.2-4 2.3-4-1.3-1.8-3.2-2.1-3.9-2.1-1.7-.2-3.2 1-4 1-.8 0-2.1-1-3.5-1-1.8 0-3.5 1-4.4 2.7-1.9 3.3-.5 8.1 1.4 10.7.9 1.3 2 2.7 3.4 2.7 1.4-.1 1.9-.9 3.6-.9s2.1.9 3.6.9c1.5 0 2.4-1.3 3.3-2.6.7-1 1.2-2 1.6-3.1-.1-.1-3.4-1.3-3.4-4.3zM13.7 4.6c.7-.9 1.2-2.1 1.1-3.3-1 0-2.3.7-3 1.5-.6.7-1.2 1.9-1.1 3.1 1.1.1 2.2-.6 3-1.3z"/></svg>
+        </span>
+        <span class="platform-text">
+          <strong>macOS</strong>
+          <span>Native, Apple Silicon &amp; Intel</span>
+        </span>
+      </div>
+    </div>
+  </section>
+
+  <section class="screenshot" aria-label="Kashot in action">
+    <div class="frame">
+      <div class="frame-bar">
+        <span></span><span></span><span></span>
+      </div>
+      <div class="frame-canvas">
+        <svg viewBox="0 0 1200 700" preserveAspectRatio="xMidYMid slice" role="img" aria-label="Mock screenshot showing the Kashot overlay over a desktop">
+          <defs>
+            <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+              <stop offset="0" stop-color="#1d2541"/>
+              <stop offset="1" stop-color="#0a0e1d"/>
+            </linearGradient>
+            <linearGradient id="window" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0" stop-color="#fafafa"/>
+              <stop offset="1" stop-color="#e6e6ea"/>
+            </linearGradient>
+            <pattern id="dots" x="0" y="0" width="40" height="40" patternUnits="userSpaceOnUse">
+              <circle cx="2" cy="2" r="1.2" fill="rgba(255,255,255,0.06)"/>
+            </pattern>
+          </defs>
+
+          <rect width="1200" height="700" fill="url(#bg)"/>
+          <rect width="1200" height="700" fill="url(#dots)"/>
+
+          <!-- mock app window in background -->
+          <g opacity="0.85">
+            <rect x="120" y="80" width="780" height="500" rx="10" fill="url(#window)"/>
+            <rect x="120" y="80" width="780" height="36" rx="10" fill="#dfe0e6"/>
+            <circle cx="142" cy="98" r="6" fill="#ff5f57"/>
+            <circle cx="160" cy="98" r="6" fill="#ffbd2e"/>
+            <circle cx="178" cy="98" r="6" fill="#28c941"/>
+            <rect x="140" y="140" width="160" height="14" rx="3" fill="#cfd1d8"/>
+            <rect x="140" y="170" width="600" height="8" rx="3" fill="#e0e2ea"/>
+            <rect x="140" y="186" width="540" height="8" rx="3" fill="#e0e2ea"/>
+            <rect x="140" y="202" width="580" height="8" rx="3" fill="#e0e2ea"/>
+            <rect x="140" y="220" width="420" height="8" rx="3" fill="#e0e2ea"/>
+            <rect x="140" y="260" width="380" height="190" rx="6" fill="#eef0f6"/>
+            <rect x="540" y="260" width="200" height="90" rx="6" fill="#eef0f6"/>
+            <rect x="540" y="360" width="200" height="90" rx="6" fill="#eef0f6"/>
+          </g>
+
+          <!-- dim overlay -->
+          <rect width="1200" height="700" fill="rgba(0,0,0,0.45)"/>
+
+          <!-- selection rectangle (hole punched) -->
+          <defs>
+            <clipPath id="selClip">
+              <rect x="260" y="200" width="540" height="320" rx="2"/>
+            </clipPath>
+          </defs>
+          <g clip-path="url(#selClip)" opacity="1">
+            <rect x="120" y="80" width="780" height="500" rx="10" fill="url(#window)"/>
+            <rect x="140" y="140" width="160" height="14" rx="3" fill="#cfd1d8"/>
+            <rect x="140" y="170" width="600" height="8" rx="3" fill="#e0e2ea"/>
+            <rect x="140" y="186" width="540" height="8" rx="3" fill="#e0e2ea"/>
+            <rect x="140" y="202" width="580" height="8" rx="3" fill="#e0e2ea"/>
+            <rect x="140" y="220" width="420" height="8" rx="3" fill="#e0e2ea"/>
+            <rect x="140" y="260" width="380" height="190" rx="6" fill="#eef0f6"/>
+            <rect x="540" y="260" width="200" height="90" rx="6" fill="#eef0f6"/>
+            <rect x="540" y="360" width="200" height="90" rx="6" fill="#eef0f6"/>
+          </g>
+
+          <!-- selection border -->
+          <rect x="260" y="200" width="540" height="320"
+                fill="none" stroke="#6495ed" stroke-width="1.5"
+                stroke-dasharray="4 4"/>
+
+          <!-- corner handles -->
+          <g fill="#fff" stroke="#6495ed" stroke-width="1">
+            <rect x="257" y="197" width="6" height="6"/>
+            <rect x="797" y="197" width="6" height="6"/>
+            <rect x="257" y="517" width="6" height="6"/>
+            <rect x="797" y="517" width="6" height="6"/>
+            <rect x="527" y="197" width="6" height="6"/>
+            <rect x="527" y="517" width="6" height="6"/>
+            <rect x="257" y="357" width="6" height="6"/>
+            <rect x="797" y="357" width="6" height="6"/>
+          </g>
+
+          <!-- dimension label -->
+          <rect x="260" y="528" width="62" height="20" rx="2" fill="rgba(30,30,30,0.85)"/>
+          <text x="266" y="543" font-family="Segoe UI, system-ui" font-size="11" fill="#fff">540 x 320</text>
+
+          <!-- annotations: arrow + step + rectangle -->
+          <g>
+            <rect x="320" y="244" width="200" height="60" fill="none" stroke="#dc2626" stroke-width="3"/>
+            <line x1="600" y1="280" x2="700" y2="380" stroke="#dc2626" stroke-width="3" stroke-linecap="round"/>
+            <polygon points="700,380 690,372 690,388" fill="#dc2626"/>
+            <circle cx="430" cy="430" r="14" fill="#dc2626" stroke="#fff" stroke-width="2"/>
+            <text x="430" y="435" text-anchor="middle" font-family="Segoe UI, system-ui" font-size="13" font-weight="700" fill="#fff">1</text>
+            <circle cx="480" cy="430" r="14" fill="#dc2626" stroke="#fff" stroke-width="2"/>
+            <text x="480" y="435" text-anchor="middle" font-family="Segoe UI, system-ui" font-size="13" font-weight="700" fill="#fff">2</text>
+          </g>
+
+          <!-- vertical tool panel -->
+          <g transform="translate(820, 200)">
+            <rect width="38" height="362" rx="4" fill="#2d2d2d"/>
+            <g fill="#fff">
+              <rect x="6"  y="6"   width="26" height="26" rx="2" fill="#505050"/>
+              <rect x="6"  y="36"  width="26" height="26" rx="2"/>
+              <rect x="6"  y="66"  width="26" height="26" rx="2"/>
+              <rect x="6"  y="96"  width="26" height="26" rx="2"/>
+              <rect x="6"  y="126" width="26" height="26" rx="2"/>
+              <rect x="6"  y="156" width="26" height="26" rx="2"/>
+              <rect x="6"  y="186" width="26" height="26" rx="2"/>
+              <rect x="6"  y="216" width="26" height="26" rx="2"/>
+              <rect x="6"  y="246" width="26" height="26" rx="2"/>
+              <rect x="6"  y="276" width="26" height="26" rx="2" />
+              <circle cx="19" cy="289" r="6" fill="#dc2626"/>
+              <rect x="6"  y="306" width="26" height="26" rx="2"/>
+              <rect x="6"  y="336" width="26" height="26" rx="2"/>
+            </g>
+            <g stroke="#fff" stroke-width="1.5" fill="none" stroke-linecap="round">
+              <path d="M14 50 Q19 38 26 50" />
+              <line x1="12" y1="78" x2="26" y2="68"/>
+              <line x1="12" y1="108" x2="26" y2="98"/>
+              <polyline points="22,103 26,98 21,93" />
+              <rect x="11" y="129" width="16" height="14" stroke="#fff"/>
+              <ellipse cx="19" cy="167" rx="8" ry="7" stroke="#fff"/>
+            </g>
+          </g>
+
+          <!-- horizontal action panel -->
+          <g transform="translate(660, 530)">
+            <rect width="138" height="38" rx="4" fill="#2d2d2d"/>
+            <g fill="#fff">
+              <rect x="6"   y="6" width="26" height="26" rx="2"/>
+              <rect x="36"  y="6" width="26" height="26" rx="2"/>
+              <rect x="66"  y="6" width="26" height="26" rx="2"/>
+              <rect x="96"  y="6" width="26" height="26" rx="2"/>
+            </g>
+            <g stroke="#fff" stroke-width="1.5" fill="none" stroke-linecap="round">
+              <line x1="19" y1="14" x2="19" y2="28"/>
+              <circle cx="19" cy="13" r="3" fill="#fff"/>
+              <rect x="42" y="11" width="9" height="11"/>
+              <rect x="46" y="15" width="9" height="11"/>
+              <rect x="72" y="11" width="14" height="14"/>
+            </g>
+            <line x1="102" y1="12" x2="118" y2="28" stroke="#ff6464" stroke-width="2" stroke-linecap="round"/>
+            <line x1="118" y1="12" x2="102" y2="28" stroke="#ff6464" stroke-width="2" stroke-linecap="round"/>
+          </g>
+        </svg>
+      </div>
+    </div>
+  </section>
+
+  <section id="features" class="features">
+    <h2>Built for speed</h2>
+    <p class="section-sub">Hit a hotkey. Drag a region. Annotate. Save, copy, or pin to screen.</p>
+
+    <div class="feature-grid">
+      <div class="feature">
+        <div class="feature-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="22" height="22"><path fill="currentColor" d="M5 5h14v14H5zM7 7v10h10V7z M9 9h6v2H9zM9 13h6v2H9z"/></svg>
+        </div>
+        <h3>Tray-resident, no main window</h3>
+        <p>Lives in your system tray. One global hotkey (default <kbd>PrintScreen</kbd>) pulls up the capture overlay across all monitors.</p>
+      </div>
+
+      <div class="feature">
+        <div class="feature-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="22" height="22"><path fill="currentColor" d="M3 17.25V21h3.75l11-11-3.75-3.75-11 11zM20.7 7.05a1 1 0 0 0 0-1.4l-2.35-2.35a1 1 0 0 0-1.4 0l-1.83 1.83 3.75 3.75 1.83-1.83z"/></svg>
+        </div>
+        <h3>9 annotation tools</h3>
+        <p>Pen, line, arrow, rectangle, ellipse, marker, text, numbered steps, and pixelate / blur. Single-key shortcuts on every tool. Undo / redo always one stroke away.</p>
+      </div>
+
+      <div class="feature">
+        <div class="feature-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="22" height="22"><path fill="currentColor" d="M3 3h7v7H3zm11 0h7v7h-7zM3 14h7v7H3zm11 0h7v7h-7z"/></svg>
+        </div>
+        <h3>4 color palettes</h3>
+        <p>Vivid, Highlighter, Pastel, Pro. 16 swatches each, plus a custom color picker. Cycle thickness with one click — your choices persist across sessions.</p>
+      </div>
+
+      <div class="feature">
+        <div class="feature-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="22" height="22"><circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="2"/><path fill="currentColor" d="M11 7h2v6h-2zM11 15h2v2h-2z"/></svg>
+        </div>
+        <h3>Pixel-accurate selection</h3>
+        <p>Live magnifier with 4× zoom and pixel coordinates. Drag any edge or corner to resize. Hold <kbd>Alt</kbd> and drag to reposition the whole selection.</p>
+      </div>
+
+      <div class="feature">
+        <div class="feature-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="22" height="22"><path fill="currentColor" d="M16 8.5V4l5 5h-4.5a.5.5 0 0 1-.5-.5zM4 4h10v6h6v10H4z M7 13h10v2H7zM7 16h10v2H7z"/></svg>
+        </div>
+        <h3>Save · Copy · Pin</h3>
+        <p>Save as PNG / JPG / BMP, copy straight to clipboard, or pin a borderless top-most window anywhere on your desktop. Optional watermark on saved images.</p>
+      </div>
+
+      <div class="feature">
+        <div class="feature-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="22" height="22"><path fill="currentColor" d="M3 7l3-4h12l3 4v13a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1zm3 0h12l-1.5-2h-9z"/></svg>
+        </div>
+        <h3>Free, no telemetry</h3>
+        <p>No accounts, no tracking, no upsell. Single-instance, single-file installer. Source on GitHub under your control.</p>
+      </div>
+    </div>
+  </section>
+
+  <section id="download" class="download">
+    <h2>Download Kashot</h2>
+    <p class="section-sub">Native Windows build is live. Linux and macOS builds are next.</p>
+
+    <div class="download-grid">
+
+      <article class="dl-card dl-card-active">
+        <header>
+          <span class="dl-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" width="32" height="32"><path fill="currentColor" d="M3 5l7-1v7H3zM11 3.9l10-1.4V11H11zM3 13h7v6.1l-7-1zM11 13h10v8.5l-10-1.4z"/></svg>
+          </span>
+          <h3>Windows</h3>
+          <span class="badge badge-good">Stable</span>
+        </header>
+        <p class="dl-desc">Windows 10 / 11 · 64-bit · self-contained. No .NET install required.</p>
+
+        <div class="dl-options">
+          <a class="btn btn-primary"
+             href="https://github.com/singhpratech/kashot/releases/latest/download/Kashot.msi">
+            Installer (.msi)
+          </a>
+          <a class="btn btn-ghost"
+             href="https://github.com/singhpratech/kashot/releases/latest/download/Kashot.exe">
+            Standalone (.exe)
+          </a>
+          <a class="btn btn-ghost"
+             href="https://github.com/singhpratech/kashot/releases/latest/download/Kashot-portable.zip">
+            Portable (.zip)
+          </a>
+        </div>
+
+        <details class="dl-more">
+          <summary>More ways to install</summary>
+          <pre><code># winget (coming soon)
+winget install singhpratech.Kashot
+
+# Chocolatey (coming soon)
+choco install kashot
+
+# Scoop (coming soon)
+scoop install kashot</code></pre>
+        </details>
+
+        <a class="dl-link"
+           href="https://github.com/singhpratech/kashot/releases/latest" target="_blank" rel="noopener">
+          View release notes →
+        </a>
+      </article>
+
+      <article class="dl-card">
+        <header>
+          <span class="dl-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" width="32" height="32"><path fill="currentColor" d="M12 3c1.7 0 3 1.6 3 3.5 0 .6-.1 1.2-.3 1.6.9.4 1.6 1.1 2 2 .8-.5 1.6-1 2.3-1 1.5 0 2 1.6 2 3 0 1.4-.6 2.5-1.4 3.4-.4 2.6-2.5 4.5-5.5 4.5h-4.2C7 20 4.9 18.1 4.4 15.5 3.6 14.6 3 13.5 3 12c0-1.4.5-3 2-3 .8 0 1.6.5 2.4 1 .4-.9 1.1-1.6 2-2-.2-.4-.4-1-.4-1.5C9 4.6 10.3 3 12 3z"/></svg>
+          </span>
+          <h3>Linux</h3>
+          <span class="badge badge-good">Native (Rust)</span>
+        </header>
+        <p class="dl-desc">Native binary, x86_64. No Electron, no Wine. Single ~10 MB executable; tray + global hotkey + capture work today, full editor lands in a follow-up release.</p>
+
+        <div class="dl-options">
+          <a class="btn btn-primary"
+             href="https://github.com/singhpratech/kashot/releases/latest/download/kashot-linux-x86_64.tar.gz">
+            Download .tar.gz
+          </a>
+        </div>
+
+        <details class="dl-more">
+          <summary>More ways to install</summary>
+          <pre><code># AppImage (planned)
+chmod +x kashot-x86_64.AppImage
+./kashot-x86_64.AppImage
+
+# Flatpak (planned)
+flatpak install flathub org.kashot.Kashot
+
+# AUR (planned)
+yay -S kashot</code></pre>
+        </details>
+
+        <a class="dl-link"
+           href="https://github.com/singhpratech/kashot/releases/latest" target="_blank" rel="noopener">
+          View release notes →
+        </a>
+      </article>
+
+      <article class="dl-card">
+        <header>
+          <span class="dl-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" width="32" height="32"><path fill="currentColor" d="M16.4 12.5c0-2.7 2.2-4 2.3-4-1.3-1.8-3.2-2.1-3.9-2.1-1.7-.2-3.2 1-4 1-.8 0-2.1-1-3.5-1-1.8 0-3.5 1-4.4 2.7-1.9 3.3-.5 8.1 1.4 10.7.9 1.3 2 2.7 3.4 2.7 1.4-.1 1.9-.9 3.6-.9s2.1.9 3.6.9c1.5 0 2.4-1.3 3.3-2.6.7-1 1.2-2 1.6-3.1-.1-.1-3.4-1.3-3.4-4.3zM13.7 4.6c.7-.9 1.2-2.1 1.1-3.3-1 0-2.3.7-3 1.5-.6.7-1.2 1.9-1.1 3.1 1.1.1 2.2-.6 3-1.3z"/></svg>
+          </span>
+          <h3>macOS</h3>
+          <span class="badge badge-good">Native (Rust)</span>
+        </header>
+        <p class="dl-desc">Native binary on Apple Silicon and Intel. Tray + global hotkey + capture; full editor in a follow-up release. Notarized .dmg packaging coming next.</p>
+
+        <div class="dl-options">
+          <a class="btn btn-primary"
+             href="https://github.com/singhpratech/kashot/releases/latest/download/Kashot-macos-arm64">
+            Apple Silicon
+          </a>
+          <a class="btn btn-ghost"
+             href="https://github.com/singhpratech/kashot/releases/latest/download/Kashot-macos-x64">
+            Intel
+          </a>
+        </div>
+
+        <details class="dl-more">
+          <summary>More ways to install</summary>
+          <pre><code># Homebrew Cask (planned)
+brew install --cask kashot</code></pre>
+        </details>
+
+        <a class="dl-link"
+           href="https://github.com/singhpratech/kashot/releases/latest" target="_blank" rel="noopener">
+          View release notes →
+        </a>
+      </article>
+
+    </div>
+  </section>
+
+  <section id="shortcuts" class="shortcuts">
+    <h2>Keyboard shortcuts</h2>
+    <p class="section-sub">Once a region is selected, every tool is one key away.</p>
+
+    <div class="shortcut-cols">
+      <div class="kbd-table">
+        <h3>Tools</h3>
+        <dl>
+          <div><dt><kbd>P</kbd></dt><dd>Pen</dd></div>
+          <div><dt><kbd>L</kbd></dt><dd>Line</dd></div>
+          <div><dt><kbd>A</kbd></dt><dd>Arrow</dd></div>
+          <div><dt><kbd>R</kbd></dt><dd>Rectangle</dd></div>
+          <div><dt><kbd>E</kbd></dt><dd>Ellipse</dd></div>
+          <div><dt><kbd>M</kbd></dt><dd>Marker</dd></div>
+          <div><dt><kbd>T</kbd></dt><dd>Text</dd></div>
+          <div><dt><kbd>N</kbd></dt><dd>Numbered step</dd></div>
+          <div><dt><kbd>B</kbd></dt><dd>Blur / pixelate</dd></div>
+        </dl>
+      </div>
+
+      <div class="kbd-table">
+        <h3>Actions</h3>
+        <dl>
+          <div><dt><kbd>Ctrl</kbd>+<kbd>Z</kbd></dt><dd>Undo</dd></div>
+          <div><dt><kbd>Ctrl</kbd>+<kbd>Y</kbd></dt><dd>Redo</dd></div>
+          <div><dt><kbd>Ctrl</kbd>+<kbd>C</kbd></dt><dd>Copy to clipboard</dd></div>
+          <div><dt><kbd>Ctrl</kbd>+<kbd>S</kbd></dt><dd>Save image</dd></div>
+          <div><dt><kbd>Esc</kbd></dt><dd>Cancel / close</dd></div>
+          <div><dt><kbd>Alt</kbd>+drag</dt><dd>Move selection</dd></div>
+          <div><dt>Drag edges</dt><dd>Resize selection</dd></div>
+        </dl>
+      </div>
+    </div>
+  </section>
+
+  <section class="cta">
+    <h2>Get the latest Kashot</h2>
+    <p>Free. No account. No tracking.</p>
+    <a class="btn btn-primary btn-lg"
+       href="https://github.com/singhpratech/kashot/releases/latest/download/Kashot.msi">
+      Download for Windows
+    </a>
+    <p class="hero-meta">
+      <a href="https://github.com/singhpratech/kashot/releases" target="_blank" rel="noopener">All releases</a>
+      ·
+      <a href="https://github.com/singhpratech/kashot" target="_blank" rel="noopener">Source on GitHub</a>
+    </p>
+  </section>
+
+</main>
+
+<footer class="footer">
+  <div class="footer-inner">
+    <span class="brand brand-sm">
+      <span class="brand-icon" aria-hidden="true">
+        <svg viewBox="0 0 64 64" width="22" height="22">
+          <defs>
+            <linearGradient id="footGrad" x1="0" y1="0" x2="1" y2="1">
+              <stop offset="0" stop-color="#ffe600"/>
+              <stop offset="1" stop-color="#00e6c0"/>
+            </linearGradient>
+          </defs>
+          <rect x="3" y="3" width="58" height="58" rx="13" fill="url(#footGrad)"/>
+          <g stroke="#fff" stroke-width="4.5" stroke-linecap="round" fill="none">
+            <path d="M16 22 L16 16 L22 16"/>
+            <path d="M48 22 L48 16 L42 16"/>
+            <path d="M16 42 L16 48 L22 48"/>
+            <path d="M48 42 L48 48 L42 48"/>
+          </g>
+          <circle cx="32" cy="32" r="3.4" fill="#fff"/>
+        </svg>
+      </span>
+      <span>Kashot</span>
+    </span>
+    <span class="footer-meta">
+      Made with <span aria-label="love">❤</span> by
+      <a href="https://github.com/singhpratech" target="_blank" rel="noopener">PrateekSingh</a>.
+      <a href="https://github.com/singhpratech/kashot" target="_blank" rel="noopener">Source</a>
+      ·
+      <a href="https://github.com/singhpratech/kashot/issues" target="_blank" rel="noopener">Report a bug</a>
+    </span>
+  </div>
+</footer>
+
+<script src="app.js" defer></script>
+</body>
+</html>

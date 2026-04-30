@@ -40,7 +40,7 @@ public class AboutForm : Form
 
         var version = new Label
         {
-            Text = "Version 1.0.0",
+            Text = "Version 0.1.0",
             Font = new Font("Segoe UI", 9.5f),
             ForeColor = colors.TextMuted,
             BackColor = Color.Transparent,

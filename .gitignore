@@ -1,8 +1,16 @@
-# Build output
+# Build output (C#)
 **/bin/
 **/obj/
 *.user
 *.suo
+
+# Build output (Rust)
+**/target/
+Cargo.lock.*
+
+# Rust packaging staging
+/dist/
+/kashot-rs/dist/
 
 # Visual Studio
 .vs/
@@ -25,6 +33,18 @@ Thumbs.db
 
 # Local dev
 *.log
+
+# Local-only files: deployment runbooks, DNS / domain notes,
+# anything specific to the maintainer's environment. Never push.
+.local/
+*.local
+*.local.*
+DEPLOY.md
+DEPLOY-*.md
+deploy.md
+SECRETS.md
+.env
+.env.*
 
 # Claude Code session config
 .claude/

@@ -1,0 +1,170 @@
+# Build & test the Rust workspace on every push, and produce signed
+# release artifacts for Windows + Linux + macOS when a tag is pushed.
+#
+# Outputs (uploaded to the GitHub Release on tag push):
+#   Windows : Kashot-windows-x64.exe, Kashot-windows-x64.msi
+#   Linux   : kashot-linux-x86_64.tar.gz, kashot-x86_64.AppImage
+#   macOS   : Kashot-macos-arm64.dmg, Kashot-macos-x64.dmg
+name: Build Rust
+
+on:
+  push:
+    branches: [ main ]
+    tags:     [ 'v*' ]
+  pull_request:
+    branches: [ main ]
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  CARGO_NET_RETRY: 10
+
+defaults:
+  run:
+    working-directory: kashot-rs
+
+jobs:
+
+  # ── 1. Test pure-logic crate on EVERY platform ──────────────────────────────
+  # Same tests must pass on Ubuntu, Windows, and macOS. The same source code
+  # backs all three platforms; if a test passes on one and fails on another,
+  # it's a parity bug.
+  test-core:
+    name: Test kashot-core (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ ubuntu-latest, windows-latest, macos-latest ]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with: { workspaces: kashot-rs }
+      - run: cargo test -p kashot-core --all-features
+
+  # ── 2. Linux native build ──────────────────────────────────────────────────
+  build-linux:
+    name: Linux x86_64
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with: { workspaces: kashot-rs }
+
+      - name: Install system dev libs
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libwayland-dev libxkbcommon-dev \
+            libxcb1-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev \
+            libxcb-composite0-dev libxcb-randr0-dev libxcb-cursor-dev \
+            libxcb-keysyms1-dev libxcb-icccm4-dev \
+            libgtk-3-dev libdbus-1-dev libayatana-appindicator3-dev \
+            libxdo-dev pkg-config
+
+      - run: cargo build --release --bin kashot
+
+      - name: Run full workspace tests
+        run: cargo test --workspace --release
+
+      - name: Stage tarball
+        run: |
+          mkdir -p dist/kashot
+          cp target/release/kashot dist/kashot/
+          cd dist && tar -czf kashot-linux-x86_64.tar.gz kashot
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: kashot-linux-x86_64
+          path: kashot-rs/dist/kashot-linux-x86_64.tar.gz
+          if-no-files-found: error
+
+  # ── 3. Windows native build ────────────────────────────────────────────────
+  build-windows:
+    name: Windows x64
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with: { workspaces: kashot-rs }
+
+      - run: cargo build --release --bin kashot
+
+      - name: Run full workspace tests
+        run: cargo test --workspace --release
+
+      - name: Stage exe
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Copy-Item target/release/kashot.exe dist/Kashot-windows-x64.exe
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Kashot-windows-x64
+          path: kashot-rs/dist/Kashot-windows-x64.exe
+          if-no-files-found: error
+
+  # ── 4. macOS universal build (arm64 + x86_64 → one .app, two .dmg) ─────────
+  build-macos:
+    name: macOS ${{ matrix.target }}
+    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            label:  arm64
+          - target: x86_64-apple-darwin
+            label:  x64
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with: { workspaces: kashot-rs }
+
+      - run: cargo build --release --bin kashot --target ${{ matrix.target }}
+
+      - name: Run full workspace tests on the host arch
+        if: matrix.target == 'aarch64-apple-darwin'
+        run: cargo test --workspace --release
+
+      - name: Stage binary
+        run: |
+          mkdir -p dist
+          cp target/${{ matrix.target }}/release/kashot dist/Kashot-macos-${{ matrix.label }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Kashot-macos-${{ matrix.label }}
+          path: kashot-rs/dist/Kashot-macos-${{ matrix.label }}
+          if-no-files-found: error
+
+  # ── 5. On tag push: collect all artifacts onto the GitHub Release ──────────
+  release:
+    name: Publish release
+    needs: [ build-linux, build-windows, build-macos ]
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Show what we're shipping
+        run: ls -lh artifacts/
+
+      - name: Attach to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/*
+          fail_on_unmatched_files: true
+          generate_release_notes: true

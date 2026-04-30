@@ -51,10 +51,14 @@ public class ArrowAnnotation : Annotation
 
     public override void Draw(Graphics g)
     {
+        // CustomLineCap implements IDisposable but a Pen does NOT dispose its
+        // CustomEndCap when the pen disposes — without this `using` we leak one
+        // GDI handle every redraw, which kills long-running tray sessions.
+        using var cap = new AdjustableArrowCap(Thickness + 3, Thickness + 3);
         using var pen = new Pen(Color, Thickness)
         {
-            StartCap = LineCap.Round,
-            CustomEndCap = new AdjustableArrowCap(Thickness + 3, Thickness + 3)
+            StartCap      = LineCap.Round,
+            CustomEndCap  = cap,
         };
         g.DrawLine(pen, Start, End);
     }
@@ -121,17 +125,23 @@ public class MarkerAnnotation : Annotation
 
 public class TextAnnotation : Annotation
 {
-    public Point Position { get; set; }
-    public string Text { get; set; } = "";
-    public Font TextFont { get; set; } = new("Segoe UI", 14f, FontStyle.Bold);
+    // Shared default font — we used to allocate a new Font per annotation,
+    // which leaked GDI font handles forever (Annotations don't own a
+    // Dispose path). Callers that genuinely need a custom font can still
+    // assign `TextFont`, but they're then responsible for disposing it.
+    private static readonly Font DefaultFont = new("Segoe UI", 14f, FontStyle.Bold);
+
+    public Point  Position { get; set; }
+    public string Text     { get; set; } = "";
+    public Font   TextFont { get; set; } = DefaultFont;
 
     public override void Draw(Graphics g)
     {
         if (string.IsNullOrEmpty(Text)) return;
-        using var brush = new SolidBrush(Color);
+        using var brush  = new SolidBrush(Color);
         using var shadow = new SolidBrush(Color.FromArgb(60, 0, 0, 0));
         g.DrawString(Text, TextFont, shadow, Position.X + 1, Position.Y + 1);
-        g.DrawString(Text, TextFont, brush, Position);
+        g.DrawString(Text, TextFont, brush,  Position);
     }
 }
 

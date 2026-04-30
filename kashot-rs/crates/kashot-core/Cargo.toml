@@ -1,0 +1,16 @@
+[package]
+name        = "kashot-core"
+version     = { workspace = true }
+edition     = { workspace = true }
+authors     = { workspace = true }
+license     = { workspace = true }
+repository  = { workspace = true }
+description = "Kashot — platform-agnostic core (tools, annotations, settings, theme, state)"
+
+[dependencies]
+serde       = { workspace = true }
+serde_json  = { workspace = true }
+directories = { workspace = true }
+chrono      = { workspace = true }
+thiserror   = { workspace = true }
+bitflags    = { version = "2", features = ["serde"] }
