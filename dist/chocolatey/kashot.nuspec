@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="utf-8"?>
+<package xmlns="http://schemas.microsoft.com/packaging/2015/06/nuspec.xsd">
+  <metadata>
+    <id>kashot</id>
+    <version>0.1.0</version>
+    <packageSourceUrl>https://github.com/singhpratech/kashot/tree/main/dist/chocolatey</packageSourceUrl>
+    <owners>singhpratech</owners>
+
+    <title>Kashot</title>
+    <authors>PrateekSingh</authors>
+    <projectUrl>https://kashot.org/</projectUrl>
+    <iconUrl>https://kashot.org/assets/icon.svg</iconUrl>
+    <copyright>© PrateekSingh</copyright>
+    <licenseUrl>https://github.com/singhpratech/kashot/blob/main/LICENSE</licenseUrl>
+    <requireLicenseAcceptance>false</requireLicenseAcceptance>
+    <projectSourceUrl>https://github.com/singhpratech/kashot</projectSourceUrl>
+    <docsUrl>https://github.com/singhpratech/kashot/blob/main/CLAUDE.md</docsUrl>
+    <bugTrackerUrl>https://github.com/singhpratech/kashot/issues</bugTrackerUrl>
+
+    <tags>screenshot capture annotation tray productivity</tags>
+    <summary>Fast screenshots with annotations — tray-resident, hotkey-driven, free.</summary>
+    <description>
+Kashot is a fast, free, tray-resident screenshot tool with a built-in annotation editor.
+
+* Tray-resident, single-instance, single-binary install.
+* Global hotkey (default PrintScreen) opens a region selector across all monitors.
+* Nine annotation tools: pen, line, arrow, rectangle, ellipse, marker, text, numbered step, blur/pixelate.
+* Four colour palettes (Vivid / Highlighter / Pastel / Pro).
+* Save, copy to clipboard, or pin to screen as an always-on-top window.
+* Optional watermark on saved images.
+* No telemetry, no accounts, source on GitHub.
+
+Native on Windows. Native Linux and macOS builds available via the Rust port (kashot-rs).
+    </description>
+    <releaseNotes>https://github.com/singhpratech/kashot/releases/tag/v0.1.0</releaseNotes>
+  </metadata>
+  <files>
+    <file src="tools\**" target="tools" />
+  </files>
+</package>
