@@ -11,6 +11,9 @@
 # Published artifacts
 publish/
 *.pdb
+*.msi
+*.wixpdb
+preview.png
 
 # OS
 Thumbs.db
