@@ -31,20 +31,22 @@ public class TrayContext : ApplicationContext
     private string TrayTooltip()
     {
         var combo = HotkeyTextBox.HotkeyDisplay(_settings.HotkeyModifiers, _settings.HotkeyVirtualKey);
-        var t = $"Kashot — press {combo} to capture";
-        return t.Length > 63 ? t[..63] : t;
+        // Modern Windows accepts NotifyIcon tooltips up to 127 chars. Older
+        // versions truncate at 63 themselves — let the OS decide rather than
+        // chopping mid-word here. The user-visible label stays whole.
+        return $"Kashot — press {combo} to capture";
     }
 
     private ContextMenuStrip BuildMenu()
     {
         var menu = new ContextMenuStrip();
-        menu.Items.Add("Capture Screen", null, (_, _) => StartCapture());
-        menu.Items.Add("Record Screen", null, (_, _) => ShowRecordingPlaceholder());
+        menu.Items.Add("Capture Screen",        null, (_, _) => StartCapture());
+        menu.Items.Add("Open Save Folder",      null, (_, _) => OpenSaveFolder());
         menu.Items.Add("-");
-        menu.Items.Add("Settings…", null, (_, _) => ShowSettings());
-        menu.Items.Add("About Kashot…", null, (_, _) => ShowAbout());
+        menu.Items.Add("Settings…",             null, (_, _) => ShowSettings());
+        menu.Items.Add("About Kashot…",         null, (_, _) => ShowAbout());
         menu.Items.Add("-");
-        menu.Items.Add("Exit", null, (_, _) => ExitApp());
+        menu.Items.Add("Exit",                  null, (_, _) => ExitApp());
         return menu;
     }
 
@@ -55,11 +57,24 @@ public class TrayContext : ApplicationContext
         about.ShowDialog();
     }
 
-    private void ShowRecordingPlaceholder()
+    private void OpenSaveFolder()
     {
-        _trayIcon.BalloonTipTitle = "Kashot — Recording";
-        _trayIcon.BalloonTipText = "Screen recording (with mic + system audio) is coming in the next release. For now, use Capture Screen for stills.";
-        _trayIcon.ShowBalloonTip(4000);
+        var path = !string.IsNullOrWhiteSpace(_settings.SaveDirectory) && Directory.Exists(_settings.SaveDirectory)
+            ? _settings.SaveDirectory
+            : Environment.GetFolderPath(Environment.SpecialFolder.MyPictures);
+        try
+        {
+            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(path)
+            {
+                UseShellExecute = true,
+            });
+        }
+        catch (Exception ex)
+        {
+            _trayIcon.BalloonTipTitle = "Kashot";
+            _trayIcon.BalloonTipText  = $"Couldn't open folder: {ex.Message}";
+            _trayIcon.ShowBalloonTip(3000);
+        }
     }
 
     private void ShowSettings()
@@ -83,16 +98,29 @@ public class TrayContext : ApplicationContext
         SendKeys.Send("{ESC}");
         await Task.Delay(500);
 
-        _overlay = new OverlayForm(_settings);
-        _overlay.Icon = _trayIcon.Icon;
-        _overlay.CaptureCompleted += (_, msg) =>
+        // Capture / overlay construction can fail in unusual environments
+        // (locked workstation, RDP session with no console, GDI exhaustion).
+        // Show a balloon and bail instead of taking the whole tray app down.
+        try
         {
-            _trayIcon.BalloonTipTitle = "Kashot";
-            _trayIcon.BalloonTipText = msg;
-            _trayIcon.ShowBalloonTip(2000);
-        };
-        _overlay.FormClosed += (_, _) => _overlay = null;
-        _overlay.Show();
+            _overlay = new OverlayForm(_settings);
+            _overlay.Icon = _trayIcon.Icon;
+            _overlay.CaptureCompleted += (_, msg) =>
+            {
+                _trayIcon.BalloonTipTitle = "Kashot";
+                _trayIcon.BalloonTipText  = msg;
+                _trayIcon.ShowBalloonTip(2000);
+            };
+            _overlay.FormClosed += (_, _) => _overlay = null;
+            _overlay.Show();
+        }
+        catch (Exception ex)
+        {
+            _overlay = null;
+            _trayIcon.BalloonTipTitle = "Kashot — capture failed";
+            _trayIcon.BalloonTipText  = ex.Message.Length > 200 ? ex.Message[..200] : ex.Message;
+            _trayIcon.ShowBalloonTip(4000);
+        }
     }
 
     private void ExitApp()

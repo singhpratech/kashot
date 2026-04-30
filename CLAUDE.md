@@ -2,11 +2,30 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Two implementations side-by-side
+
+Kashot lives in **two parallel codebases**:
+
+- **`Kashot/`** — original C# / .NET 8 / WinForms build. Windows-only.
+  Currently the source of all shipping releases (v0.1 MSI/EXE/ZIP).
+- **`kashot-rs/`** — Rust workspace targeting Windows + Linux + macOS from one
+  codebase. Foundation (tray + hotkey + capture + save) is in place; the
+  overlay editor port is queued and fully scoped in `PLAN.md`.
+
+Both share **brand, settings JSON format, hotkey wire format, tool shortcuts,
+and color palettes**. See `PLAN.md` § "Architecture invariants" for the list of
+cross-cutting decisions that must stay aligned between the two.
+
+The C# build keeps shipping until the Rust port reaches feature parity. Don't
+delete the C# code; it's the reference implementation while the port catches up.
+
 ## Naming
 
 Project, namespace, assembly, binary, and every user-visible string are all `Kashot`. The project lives in `Kashot/Kashot.csproj`. The outer parent folder on disk happens to still be named `LightCapture` for historical reasons (originally the project was called LightCapture, then PratShot, now Kashot) — that name doesn't appear in code or any user-facing surface and you can ignore it.
 
 ## Build / Run
+
+### C# (`Kashot/`) — Windows only
 
 There is no `.sln` — operate on the `.csproj` directly.
 
@@ -17,6 +36,30 @@ dotnet publish Kashot/Kashot.csproj -c Release
 ```
 
 Target framework is `net8.0-windows` with `UseWindowsForms=true`, so this **only builds and runs on Windows**. No tests, no linter, no formatter configured.
+
+Artifacts: `Installer/build.ps1` produces `Kashot.msi` + `Kashot.exe` + `Kashot-portable.zip` at the repo root in one shot.
+
+### Rust (`kashot-rs/`) — Windows / Linux / macOS
+
+Cargo workspace with three crates:
+
+| Crate              | Role                                                                  |
+|--------------------|-----------------------------------------------------------------------|
+| `kashot-core`      | Pure logic: `Tool`, `Annotation`, `AppSettings`, theme, state machine |
+| `kashot-platform`  | OS shims: capture (xcap), hotkey (global-hotkey), tray, clipboard     |
+| `kashot-app`       | Tray-resident binary; current entry is `winit` event loop, iced lands with the editor port |
+
+```sh
+cd kashot-rs
+cargo test  -p kashot-core         # 9 tests, no system deps
+cargo build --release --bin kashot # full build; needs system deps on Linux
+```
+
+Linux build deps (CI installs these — see `.github/workflows/build-rust.yml`):
+`libwayland-dev libxkbcommon-dev libxcb*-dev libgtk-3-dev libdbus-1-dev libayatana-appindicator3-dev libxdo-dev pkg-config`.
+Windows + macOS need no extra system packages.
+
+CI: tagged push to `v*` triggers both `build-csharp.yml` (Windows MSI/EXE/ZIP) and `build-rust.yml` (Linux tar.gz, Windows EXE, macOS arm64 + x64), all attached to the GitHub Release automatically.
 
 ## Architecture
 
