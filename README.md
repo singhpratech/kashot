@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="docs/assets/icon.svg" width="120" height="120" alt="Kashot" />
+<img src="icons/web_pwa_favicon/kashot-256x256.png" width="120" height="120" alt="Kashot" />
 
 # Kashot
 
