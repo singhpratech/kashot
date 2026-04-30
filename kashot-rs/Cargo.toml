@@ -37,6 +37,12 @@ iced = { version = "0.14", features = ["canvas", "image", "tokio", "advanced"] }
 # Only used today for the About modal and the Settings folder picker; will be
 # joined by a real settings UI when the iced port lands.
 rfd  = "0.15"
+# Overlay editor stack — CPU framebuffer + anti-aliased 2D drawing.
+# softbuffer pushes pixels to a winit window without GPU; tiny-skia gives us
+# alpha-blended fills, strokes, and rounded rects for the selection chrome
+# and (eventually) annotation tools.
+softbuffer = "0.4"
+tiny-skia  = "0.11"
 
 # Errors
 thiserror = "1"

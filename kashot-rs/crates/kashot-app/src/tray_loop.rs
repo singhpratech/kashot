@@ -17,6 +17,8 @@ use kashot_platform::{
     recorder::Recorder,
     tray::{Tray, TrayEvent},
 };
+
+use crate::editor::{Overlay, OverlayOutcome};
 use winit::application::ApplicationHandler;
 use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
@@ -51,6 +53,10 @@ pub fn run() -> Result<()> {
         hotkeys:    Option<HotkeyManager>,
         tray:       Option<Tray>,
         recorder:   Recorder,
+        /// Active overlay editor window, if a capture-and-edit is in flight.
+        /// Holds the captured screenshot and the user's selection state until
+        /// they accept (Enter / right-click) or cancel (Esc).
+        overlay:    Option<Overlay>,
         last_tick:  Instant,
         capturing:  bool,
     }
@@ -64,8 +70,8 @@ pub fn run() -> Result<()> {
                 tray.pump_events();
                 match tray.try_recv() {
                     TrayEvent::None                  => {}
-                    TrayEvent::Capture               => self.capture(),
-                    TrayEvent::CaptureDelayed(secs)  => self.capture_after(Duration::from_secs(secs as u64)),
+                    TrayEvent::Capture               => self.capture(loop_target),
+                    TrayEvent::CaptureDelayed(secs)  => self.capture_after(loop_target, Duration::from_secs(secs as u64)),
                     TrayEvent::StartRecording        => self.start_recording(),
                     TrayEvent::StopRecording         => self.stop_recording(),
                     TrayEvent::Settings              => self.show_settings(),
@@ -81,25 +87,24 @@ pub fn run() -> Result<()> {
             }
             if let Some(hk) = &self.hotkeys {
                 if hk.drain_pressed() {
-                    self.capture();
+                    self.capture(loop_target);
                 }
             }
         }
 
-        fn capture(&mut self) {
-            self.capture_after(Duration::ZERO);
+        fn capture(&mut self, loop_target: &ActiveEventLoop) {
+            self.capture_after(loop_target, Duration::ZERO);
         }
 
-        /// Fire a capture after a user-facing delay. Used by the
-        /// "Capture after delay…" submenu entries (3 / 5 / 10 s) so the
-        /// user can dismiss menus, position windows, focus a tooltip, etc.
-        /// before the screenshot is taken.
+        /// Fire a capture after a user-facing delay, then open the overlay
+        /// editor so the user can drag a region. Used by the plain "Capture
+        /// Screen" menu/hotkey path (delay = 0) and the "Capture after delay…"
+        /// submenu entries (3 / 5 / 10 s).
         ///
-        /// During the countdown the tray's GTK main context still gets pumped
-        /// (on Linux) and we wake briefly each tick so the icon stays
-        /// responsive instead of looking frozen.
-        fn capture_after(&mut self, user_delay: Duration) {
-            if self.capturing { return; }
+        /// During any countdown the tray's GTK main context is still pumped
+        /// (on Linux) so the icon stays responsive.
+        fn capture_after(&mut self, loop_target: &ActiveEventLoop, user_delay: Duration) {
+            if self.capturing || self.overlay.is_some() { return; }
             self.capturing = true;
 
             if !user_delay.is_zero() {
@@ -114,18 +119,27 @@ pub fn run() -> Result<()> {
             }
 
             // Brief settle delay so the tray menu / flyout can fully dismiss
-            // before we shoot, on top of any user-facing delay.
+            // before xcap shoots the desktop. On top of any user-facing delay.
             std::thread::sleep(Duration::from_millis(250));
 
             match capture_all_screens() {
-                Ok(shot) => match save_capture(&mut self.settings, &shot.bitmap) {
-                    Ok(path) => eprintln!("Saved {}", path.display()),
-                    Err(e)   => eprintln!("Save failed: {e}"),
+                Ok(shot) => match Overlay::new(loop_target, shot.bitmap) {
+                    Ok(ov) => self.overlay = Some(ov),
+                    Err(e) => eprintln!("Overlay open failed: {e}"),
                 },
                 Err(e) => eprintln!("Capture failed: {e}"),
             }
 
             self.capturing = false;
+        }
+
+        /// Persist a final image (already cropped to the user's selection in
+        /// the overlay editor) to the configured save directory.
+        fn save_final(&mut self, img: image::ImageBuffer<image::Rgba<u8>, Vec<u8>>) {
+            match save_capture(&mut self.settings, &img) {
+                Ok(path) => eprintln!("Saved {}", path.display()),
+                Err(e)   => eprintln!("Save failed: {e}"),
+            }
         }
 
         /// Start recording the primary display. Output lands in the user's
@@ -208,7 +222,26 @@ pub fn run() -> Result<()> {
 
     impl ApplicationHandler for TrayApp {
         fn resumed(&mut self, _: &ActiveEventLoop) {}
-        fn window_event(&mut self, _: &ActiveEventLoop, _id: WindowId, _ev: WindowEvent) {}
+
+        fn window_event(&mut self, _loop_target: &ActiveEventLoop, id: WindowId, ev: WindowEvent) {
+            // Route the event into the overlay editor if it owns the window.
+            // Anything else (close-requested on a phantom window, stray events
+            // from a destroyed surface) is silently dropped.
+            let drop_overlay;
+            let mut accepted: Option<image::ImageBuffer<image::Rgba<u8>, Vec<u8>>> = None;
+            if let Some(ov) = self.overlay.as_mut() {
+                if ov.window_id() == id {
+                    match ov.handle_event(ev) {
+                        OverlayOutcome::Continue       => { drop_overlay = false; }
+                        OverlayOutcome::Cancelled      => { drop_overlay = true; }
+                        OverlayOutcome::Accepted(img)  => { drop_overlay = true; accepted = Some(img); }
+                    }
+                } else { drop_overlay = false; }
+            } else { drop_overlay = false; }
+
+            if drop_overlay { self.overlay = None; }
+            if let Some(img) = accepted { self.save_final(img); }
+        }
 
         fn about_to_wait(&mut self, loop_target: &ActiveEventLoop) {
             // Poll roughly 30Hz when idle.
@@ -229,6 +262,7 @@ pub fn run() -> Result<()> {
         hotkeys: hotkeys.take(),
         tray,
         recorder: Recorder::new(),
+        overlay: None,
         last_tick: Instant::now(),
         capturing: false,
     };
