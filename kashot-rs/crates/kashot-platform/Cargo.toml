@@ -1,0 +1,19 @@
+[package]
+name        = "kashot-platform"
+version     = { workspace = true }
+edition     = { workspace = true }
+authors     = { workspace = true }
+license     = { workspace = true }
+repository  = { workspace = true }
+description = "Kashot — platform shims (capture, hotkey, tray, clipboard)"
+
+[dependencies]
+kashot-core   = { path = "../kashot-core" }
+xcap          = { workspace = true }
+global-hotkey = { workspace = true }
+tray-icon     = { workspace = true }
+arboard       = { workspace = true }
+image         = { workspace = true }
+chrono        = { workspace = true }
+thiserror     = { workspace = true }
+anyhow        = { workspace = true }

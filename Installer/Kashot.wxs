@@ -3,7 +3,7 @@
 
   <Package Name="Kashot"
            Manufacturer="singhpratech"
-           Version="1.0.0"
+           Version="0.1.0"
            UpgradeCode="94810024-659B-4781-A523-F60C707AF83A"
            Scope="perMachine"
            InstallerVersion="500">

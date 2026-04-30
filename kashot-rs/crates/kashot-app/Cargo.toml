@@ -1,0 +1,43 @@
+[package]
+name        = "kashot-app"
+version     = { workspace = true }
+edition     = { workspace = true }
+authors     = { workspace = true }
+license     = { workspace = true }
+repository  = { workspace = true }
+description = "Kashot — native cross-platform screenshot tool"
+
+[[bin]]
+name = "kashot"
+path = "src/main.rs"
+
+[dependencies]
+kashot-core     = { path = "../kashot-core" }
+kashot-platform = { path = "../kashot-platform" }
+
+iced        = { workspace = true }
+image       = { workspace = true }
+imageproc   = { version = "0.25", default-features = false }
+chrono      = { workspace = true }
+serde       = { workspace = true }
+serde_json  = { workspace = true }
+anyhow      = { workspace = true }
+thiserror   = { workspace = true }
+directories = { workspace = true }
+rfd         = { version = "0.15", default-features = false, features = ["xdg-portal", "tokio"] }
+tokio       = { version = "1", features = ["rt", "rt-multi-thread", "macros", "time", "sync"] }
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_System_Registry",
+    "Win32_UI_Shell",
+] }
+
+[package.metadata.bundle]
+name        = "Kashot"
+identifier  = "org.kashot.app"
+icon        = ["../../assets/icon.png"]
+category    = "Graphics"
+short_description = "Fast screenshots with annotations"
+copyright   = "© PrateekSingh"

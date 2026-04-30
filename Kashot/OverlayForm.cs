@@ -855,6 +855,10 @@ public class OverlayForm : Form
             drawIcon(g, new Rectangle(2, 2, 18, 18));
         }
         btn.Image = img;
+        // Button.Dispose doesn't dispose its `Image`, so wire it up explicitly.
+        // Toolbars are torn down + rebuilt on every selection change /
+        // CycleThickness — without this we leak a Bitmap per icon every cycle.
+        btn.Disposed += (_, _) => btn.Image?.Dispose();
 
         var tt = new ToolTip();
         tt.SetToolTip(btn, tooltip);
@@ -1048,8 +1052,25 @@ public class OverlayForm : Form
 
     private static void IconPen(Graphics g, Rectangle r)
     {
-        using var p = new Pen(Color.White, 2) { StartCap = LineCap.Round, EndCap = LineCap.Round };
-        g.DrawBezier(p, r.Left + 2, r.Bottom - 2, r.Left + 6, r.Top + 4, r.Right - 6, r.Bottom - 4, r.Right - 2, r.Top + 2);
+        // Recognizable pen: an angled body with a pointed nib and a short
+        // ink trail behind it — reads as "pen" at 18 px in a way the old
+        // bezier curve never did.
+        using var body  = new Pen(Color.White, 3) { StartCap = LineCap.Round, EndCap = LineCap.Round };
+        using var trail = new Pen(Color.FromArgb(180, 255, 255, 255), 1.5f)
+            { StartCap = LineCap.Round, EndCap = LineCap.Round };
+
+        // Pen body — diagonal from lower-left to upper-right
+        g.DrawLine(body, r.Left + 5, r.Bottom - 4, r.Right - 4, r.Top + 4);
+        // Nib (a small filled triangle at the lower-left tip)
+        var nib = new[]
+        {
+            new Point(r.Left + 2, r.Bottom - 2),
+            new Point(r.Left + 6, r.Bottom - 5),
+            new Point(r.Left + 4, r.Bottom - 7),
+        };
+        g.FillPolygon(Brushes.White, nib);
+        // Ink trail under the nib
+        g.DrawLine(trail, r.Left + 1, r.Bottom - 1, r.Left + 7, r.Bottom - 1);
     }
 
     private static void IconLine(Graphics g, Rectangle r)
@@ -1060,7 +1081,10 @@ public class OverlayForm : Form
 
     private static void IconArrow(Graphics g, Rectangle r)
     {
-        using var p = new Pen(Color.White, 2) { StartCap = LineCap.Round, CustomEndCap = new AdjustableArrowCap(4, 4) };
+        // Pen doesn't dispose its CustomEndCap on its own — keep the cap in its
+        // own `using` so each toolbar redraw doesn't leak a GDI handle.
+        using var cap = new AdjustableArrowCap(4, 4);
+        using var p   = new Pen(Color.White, 2) { StartCap = LineCap.Round, CustomEndCap = cap };
         g.DrawLine(p, r.Left + 2, r.Bottom - 2, r.Right - 2, r.Top + 2);
     }
 
@@ -1078,8 +1102,24 @@ public class OverlayForm : Form
 
     private static void IconMarker(Graphics g, Rectangle r)
     {
-        using var p = new Pen(Color.FromArgb(150, 255, 255, 0), 6);
-        g.DrawLine(p, r.Left + 2, r.Top + r.Height / 2, r.Right - 2, r.Top + r.Height / 2);
+        // Highlighter shape: angled chisel-tip body laying on a baseline,
+        // stroke of yellow under the body to read as "highlight".
+        int midY = r.Top + r.Height / 2;
+        using var stroke = new SolidBrush(Color.FromArgb(160, 255, 235, 0));
+        g.FillRectangle(stroke, r.Left + 2, midY + 1, r.Width - 4, 4);
+
+        // Marker body (angled rectangle) over the right end of the stroke
+        var body = new[]
+        {
+            new Point(r.Right - 11, midY + 4),
+            new Point(r.Right - 4,  midY - 3),
+            new Point(r.Right - 1,  midY),
+            new Point(r.Right - 8,  midY + 7),
+        };
+        using var bodyBrush = new SolidBrush(Color.FromArgb(255, 220, 220, 220));
+        g.FillPolygon(bodyBrush, body);
+        using var outline = new Pen(Color.White, 1);
+        g.DrawPolygon(outline, body);
     }
 
     private static void IconText(Graphics g, Rectangle r)
@@ -1101,13 +1141,21 @@ public class OverlayForm : Form
 
     private static void IconPixelate(Graphics g, Rectangle r)
     {
-        using var b1 = new SolidBrush(Color.FromArgb(220, 220, 220));
-        using var b2 = new SolidBrush(Color.FromArgb(120, 120, 120));
-        int s = (r.Width - 4) / 4;
-        for (int y = 0; y < 4; y++)
-            for (int x = 0; x < 4; x++)
-                g.FillRectangle((x + y) % 2 == 0 ? b1 : b2,
-                    r.X + 2 + x * s, r.Y + 2 + y * s, s, s);
+        // 3x3 mosaic of varied shades reads as "pixelate / blur" much more
+        // clearly than the old 4x4 strict checkerboard. The varied tones
+        // imply image content being redacted, not just a chessboard.
+        var shades = new byte[] { 230, 90, 170, 110, 200, 60, 80, 220, 140 };
+        int s = (r.Width - 4) / 3;
+        for (int i = 0; i < 9; i++)
+        {
+            int x = i % 3, y = i / 3;
+            var v = shades[i];
+            using var b = new SolidBrush(Color.FromArgb(v, v, v));
+            g.FillRectangle(b, r.X + 2 + x * s, r.Y + 2 + y * s, s, s);
+        }
+        // Subtle border so it stays a single visual block at small sizes
+        using var border = new Pen(Color.FromArgb(120, 255, 255, 255), 1);
+        g.DrawRectangle(border, r.X + 2, r.Y + 2, s * 3, s * 3);
     }
 
     private static void IconUndo(Graphics g, Rectangle r)
@@ -1128,11 +1176,32 @@ public class OverlayForm : Form
 
     private static void IconPin(Graphics g, Rectangle r)
     {
-        using var p = new Pen(Color.White, 1.5f);
+        // Classic thumbtack: round head with a small gloss highlight, a
+        // tapered metal stem, and a sharp point at the bottom. Reads as
+        // "pin to screen" in any toolbar context.
         int cx = r.Left + r.Width / 2;
-        g.DrawLine(p, cx, r.Top + 11, cx, r.Bottom - 2);
-        using var fill = new SolidBrush(Color.White);
-        g.FillEllipse(fill, cx - 5, r.Top + 2, 10, 10);
+        int headTop = r.Top + 1;
+        int headBot = r.Top + 10;
+
+        using var headFill = new SolidBrush(Color.White);
+        g.FillEllipse(headFill, cx - 5, headTop, 10, 9);
+
+        using var headEdge = new Pen(Color.FromArgb(140, 100, 100, 110), 1);
+        g.DrawEllipse(headEdge, cx - 5, headTop, 10, 9);
+
+        // Gloss highlight on the head
+        using var gloss = new SolidBrush(Color.FromArgb(180, 180, 180, 180));
+        g.FillEllipse(gloss, cx - 3, headTop + 2, 4, 2);
+
+        // Tapered stem (triangle from head to point)
+        var stem = new[]
+        {
+            new Point(cx - 2, headBot - 1),
+            new Point(cx + 2, headBot - 1),
+            new Point(cx,     r.Bottom - 1),
+        };
+        using var stemFill = new SolidBrush(Color.FromArgb(255, 220, 220, 220));
+        g.FillPolygon(stemFill, stem);
     }
 
     private static void IconCopy(Graphics g, Rectangle r)
@@ -1199,10 +1268,22 @@ public class OverlayForm : Form
 
     private void CopyToClipboard()
     {
-        using var img = GetFinalImage();
-        Clipboard.SetImage(img);
-        CaptureCompleted?.Invoke(this, "Copied to clipboard!");
-        Close();
+        // Clipboard.SetImage can throw under contention (another app holds
+        // the clipboard, RDP-without-clipboard-redirection, etc.). Don't crash
+        // the overlay — surface a message and stay open so the user can retry.
+        try
+        {
+            using var img = GetFinalImage();
+            Clipboard.SetImage(img);
+            CaptureCompleted?.Invoke(this, "Copied to clipboard!");
+            Close();
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this,
+                $"Couldn't copy to the clipboard.\n\n{ex.Message}",
+                "Kashot", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        }
     }
 
     private void SaveToFile()
@@ -1213,25 +1294,36 @@ public class OverlayForm : Form
 
         using var dlg = new SaveFileDialog
         {
-            Filter = "PNG Image|*.png|JPEG Image|*.jpg|Bitmap|*.bmp",
-            DefaultExt = "png",
-            FileName = $"kashot_{DateTime.Now:yyyyMMdd_HHmmss}",
+            Filter           = "PNG Image|*.png|JPEG Image|*.jpg|Bitmap|*.bmp",
+            DefaultExt       = "png",
+            FileName         = $"kashot_{DateTime.Now:yyyyMMdd_HHmmss}",
             InitialDirectory = initialDir,
         };
 
-        if (dlg.ShowDialog() == DialogResult.OK)
+        if (dlg.ShowDialog() != DialogResult.OK) return;
+
+        // Save can fail (disk full, permission denied, path too long, network
+        // path unavailable). Surface the error and stay open instead of
+        // tearing the overlay down on the user.
+        try
         {
             using var img = GetFinalImage();
-            var fmt = Path.GetExtension(dlg.FileName).ToLower() switch
+            var fmt = Path.GetExtension(dlg.FileName).ToLowerInvariant() switch
             {
                 ".jpg" or ".jpeg" => ImageFormat.Jpeg,
-                ".bmp" => ImageFormat.Bmp,
-                _ => ImageFormat.Png,
+                ".bmp"            => ImageFormat.Bmp,
+                _                 => ImageFormat.Png,
             };
             img.Save(dlg.FileName, fmt);
             _settings.SaveDirectory = Path.GetDirectoryName(dlg.FileName) ?? _settings.SaveDirectory;
             CaptureCompleted?.Invoke(this, $"Saved to {dlg.FileName}");
             Close();
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this,
+                $"Couldn't save the image.\n\n{ex.Message}",
+                "Kashot", MessageBoxButtons.OK, MessageBoxIcon.Warning);
         }
     }
 
