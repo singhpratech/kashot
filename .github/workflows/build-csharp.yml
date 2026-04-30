@@ -31,7 +31,9 @@ jobs:
           dotnet-version: '8.0.x'
 
       - name: Install WiX
-        run: dotnet tool install --global wix
+        # WiX 7+ requires accepting the OSMF EULA. WiX 5 is the last
+        # pre-OSMF release and is sufficient for this MSI.
+        run: dotnet tool install --global wix --version 5.*
 
       - name: Build all artifacts
         shell: pwsh
