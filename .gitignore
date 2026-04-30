@@ -1,0 +1,27 @@
+# Build output
+**/bin/
+**/obj/
+*.user
+*.suo
+
+# Visual Studio
+.vs/
+*.swp
+
+# Published artifacts
+publish/
+*.pdb
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Editor
+.idea/
+.vscode/
+
+# Local dev
+*.log
+
+# Claude Code session config
+.claude/
