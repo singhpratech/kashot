@@ -63,8 +63,8 @@ pub fn run() -> Result<()> {
                 match tray.try_recv() {
                     TrayEvent::None     => {}
                     TrayEvent::Capture  => self.capture(),
-                    TrayEvent::Settings => self.show_settings_placeholder(),
-                    TrayEvent::About    => self.show_about_placeholder(),
+                    TrayEvent::Settings => self.show_settings(),
+                    TrayEvent::About    => self.show_about(),
                     TrayEvent::Exit     => loop_target.exit(),
                 }
             }
@@ -93,12 +93,41 @@ pub fn run() -> Result<()> {
             self.capturing = false;
         }
 
-        fn show_settings_placeholder(&self) {
-            eprintln!("Settings dialog: pending overlay-editor port (PLAN.md § R7).");
+        /// Native folder picker for the save directory. Until the full
+        /// settings form lands (with hotkey rebinding, start-with-system,
+        /// theme), the only setting most users actually want to change is
+        /// "where do my screenshots go". So that's what this exposes today.
+        fn show_settings(&mut self) {
+            let starting = save_directory(&self.settings);
+            let picked = rfd::FileDialog::new()
+                .set_title("Kashot — pick the folder to save screenshots into")
+                .set_directory(&starting)
+                .pick_folder();
+            if let Some(p) = picked {
+                self.settings.save_directory = p.to_string_lossy().to_string();
+                if let Err(e) = self.settings.save() {
+                    eprintln!("Failed to persist settings: {e}");
+                } else {
+                    eprintln!("Saved screenshots will now go to {}", p.display());
+                }
+            }
         }
-        fn show_about_placeholder(&self) {
-            eprintln!("Kashot v{} — github.com/singhpratech/kashot",
-                env!("CARGO_PKG_VERSION"));
+
+        /// Real native About modal. No web view, no embedded HTML — just a
+        /// native message dialog with version + repo link.
+        fn show_about(&self) {
+            rfd::MessageDialog::new()
+                .set_level(rfd::MessageLevel::Info)
+                .set_title("About Kashot")
+                .set_description(format!(
+                    "Kashot v{}\n\n\
+                     The lightweight screenshot tool every platform deserves.\n\n\
+                     Source: github.com/singhpratech/kashot\n\
+                     License: MIT",
+                    env!("CARGO_PKG_VERSION")
+                ))
+                .set_buttons(rfd::MessageButtons::Ok)
+                .show();
         }
     }
 
