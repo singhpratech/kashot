@@ -1,0 +1,39 @@
+# Submit to https://github.com/flathub/flathub
+# Users install with:
+#   flatpak install flathub org.kashot.Kashot
+app-id: org.kashot.Kashot
+runtime: org.freedesktop.Platform
+runtime-version: '23.08'
+sdk: org.freedesktop.Sdk
+command: kashot
+finish-args:
+  - --share=ipc
+  - --socket=fallback-x11
+  - --socket=wayland
+  - --device=dri
+  - --filesystem=xdg-pictures
+  - --filesystem=xdg-download
+  - --talk-name=org.kde.StatusNotifierWatcher
+  - --talk-name=org.gnome.Shell
+  - --talk-name=com.canonical.AppMenu.Registrar
+
+modules:
+  - name: kashot
+    buildsystem: simple
+    only-arches: [x86_64]
+    build-commands:
+      - install -Dm755 kashot /app/bin/kashot
+      - install -Dm644 org.kashot.Kashot.desktop /app/share/applications/org.kashot.Kashot.desktop
+      - install -Dm644 org.kashot.Kashot.png      /app/share/icons/hicolor/256x256/apps/org.kashot.Kashot.png
+      - install -Dm644 org.kashot.Kashot.metainfo.xml /app/share/metainfo/org.kashot.Kashot.metainfo.xml
+    sources:
+      - type: archive
+        url:    https://github.com/singhpratech/kashot/releases/download/v0.1.0/kashot-linux-x86_64.tar.gz
+        sha256: REPLACE_WITH_ACTUAL_SHA256_AT_RELEASE_TIME
+        strip-components: 1
+      - type: file
+        path: org.kashot.Kashot.desktop
+      - type: file
+        path: org.kashot.Kashot.png
+      - type: file
+        path: org.kashot.Kashot.metainfo.xml

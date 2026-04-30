@@ -8,8 +8,8 @@
 **/target/
 Cargo.lock.*
 
-# Rust packaging staging
-/dist/
+# Rust packaging staging — only the kashot-rs/dist/ subdir, NOT root /dist/
+# (root /dist/ holds package-channel metadata: winget, choco, scoop, brew, etc.)
 /kashot-rs/dist/
 
 # Visual Studio

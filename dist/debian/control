@@ -1,0 +1,21 @@
+Source: kashot
+Section: graphics
+Priority: optional
+Maintainer: PrateekSingh <42719720+singhpratech@users.noreply.github.com>
+Standards-Version: 4.6.2
+Homepage: https://kashot.org/
+Vcs-Browser: https://github.com/singhpratech/kashot
+
+Package: kashot
+Architecture: amd64
+Depends: ${shlibs:Depends}, ${misc:Depends},
+ libgtk-3-0,
+ libxcb1,
+ libwayland-client0,
+ libdbus-1-3,
+ libayatana-appindicator3-1
+Description: Fast screenshots with annotations
+ Tray-resident screenshot tool with a built-in annotation editor.
+ Global hotkey opens a region selector across all monitors; nine annotation
+ tools (pen, line, arrow, rectangle, ellipse, marker, text, numbered step,
+ blur/pixelate); four colour palettes; save, copy, or pin to screen.
