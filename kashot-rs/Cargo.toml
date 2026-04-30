@@ -33,6 +33,10 @@ tray-icon     = "0.23"
 
 # UI
 iced = { version = "0.14", features = ["canvas", "image", "tokio", "advanced"] }
+# Native message + file-picker dialogs (GTK on Linux, native APIs on Win/macOS).
+# Only used today for the About modal and the Settings folder picker; will be
+# joined by a real settings UI when the iced port lands.
+rfd  = "0.15"
 
 # Errors
 thiserror = "1"
