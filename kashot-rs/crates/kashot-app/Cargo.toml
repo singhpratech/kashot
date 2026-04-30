@@ -15,8 +15,9 @@ path = "src/main.rs"
 kashot-core     = { path = "../kashot-core" }
 kashot-platform = { path = "../kashot-platform" }
 
-# Iced / rfd / imageproc / tokio land with the editor port (PLAN.md § R7).
-# Until then the binary only needs winit + the platform shims.
+# Iced / imageproc / tokio land with the full editor port (PLAN.md § R7).
+# `rfd` is in early — Settings and About use it for native dialogs today, the
+# editor will keep using it for the Save / Open file pickers.
 image       = { workspace = true }
 chrono      = { workspace = true }
 serde       = { workspace = true }
@@ -24,6 +25,7 @@ serde_json  = { workspace = true }
 anyhow      = { workspace = true }
 thiserror   = { workspace = true }
 directories = { workspace = true }
+rfd         = { workspace = true }
 winit       = "0.30"
 
 [target.'cfg(windows)'.dependencies]
