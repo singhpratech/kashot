@@ -48,7 +48,7 @@ public class TrayContext : ApplicationContext
         // "Capture after delay…" submenu — three preset durations covering
         // the common screenshot-tool delay use cases (open a menu, focus a
         // window, dismiss a tooltip, etc.) without a free-form input UI.
-        var delay = new ToolStripMenuItem("Capture after delay…");
+        var delay = new ToolStripMenuItem("Capture after delay");
         delay.DropDownItems.Add("3 seconds",    null, (_, _) => StartCaptureAfter(3));
         delay.DropDownItems.Add("5 seconds",    null, (_, _) => StartCaptureAfter(5));
         delay.DropDownItems.Add("10 seconds",   null, (_, _) => StartCaptureAfter(10));
@@ -66,10 +66,27 @@ public class TrayContext : ApplicationContext
         menu.Items.Add("Open Save Folder",      null, (_, _) => OpenSaveFolder());
         menu.Items.Add("-");
         menu.Items.Add("Settings…",             null, (_, _) => ShowSettings());
-        menu.Items.Add("About Kashot…",         null, (_, _) => ShowAbout());
+        menu.Items.Add("About",                 null, (_, _) => ShowAbout());
+        menu.Items.Add("Check for updates",     null, (_, _) => OpenReleasesPage());
         menu.Items.Add("-");
         menu.Items.Add("Exit",                  null, (_, _) => ExitApp());
         return menu;
+    }
+
+    private void OpenReleasesPage()
+    {
+        try
+        {
+            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(
+                "https://github.com/singhpratech/kashot/releases")
+            { UseShellExecute = true });
+        }
+        catch (Exception ex)
+        {
+            _trayIcon.BalloonTipTitle = "Kashot";
+            _trayIcon.BalloonTipText  = $"Couldn't open browser: {ex.Message}";
+            _trayIcon.ShowBalloonTip(3000);
+        }
     }
 
     /// Begin recording the primary display to MP4 in the user's Videos

@@ -165,14 +165,13 @@ pub fn run() -> Result<()> {
             }
         }
 
-        /// Native folder picker for the save directory. Until the full
-        /// settings form lands (with hotkey rebinding, start-with-system,
-        /// theme), the only setting most users actually want to change is
-        /// "where do my screenshots go". So that's what this exposes today.
+        /// Native folder picker for the save directory. Title is kept short
+        /// so it fits in panel-truncated dialog headers; the file dialog
+        /// itself shows "Save to:" semantically via its own UI.
         fn show_settings(&mut self) {
             let starting = save_directory(&self.settings);
             let picked = rfd::FileDialog::new()
-                .set_title("Kashot — pick the folder to save screenshots into")
+                .set_title("Kashot — Save folder")
                 .set_directory(&starting)
                 .pick_folder();
             if let Some(p) = picked {
@@ -185,21 +184,25 @@ pub fn run() -> Result<()> {
             }
         }
 
-        /// Real native About modal. No web view, no embedded HTML — just a
-        /// native message dialog with version + repo link.
+        /// Native About modal — version + repo + "View releases" affordance.
+        /// Two-button (Yes/No) so the user can jump straight to the GitHub
+        /// releases page to check for updates without leaving the app.
         fn show_about(&self) {
-            rfd::MessageDialog::new()
+            let res = rfd::MessageDialog::new()
                 .set_level(rfd::MessageLevel::Info)
                 .set_title("About Kashot")
                 .set_description(format!(
-                    "Kashot v{}\n\n\
-                     The lightweight screenshot tool every platform deserves.\n\n\
-                     Source: github.com/singhpratech/kashot\n\
-                     License: MIT",
+                    "Kashot v{}\n\
+                     The lightweight screenshot tool.\n\n\
+                     github.com/singhpratech/kashot · MIT\n\n\
+                     Open the releases page to check for updates?",
                     env!("CARGO_PKG_VERSION")
                 ))
-                .set_buttons(rfd::MessageButtons::Ok)
+                .set_buttons(rfd::MessageButtons::YesNo)
                 .show();
+            if res == rfd::MessageDialogResult::Yes {
+                open_url("https://github.com/singhpratech/kashot/releases");
+            }
         }
     }
 
@@ -302,4 +305,23 @@ fn vk_name(vk: u32) -> &'static str {
 
 fn tray_tooltip(s: &AppSettings) -> String {
     format!("Kashot — press {} to capture", describe_hotkey(s))
+}
+
+/// Open `url` in the user's default browser. Best-effort — failures are
+/// logged but the dialog already gave them the URL as plain text, so they
+/// can copy it manually.
+fn open_url(url: &str) {
+    use std::process::Command;
+    let opener = if cfg!(target_os = "windows") {
+        ("cmd",  vec!["/C", "start", "", url])
+    } else if cfg!(target_os = "macos") {
+        ("open", vec![url])
+    } else {
+        ("xdg-open", vec![url])
+    };
+    let mut cmd = Command::new(opener.0);
+    cmd.args(opener.1);
+    if let Err(e) = cmd.spawn() {
+        eprintln!("Couldn't open {url}: {e}");
+    }
 }
