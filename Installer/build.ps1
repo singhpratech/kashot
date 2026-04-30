@@ -14,8 +14,10 @@
 $ErrorActionPreference = 'Stop'
 
 $repoRoot   = Split-Path -Parent $PSScriptRoot
-$proj       = Join-Path $repoRoot 'Kashot\Kashot.csproj'
-$publishDir = Join-Path $repoRoot 'Kashot\bin\Release\net8.0-windows\win-x64\publish'
+$kashotProj = Join-Path $repoRoot 'Kashot\Kashot.csproj'
+# bin/x64/ because Directory.Build.props pins Platform=x64 (ScreenRecorderLib
+# refuses AnyCPU). The publish dir is below that.
+$publishDir = Join-Path $repoRoot 'Kashot\bin\x64\Release\net8.0-windows\win-x64\publish'
 $wxs        = Join-Path $PSScriptRoot 'Kashot.wxs'
 
 $outMsi     = Join-Path $repoRoot 'Kashot.msi'
@@ -25,7 +27,7 @@ $outZip     = Join-Path $repoRoot 'Kashot-portable.zip'
 # ---- 1. Publish single-file self-contained exe -----------------------------
 
 Write-Host "Publishing Kashot (single-file, self-contained, win-x64)..." -ForegroundColor Cyan
-dotnet publish $proj -c Release -r win-x64 --self-contained true `
+dotnet publish $kashotProj -c Release -r win-x64 --self-contained true `
     -p:PublishSingleFile=true `
     -p:IncludeNativeLibrariesForSelfExtract=true `
     -p:EnableCompressionInSingleFile=true `

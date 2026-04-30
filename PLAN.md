@@ -1,72 +1,148 @@
-# Kashot — roadmap
+# Kashot — Product Roadmap
+
+**Status legend:** ✅ shipped · 🔨 in progress (code partially landed) · 📋 backlog · ⏳ long-term · ❄ frozen
 
 The project lives in two implementations side-by-side:
 
 - **`Kashot/`** — C# / .NET 8 / WinForms build. Windows-only. The reference
   implementation; this is what ships today.
-- **`kashot-rs/`** — Rust workspace targeting Windows + Linux + macOS from one
-  codebase. Foundation (tray + hotkey + capture + save) is in place; will
-  catch up to feature parity over the v0.1.x line.
+- **`kashot-rs/`** — Rust workspace (`kashot-core`, `kashot-platform`,
+  `kashot-app`) targeting Windows + Linux + macOS from one codebase.
+  Foundation in place; catching up to feature parity on the `0.1.x` line.
 
 Both share **brand, settings JSON format, hotkey wire format, tool shortcuts,
-and color palettes**. See § "Architecture invariants" for the cross-cutting
-decisions that must stay aligned.
-
----
-
-## v0.1 — current line
-
-Everything below is already in the tree, awaiting a release tag (which won't
-be cut until you say so — staying on `0.1.x` for now):
-
-- C# build at `0.1.0` (csproj / WiX / About dialog all aligned)
-- `Installer/build.ps1` produces three artifacts in one run:
-  `Kashot.msi` · `Kashot.exe` · `Kashot-portable.zip`
-- Landing page at `docs/` with three Windows download buttons
-- GDI handle leaks fixed (arrow-cap, button image, text font) so long-running
-  tray sessions don't burn through GDI handles
-- Save / clipboard failures show a balloon instead of crashing the overlay
-- Tray-tooltip truncation removed
-- More legible toolbar icons (Pen, Marker, Pixelate, Pin)
-- Tray menu cleaned: Record-Screen placeholder removed; Open-Save-Folder added
-- CI: `build-csharp.yml` builds and uploads on tag push
+and color palettes**. See § "Architecture invariants" at the bottom.
 
 Everything stays on the `0.1.x` line — no `0.2`, no `1.0` — until the
-maintainer explicitly bumps. Future patch releases will be `0.1.1`, `0.1.2`,
-etc.
+maintainer explicitly bumps.
 
 ---
 
-## What's next (order, not commitments)
+## ✅ Shipped (on `main`)
 
-These are the work items in priority order. Versions assigned when each
-one's actually being worked on, not before.
+### Capture core (C#)
+- Tray-resident Windows app, single-instance mutex, registers global hotkey
+- Multi-monitor virtual-screen capture
+- Selection rectangle with magnifier + crosshair
+- Selection resize (drag edges/corners) + move (Alt+drag)
 
-1. **Native Linux + macOS** via the Rust port catching up to feature parity.
-   Foundation is in `kashot-rs/`; the missing piece is the overlay editor
-   (state machine + 9 annotation tools + magnifier + handles + toolbars +
-   color picker + undo/redo). Most of `kashot-core` is already shared logic.
-2. **Distribution breadth** — winget, chocolatey, scoop on Windows;
-   AppImage, Flatpak, .deb / .rpm, AUR on Linux; Homebrew Cask + notarized
-   .dmg on macOS. Each channel is small once a release pipeline exists.
-3. **Code-signing** — Comodo/DigiCert cert eliminates SmartScreen warnings.
-   Big trust upgrade; worth doing once direct-download numbers justify it.
-4. **Microsoft Store** — MSIX repackaging, $19 dev fee, certification.
-   Highest-friction surface; do last.
+### Annotation editor (C#)
+- Tools: pen, line, arrow, rectangle, ellipse, marker, text, numbered step, blur/pixelate
+- Tool keyboard shortcuts: P / L / A / R / E / M / T / N / B
+- 4 color palettes (Vivid / Highlighter / Pastel / Pro), 16 colors each
+- Custom color picker, thickness cycle (1 / 2 / 3 / 5 / 8 px)
+- Undo (Ctrl+Z) / Redo (Ctrl+Y)
 
-## Non-goals
+### Output (C#)
+- Save to PNG / JPEG / BMP
+- Copy to clipboard
+- Pin to screen (always-on-top draggable window)
+- Watermark on saved/copied/pinned images (default text "PrateekSingh", toggleable)
 
-To keep scope tight and one person able to ship this:
+### Settings + lifecycle
+- Settings dialog: rebindable hotkey, default save folder, start-with-Windows, watermark text/toggle, theme selector
+- Light / Dark theme for Settings + About (overlay stays dark)
+- About dialog with attribution + GitHub link
+- Settings persisted to `%APPDATA%/Kashot/settings.json`
+- **GDI handle leaks fixed** — arrow-cap, button image, text font no longer
+  leak across long tray sessions
+- **Save / clipboard failures show a balloon** instead of crashing the overlay
 
-- **Screen recording / video / GIF** — different problem space.
-- **OCR** — the OS already does this (macOS Live Text, Windows Snipping Tool).
-- **Cloud upload / accounts / sync** — no backend, no auth flow, no telemetry.
-  The clipboard is the share target.
+### Distribution (C#, Windows)
+- Self-contained single-file `Kashot.exe` (~68 MB) for win-x64
+- WiX 7 MSI installer (`Kashot.msi`, ~62 MB) with Start Menu + Desktop shortcuts
+- `Kashot-portable.zip` — extract-and-run, no install
+- All three artifacts produced by `Installer/build.ps1` in one run
 
-The "Record Screen" tray entry currently shows a coming-soon balloon. Given
-the scope decision above, that menu item should be **removed** from
-`TrayContext.cs` (and its Rust equivalent) before the next release, so we
-don't ship a promise we won't keep.
+### Cross-platform foundation (Rust)
+- **`kashot-rs/` workspace** — `kashot-core` (logic, **9 unit tests pass**),
+  `kashot-platform` (capture / hotkey / tray / clipboard via xcap,
+  global-hotkey, tray-icon, arboard), `kashot-app` (iced daemon-mode binary)
+- Wire-compatible with C# `settings.json` — same PascalCase keys, same
+  Win32-VK hotkey encoding, same ARGB color ints
+- Editor scaffold landed: state machine, all 9 annotation types, toolbar +
+  action panel + color picker, save / copy / pin, settings + about + pin
+  windows. **CI iteration ongoing** on iced 0.14 API specifics.
+
+### Brand + asset pack
+- Brand-stamped "KA" + camera + viewfinder icon, master at 1024×1024
+- Multi-resolution `.ico` packed at 16/24/32/48/64/128/256
+- `icons/` — full multi-platform asset pack: Windows .ico + PNG set, macOS
+  iconset + monochrome menubar template, Linux freedesktop hicolor, iOS,
+  Android (mipmap + Play Store), web/PWA favicons
+
+### Online presence
+- **Landing page** at `docs/` (served as `kashot.org` via GitHub Pages
+  CNAME). Hero with the brand icon, three-platform download cards,
+  features, keyboard shortcut reference. ~76 KB total, no framework.
+- **CI workflows** (`.github/workflows/`):
+  - `build-csharp.yml` — Windows runner builds and uploads MSI / EXE / ZIP
+    on tag push
+  - `build-rust.yml` — matrix tests `kashot-core` on Ubuntu / Windows /
+    macOS, release builds on each, attaches all artifacts to the GitHub
+    Release on tag push
+
+---
+
+## 🔨 In progress (code partially landed, needs wiring or polish)
+
+| # | Feature | Code state | Remaining |
+|---|---|---|---|
+| R1 | Brand-stamped "KA" icon | Drawn-bow + camera + viewfinder vector landed, multi-resolution `.ico` built | Replace with image-model-generated master once delivered |
+| R2 | OCR (text from image) | `Kashot/OcrService.cs` ✅ — Tesseract 5.2.0 wrapper, lazy-downloads `eng.traineddata` to AppData on first use | Tray menu item "Extract text…" + result popup with copy-to-clipboard |
+| R3 | Screen recording | `Kashot/ScreenRecorder.cs` ✅ — `KashotRecorder` wraps ScreenRecorderLib 6.6.0, MP4 H.264 + AAC, mic + system loopback toggles | Tray "Record Screen" toggle, save dialog for output path, hotkey support, optional pre-recording region selector |
+| R4 | Meme text annotation | `MemeAnnotation` in `Annotations.cs` ✅ — Impact-style font, white fill + black outline, uppercase auto | Wire `Tool.Meme` into `OverlayForm`: keyboard shortcut **K**, toolbar entry, `StartTextInput(meme: true)` path |
+| R5 | PDF export | `PdfSharp` 6.2.4 added | `*.pdf` filter in `SaveToFile` dialog + single-page export path |
+| R6 | Image resize presets | (planned) | New `Resize…` action button → popup with 100 / 75 / 50 / 25 % + Max-1920 / Max-1280 / Max-640 + custom W×H. Apply to `GetFinalImage` output before save/copy/pin |
+| R7 | Rust editor port | Workspace scaffolded; iced overlay, state machine, all 9 annotation types, toolbar, save/copy/pin, settings, about all written | CI iteration on iced 0.14 API specifics; once green, ships native binaries on Linux + macOS |
+
+---
+
+## 📋 Backlog (next rounds, in priority order)
+
+### Editor / capture
+- **Burst capture mode** — hotkey-tap captures N frames at intervals → produces a sequence ready for GIF export
+- **Animated GIF export** — from burst captures or from a region of a recorded MP4
+- **Image gallery / history** — auto-save every capture to `%APPDATA%/Kashot/history/`, browseable in a thumbnail grid form
+- **Region selector for recording** — pick rectangle to record, not just full screen
+- **Crop after capture** — re-crop the selection without redoing
+- **Smart-shape recognition** — pen drawn near rectangle/circle snaps to clean shape
+- **Auto-redact** — detect faces / IDs / credit-card patterns and offer one-click blur
+
+### Output / sharing
+- **Cloud upload** — imgur, custom S3, or self-hosted endpoint, returns short URL to clipboard
+- **Print** — direct to default printer
+- **Share sheet** — Win 10/11 native share contract for Mail / Teams / etc.
+- **Multi-format batch export** — same capture saved to PNG + PDF + JPEG simultaneously
+
+### App polish
+- **Code-sign** the `Kashot.exe` and `Kashot.msi` (removes SmartScreen warning)
+- **Auto-update** — check GitHub releases on launch, prompt to download new version
+- **Custom hotkey per action** — separate hotkeys for Capture, Record, Pin-last, OCR-last
+- **i18n / localization** — start with EN, allow community PRs for other languages
+- **Per-monitor DPI tuning** — verify cleanup-pass on 4K + scaling combinations
+
+### Distribution channels (Notepad++-style)
+- **Windows**: winget (`winget install singhpratech.Kashot`), Chocolatey, Scoop, Microsoft Store
+- **Linux**: AppImage, Flatpak, `.deb` (Debian/Ubuntu), `.rpm` (Fedora/RHEL), AUR
+- **macOS**: Homebrew Cask (`brew install --cask kashot`), notarized signed `.dmg`
+
+---
+
+## ⏳ Long-term
+
+- **Browser extension companion** — paste captures from Kashot directly into Gmail compose, Slack, etc.
+- **Mobile capture-receiver** — phone takes a photo, beams to PC's Kashot for annotation
+- **Webcam overlay during recording** — picture-in-picture circle, draggable
+- **Video editor** — trim, crop, re-encode recorded MP4s; export GIF clip from video range
+- **AI-assisted features** — caption generation for screenshots, auto-summarize recorded screens, intelligent redaction
+
+---
+
+## ❄ Frozen / decided against (don't propose again)
+
+- **Lightshot-style cloud upload to a Kashot-hosted server** — server-hosted infra is out of scope for an open-source tool; user-provided endpoint only
+- **Skeuomorphic or 3D icon** — kept the flat-with-light-depth iOS style instead
 
 ---
 
@@ -75,24 +151,25 @@ don't ship a promise we won't keep.
 The Rust port targets **identical behavior on all three platforms**.
 Same features, same shortcuts, same UX, same brand. Platform-specific code is
 isolated to `kashot-platform`; everything in `kashot-core` and the iced UI
-layer (when it lands) is shared.
+layer is shared.
 
 - **Tests run on every platform.** `build-rust.yml` matrix
-  `[ ubuntu-latest, windows-latest, macos-latest ]` runs `cargo test -p kashot-core`
-  on each one. A test that passes on Linux must pass on Windows and macOS.
+  `[ ubuntu-latest, windows-latest, macos-latest ]` runs
+  `cargo test -p kashot-core` on each one. A test that passes on Linux must
+  pass on Windows and macOS — anything else is a parity bug.
 - **Each build job also runs `cargo test --workspace --release`** so
   platform-specific code is exercised on its own OS.
 - **Settings JSON is wire-compatible.** Copy from a Windows machine to a
   macOS machine and it loads correctly.
 - **Hotkey wire format is the same.** Win32 modifier mask + Win32 virtual-key
   on disk; Rust translates internally per platform.
-- **No platform-only features** — if a feature can't work on one platform,
-  it doesn't ship until it works everywhere.
 - **Identical keyboard shortcuts**, including `Ctrl+Z` on macOS. Consistency
   across machines wins over Apple HIG conformance for a tool people use
   cross-platform.
 - **`#[cfg(target_os = "...")]` outside `kashot-platform/` is a smell.**
   Push the difference down into the platform crate and expose a uniform API.
+
+---
 
 ## Architecture invariants — keep these stable
 
@@ -105,8 +182,9 @@ These cross-cut both implementations; if you change one, change both.
 - **Settings JSON keys** are PascalCase (`LastTool`, `HotkeyVirtualKey`,
   `WatermarkEnabled`, …). Don't rename them; both builds read the same file.
 - **Hotkey wire format**: Win32 modifier mask (`MOD_*`) + Win32 virtual-key code.
-- **Tools** (`Pen, Line, Arrow, Rectangle, Ellipse, Marker, Text, Step, Pixelate`)
-  use single-letter shortcuts (`p l a r e m t n b`). Both builds must agree.
+- **Tools** (`Pen, Line, Arrow, Rectangle, Ellipse, Marker, Text, Step,
+  Pixelate, Meme`) use single-letter shortcuts (`p l a r e m t n b k`).
+  Both builds must agree.
 - **Color palettes** (`Vivid, Highlighter, Pastel, Pro`, 16 swatches each) — the
   exact ARGB values are part of the brand. Don't tweak without before/after screenshots.
 - **Brand**: project, namespace, assembly, binary, every user-visible string is
@@ -131,3 +209,16 @@ These cross-cut both implementations; if you change one, change both.
 5. Edit the auto-generated GitHub Release: changelog notes, mark "latest".
 6. Confirm `https://kashot.org` download buttons resolve to the new files
    (the page resolves `releases/latest/download/<asset>` automatically).
+
+---
+
+## How to contribute
+
+1. Pick an item from "🔨 In progress" or "📋 Backlog"
+2. Reference its ID (e.g., **R3**, or the section heading) in the PR title
+3. PRs land on `main` after a clean build of `Kashot/Kashot.csproj`, a successful
+   `Installer/build.ps1`, and a green `cargo test -p kashot-core` on all three CI platforms
+
+---
+
+*Last updated: 2026-04-30. Maintained by [@singhpratech](https://github.com/singhpratech).*
