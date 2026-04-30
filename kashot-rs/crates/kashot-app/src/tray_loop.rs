@@ -14,6 +14,7 @@ use kashot_core::AppSettings;
 use kashot_platform::{
     capture::capture_all_screens,
     hotkey::HotkeyManager,
+    recorder::Recorder,
     tray::{Tray, TrayEvent},
 };
 use winit::application::ApplicationHandler;
@@ -49,6 +50,7 @@ pub fn run() -> Result<()> {
         settings:   AppSettings,
         hotkeys:    Option<HotkeyManager>,
         tray:       Option<Tray>,
+        recorder:   Recorder,
         last_tick:  Instant,
         capturing:  bool,
     }
@@ -64,9 +66,17 @@ pub fn run() -> Result<()> {
                     TrayEvent::None                  => {}
                     TrayEvent::Capture               => self.capture(),
                     TrayEvent::CaptureDelayed(secs)  => self.capture_after(Duration::from_secs(secs as u64)),
+                    TrayEvent::StartRecording        => self.start_recording(),
+                    TrayEvent::StopRecording         => self.stop_recording(),
                     TrayEvent::Settings              => self.show_settings(),
                     TrayEvent::About                 => self.show_about(),
-                    TrayEvent::Exit                  => loop_target.exit(),
+                    TrayEvent::Exit                  => {
+                        // Stop any active recording before tearing down so
+                        // the MP4 moov atom gets finalized. Best-effort —
+                        // if it errors we still exit.
+                        let _ = self.recorder.stop();
+                        loop_target.exit();
+                    }
                 }
             }
             if let Some(hk) = &self.hotkeys {
@@ -116,6 +126,43 @@ pub fn run() -> Result<()> {
             }
 
             self.capturing = false;
+        }
+
+        /// Start recording the primary display. Output lands in the user's
+        /// Videos directory (or a fallback) as `kashot_<timestamp>.mp4`.
+        fn start_recording(&mut self) {
+            if self.recorder.is_recording() {
+                eprintln!("Already recording.");
+                return;
+            }
+            let dir   = recordings_directory();
+            let stamp = Local::now().format("%Y%m%d_%H%M%S");
+            let out   = dir.join(format!("kashot_{stamp}.mp4"));
+            match self.recorder.start(out.clone()) {
+                Ok(()) => {
+                    eprintln!("Recording → {}", out.display());
+                    if let Some(t) = &self.tray { t.set_recording(true); }
+                }
+                Err(e) => {
+                    eprintln!("Recording failed to start: {e}");
+                    rfd::MessageDialog::new()
+                        .set_level(rfd::MessageLevel::Error)
+                        .set_title("Kashot — recording failed")
+                        .set_description(format!("{e}"))
+                        .show();
+                }
+            }
+        }
+
+        /// Stop the active recording and finalize the file.
+        fn stop_recording(&mut self) {
+            match self.recorder.stop() {
+                Ok(path) => {
+                    eprintln!("Saved recording {}", path.display());
+                    if let Some(t) = &self.tray { t.set_recording(false); }
+                }
+                Err(e) => eprintln!("Stop recording failed: {e}"),
+            }
         }
 
         /// Native folder picker for the save directory. Until the full
@@ -178,6 +225,7 @@ pub fn run() -> Result<()> {
         settings,
         hotkeys: hotkeys.take(),
         tray,
+        recorder: Recorder::new(),
         last_tick: Instant::now(),
         capturing: false,
     };
@@ -212,6 +260,20 @@ fn save_directory(s: &AppSettings) -> PathBuf {
     }
     if let Some(d) = directories::UserDirs::new().and_then(|u| u.picture_dir().map(|p| p.to_path_buf())) {
         return d;
+    }
+    std::env::temp_dir()
+}
+
+/// Where MP4 recordings land. Prefers the XDG Videos dir, falls back to
+/// $HOME, then the OS temp dir. Distinct from `save_directory` because
+/// ~/Pictures is the wrong place for video clips on every desktop env.
+fn recordings_directory() -> PathBuf {
+    if let Some(d) = directories::UserDirs::new()
+        .and_then(|u| u.video_dir().map(|p| p.to_path_buf())) {
+        return d;
+    }
+    if let Some(home) = directories::UserDirs::new().map(|u| u.home_dir().to_path_buf()) {
+        return home;
     }
     std::env::temp_dir()
 }

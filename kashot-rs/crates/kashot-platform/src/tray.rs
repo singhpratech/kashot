@@ -15,9 +15,13 @@ pub struct Tray {
     pub delay3_id:   tray_icon::menu::MenuId,
     pub delay5_id:   tray_icon::menu::MenuId,
     pub delay10_id:  tray_icon::menu::MenuId,
+    pub record_id:   tray_icon::menu::MenuId,
+    pub stop_rec_id: tray_icon::menu::MenuId,
     pub settings_id: tray_icon::menu::MenuId,
     pub about_id:    tray_icon::menu::MenuId,
     pub exit_id:     tray_icon::menu::MenuId,
+    record_item:     MenuItem,
+    stop_rec_item:   MenuItem,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -27,6 +31,8 @@ pub enum TrayEvent {
     /// Capture after N seconds. Lets the user dismiss menus, position
     /// windows, etc. before the screenshot fires.
     CaptureDelayed(u32),
+    StartRecording,
+    StopRecording,
     Settings,
     About,
     Exit,
@@ -49,12 +55,15 @@ impl Tray {
 
         let menu = Menu::new();
 
-        let capture  = MenuItem::new("Capture Screen",   true, None);
-        let settings = MenuItem::new("Settings…",        true, None);
-        let about    = MenuItem::new("About Kashot…",    true, None);
-        let exit     = MenuItem::new("Exit",             true, None);
-        let sep1     = PredefinedMenuItem::separator();
-        let sep2     = PredefinedMenuItem::separator();
+        let capture   = MenuItem::new("Capture Screen",   true, None);
+        let record    = MenuItem::new("Record Screen",    true, None);
+        let stop_rec  = MenuItem::new("Stop Recording",   false, None);
+        let settings  = MenuItem::new("Settings…",        true, None);
+        let about     = MenuItem::new("About Kashot…",    true, None);
+        let exit      = MenuItem::new("Exit",             true, None);
+        let sep_rec   = PredefinedMenuItem::separator();
+        let sep1      = PredefinedMenuItem::separator();
+        let sep2      = PredefinedMenuItem::separator();
 
         // "Capture after delay…" submenu — three preset durations covering
         // the common screenshot-tool delay use cases (open a menu, focus a
@@ -68,6 +77,8 @@ impl Tray {
         let delay3_id   = delay_3s.id().clone();
         let delay5_id   = delay_5s.id().clone();
         let delay10_id  = delay_10s.id().clone();
+        let record_id   = record.id().clone();
+        let stop_rec_id = stop_rec.id().clone();
         let settings_id = settings.id().clone();
         let about_id    = about.id().clone();
         let exit_id     = exit.id().clone();
@@ -78,6 +89,9 @@ impl Tray {
 
         menu.append(&capture).map_err(|e| Error::Tray(e.to_string()))?;
         menu.append(&delay_menu).map_err(|e| Error::Tray(e.to_string()))?;
+        menu.append(&sep_rec).map_err(|e| Error::Tray(e.to_string()))?;
+        menu.append(&record).map_err(|e| Error::Tray(e.to_string()))?;
+        menu.append(&stop_rec).map_err(|e| Error::Tray(e.to_string()))?;
         menu.append(&sep1).map_err(|e| Error::Tray(e.to_string()))?;
         menu.append(&settings).map_err(|e| Error::Tray(e.to_string()))?;
         menu.append(&about).map_err(|e| Error::Tray(e.to_string()))?;
@@ -98,9 +112,13 @@ impl Tray {
             delay3_id,
             delay5_id,
             delay10_id,
+            record_id,
+            stop_rec_id,
             settings_id,
             about_id,
             exit_id,
+            record_item:   record,
+            stop_rec_item: stop_rec,
         })
     }
 
@@ -108,15 +126,25 @@ impl Tray {
     /// when the queue is empty for this tick.
     pub fn try_recv(&self) -> TrayEvent {
         match MenuEvent::receiver().try_recv() {
-            Ok(ev) if ev.id == self.capture_id  => TrayEvent::Capture,
-            Ok(ev) if ev.id == self.delay3_id   => TrayEvent::CaptureDelayed(3),
-            Ok(ev) if ev.id == self.delay5_id   => TrayEvent::CaptureDelayed(5),
-            Ok(ev) if ev.id == self.delay10_id  => TrayEvent::CaptureDelayed(10),
-            Ok(ev) if ev.id == self.settings_id => TrayEvent::Settings,
-            Ok(ev) if ev.id == self.about_id    => TrayEvent::About,
-            Ok(ev) if ev.id == self.exit_id     => TrayEvent::Exit,
+            Ok(ev) if ev.id == self.capture_id   => TrayEvent::Capture,
+            Ok(ev) if ev.id == self.delay3_id    => TrayEvent::CaptureDelayed(3),
+            Ok(ev) if ev.id == self.delay5_id    => TrayEvent::CaptureDelayed(5),
+            Ok(ev) if ev.id == self.delay10_id   => TrayEvent::CaptureDelayed(10),
+            Ok(ev) if ev.id == self.record_id    => TrayEvent::StartRecording,
+            Ok(ev) if ev.id == self.stop_rec_id  => TrayEvent::StopRecording,
+            Ok(ev) if ev.id == self.settings_id  => TrayEvent::Settings,
+            Ok(ev) if ev.id == self.about_id     => TrayEvent::About,
+            Ok(ev) if ev.id == self.exit_id      => TrayEvent::Exit,
             _ => TrayEvent::None,
         }
+    }
+
+    /// Reflect recording state in the menu — only one of "Record Screen" /
+    /// "Stop Recording" is enabled at a time, mirroring the model of the
+    /// `Recorder` shim.
+    pub fn set_recording(&self, recording: bool) {
+        self.record_item.set_enabled(!recording);
+        self.stop_rec_item.set_enabled(recording);
     }
 
     /// Pump platform-native event sources that the tray relies on but that

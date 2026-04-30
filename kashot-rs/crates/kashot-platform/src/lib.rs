@@ -8,11 +8,13 @@
 pub mod capture;
 pub mod clipboard;
 pub mod hotkey;
+pub mod recorder;
 pub mod tray;
 
 pub use capture::{capture_all_screens, Captured};
 pub use clipboard::copy_image_png;
 pub use hotkey::{HotkeyHandle, HotkeyManager};
+pub use recorder::Recorder;
 pub use tray::{Tray, TrayEvent};
 
 #[derive(Debug, thiserror::Error)]
@@ -28,6 +30,9 @@ pub enum Error {
 
     #[error("tray error: {0}")]
     Tray(String),
+
+    #[error("recording error: {0}")]
+    Recording(String),
 
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),

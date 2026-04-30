@@ -8,6 +8,9 @@ public class TrayContext : ApplicationContext
     private readonly NotifyIcon _trayIcon;
     private readonly HotkeyWindow _hotkeyWindow;
     private OverlayForm? _overlay;
+    private KashotRecorder? _recorder;
+    private ToolStripMenuItem? _recordItem;
+    private ToolStripMenuItem? _stopRecordItem;
 
     public TrayContext()
     {
@@ -51,6 +54,15 @@ public class TrayContext : ApplicationContext
         delay.DropDownItems.Add("10 seconds",   null, (_, _) => StartCaptureAfter(10));
         menu.Items.Add(delay);
 
+        menu.Items.Add("-");
+        _recordItem     = new ToolStripMenuItem("Record Screen", null, (_, _) => StartRecording())
+                          { Enabled = true };
+        _stopRecordItem = new ToolStripMenuItem("Stop Recording", null, (_, _) => StopRecording())
+                          { Enabled = false };
+        menu.Items.Add(_recordItem);
+        menu.Items.Add(_stopRecordItem);
+
+        menu.Items.Add("-");
         menu.Items.Add("Open Save Folder",      null, (_, _) => OpenSaveFolder());
         menu.Items.Add("-");
         menu.Items.Add("Settings…",             null, (_, _) => ShowSettings());
@@ -58,6 +70,77 @@ public class TrayContext : ApplicationContext
         menu.Items.Add("-");
         menu.Items.Add("Exit",                  null, (_, _) => ExitApp());
         return menu;
+    }
+
+    /// Begin recording the primary display to MP4 in the user's Videos
+    /// folder. Wraps the existing KashotRecorder; UI state tracks
+    /// recording so the menu shows only one of Record / Stop at a time.
+    private void StartRecording()
+    {
+        if (_recorder?.IsRecording == true) return;
+        _trayIcon.ContextMenuStrip?.Close();
+
+        _recorder ??= NewRecorder();
+
+        var dir = Environment.GetFolderPath(Environment.SpecialFolder.MyVideos);
+        if (string.IsNullOrWhiteSpace(dir)) dir = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        Directory.CreateDirectory(dir);
+        var stamp = DateTime.Now.ToString("yyyyMMdd_HHmmss");
+        var path  = Path.Combine(dir, $"kashot_{stamp}.mp4");
+
+        try
+        {
+            _recorder.Start(path, micEnabled: false, systemAudioEnabled: false);
+            SetRecordingUi(true);
+            _trayIcon.BalloonTipTitle = "Kashot";
+            _trayIcon.BalloonTipText  = $"Recording → {Path.GetFileName(path)}";
+            _trayIcon.ShowBalloonTip(2000);
+        }
+        catch (Exception ex)
+        {
+            SetRecordingUi(false);
+            _trayIcon.BalloonTipTitle = "Kashot — recording failed";
+            _trayIcon.BalloonTipText  = ex.Message;
+            _trayIcon.ShowBalloonTip(4000);
+        }
+    }
+
+    private void StopRecording()
+    {
+        if (_recorder?.IsRecording != true) return;
+        _trayIcon.ContextMenuStrip?.Close();
+        _recorder.Stop();
+        // UI flips on RecordingComplete; nothing more to do here.
+    }
+
+    private KashotRecorder NewRecorder()
+    {
+        var r = new KashotRecorder();
+        r.RecordingComplete += path =>
+        {
+            // Marshalling: tray-icon callbacks fire on the recorder thread.
+            // BeginInvoke onto the UI thread via the tray icon's underlying
+            // form/sync context isn't trivial here — but BalloonTipText is
+            // safe to set from any thread, and ShowBalloonTip self-marshals.
+            SetRecordingUi(false);
+            _trayIcon.BalloonTipTitle = "Kashot";
+            _trayIcon.BalloonTipText  = $"Saved {Path.GetFileName(path)}";
+            _trayIcon.ShowBalloonTip(3000);
+        };
+        r.RecordingFailed += err =>
+        {
+            SetRecordingUi(false);
+            _trayIcon.BalloonTipTitle = "Kashot — recording failed";
+            _trayIcon.BalloonTipText  = err.Length > 200 ? err[..200] : err;
+            _trayIcon.ShowBalloonTip(4000);
+        };
+        return r;
+    }
+
+    private void SetRecordingUi(bool recording)
+    {
+        if (_recordItem     != null) _recordItem.Enabled     = !recording;
+        if (_stopRecordItem != null) _stopRecordItem.Enabled =  recording;
     }
 
     /// Schedule a capture after the given delay, with a balloon countdown so
@@ -153,6 +236,15 @@ public class TrayContext : ApplicationContext
 
     private void ExitApp()
     {
+        // Stop any in-flight recording so the MP4 finalizes before we tear
+        // down the process. The OnRecordingComplete callback may not fire
+        // if we Application.Exit() too quickly, but the file on disk should
+        // already be playable from KashotRecorder.Stop.
+        if (_recorder?.IsRecording == true)
+        {
+            try { _recorder.Stop(); } catch { /* swallow */ }
+        }
+        _recorder?.Dispose();
         _trayIcon.Visible = false;
         _hotkeyWindow.Dispose();
         Application.Exit();
@@ -189,6 +281,7 @@ public class TrayContext : ApplicationContext
     {
         if (disposing)
         {
+            _recorder?.Dispose();
             _trayIcon?.Dispose();
             _hotkeyWindow?.Dispose();
         }
