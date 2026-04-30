@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Kashot
+GenericName=Screenshot Tool
+Comment=Fast screenshots with annotations
+Exec=kashot
+Icon=kashot
+Categories=Graphics;Utility;
+StartupNotify=true
+Terminal=false
+Keywords=screenshot;capture;annotate;tray;

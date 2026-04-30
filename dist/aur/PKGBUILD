@@ -1,0 +1,27 @@
+# Maintainer: PrateekSingh <42719720+singhpratech@users.noreply.github.com>
+# Submit to https://aur.archlinux.org as `kashot-bin`. Users install with:
+#   yay -S kashot-bin
+pkgname=kashot-bin
+_pkgname=kashot
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="Fast screenshots with annotations — tray-resident, hotkey-driven, free."
+arch=('x86_64')
+url='https://kashot.org/'
+license=('MIT')
+depends=('gtk3' 'libxcb' 'libwayland-client' 'dbus' 'libayatana-appindicator')
+provides=('kashot')
+conflicts=('kashot')
+
+source=("$_pkgname-$pkgver.tar.gz::https://github.com/singhpratech/kashot/releases/download/v$pkgver/kashot-linux-x86_64.tar.gz"
+        "$_pkgname.desktop::https://raw.githubusercontent.com/singhpratech/kashot/v$pkgver/dist/aur/kashot.desktop"
+        "$_pkgname.png::https://raw.githubusercontent.com/singhpratech/kashot/v$pkgver/icons/linux_hicolor/256x256/apps/kashot.png")
+sha256sums=('REPLACE_WITH_ACTUAL_SHA256_AT_RELEASE_TIME'
+            'SKIP'
+            'SKIP')
+
+package() {
+  install -Dm755 "$srcdir/kashot/kashot" "$pkgdir/usr/bin/kashot"
+  install -Dm644 "$srcdir/$_pkgname.desktop" "$pkgdir/usr/share/applications/kashot.desktop"
+  install -Dm644 "$srcdir/$_pkgname.png"     "$pkgdir/usr/share/icons/hicolor/256x256/apps/kashot.png"
+}
