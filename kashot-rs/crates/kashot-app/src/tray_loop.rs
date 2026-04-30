@@ -61,11 +61,12 @@ pub fn run() -> Result<()> {
             if let Some(tray) = &self.tray {
                 tray.pump_events();
                 match tray.try_recv() {
-                    TrayEvent::None     => {}
-                    TrayEvent::Capture  => self.capture(),
-                    TrayEvent::Settings => self.show_settings(),
-                    TrayEvent::About    => self.show_about(),
-                    TrayEvent::Exit     => loop_target.exit(),
+                    TrayEvent::None                  => {}
+                    TrayEvent::Capture               => self.capture(),
+                    TrayEvent::CaptureDelayed(secs)  => self.capture_after(Duration::from_secs(secs as u64)),
+                    TrayEvent::Settings              => self.show_settings(),
+                    TrayEvent::About                 => self.show_about(),
+                    TrayEvent::Exit                  => loop_target.exit(),
                 }
             }
             if let Some(hk) = &self.hotkeys {
@@ -76,10 +77,34 @@ pub fn run() -> Result<()> {
         }
 
         fn capture(&mut self) {
+            self.capture_after(Duration::ZERO);
+        }
+
+        /// Fire a capture after a user-facing delay. Used by the
+        /// "Capture after delay…" submenu entries (3 / 5 / 10 s) so the
+        /// user can dismiss menus, position windows, focus a tooltip, etc.
+        /// before the screenshot is taken.
+        ///
+        /// During the countdown the tray's GTK main context still gets pumped
+        /// (on Linux) and we wake briefly each tick so the icon stays
+        /// responsive instead of looking frozen.
+        fn capture_after(&mut self, user_delay: Duration) {
             if self.capturing { return; }
             self.capturing = true;
 
-            // Brief delay so the tray menu / flyout can dismiss before we shoot.
+            if !user_delay.is_zero() {
+                eprintln!("Capturing in {} second{}…",
+                    user_delay.as_secs(),
+                    if user_delay.as_secs() == 1 { "" } else { "s" });
+                let until = Instant::now() + user_delay;
+                while Instant::now() < until {
+                    if let Some(t) = &self.tray { t.pump_events(); }
+                    std::thread::sleep(Duration::from_millis(50));
+                }
+            }
+
+            // Brief settle delay so the tray menu / flyout can fully dismiss
+            // before we shoot, on top of any user-facing delay.
             std::thread::sleep(Duration::from_millis(250));
 
             match capture_all_screens() {

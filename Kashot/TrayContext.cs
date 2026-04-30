@@ -41,6 +41,16 @@ public class TrayContext : ApplicationContext
     {
         var menu = new ContextMenuStrip();
         menu.Items.Add("Capture Screen",        null, (_, _) => StartCapture());
+
+        // "Capture after delay…" submenu — three preset durations covering
+        // the common screenshot-tool delay use cases (open a menu, focus a
+        // window, dismiss a tooltip, etc.) without a free-form input UI.
+        var delay = new ToolStripMenuItem("Capture after delay…");
+        delay.DropDownItems.Add("3 seconds",    null, (_, _) => StartCaptureAfter(3));
+        delay.DropDownItems.Add("5 seconds",    null, (_, _) => StartCaptureAfter(5));
+        delay.DropDownItems.Add("10 seconds",   null, (_, _) => StartCaptureAfter(10));
+        menu.Items.Add(delay);
+
         menu.Items.Add("Open Save Folder",      null, (_, _) => OpenSaveFolder());
         menu.Items.Add("-");
         menu.Items.Add("Settings…",             null, (_, _) => ShowSettings());
@@ -48,6 +58,24 @@ public class TrayContext : ApplicationContext
         menu.Items.Add("-");
         menu.Items.Add("Exit",                  null, (_, _) => ExitApp());
         return menu;
+    }
+
+    /// Schedule a capture after the given delay, with a balloon countdown so
+    /// the user knows the timer is running. Same StartCapture() codepath
+    /// otherwise — the overlay editor opens when the timer fires.
+    private async void StartCaptureAfter(int seconds)
+    {
+        if (_overlay is { IsDisposed: false }) return;
+
+        _trayIcon.ContextMenuStrip?.Close();
+        _trayIcon.BalloonTipTitle = "Kashot";
+        _trayIcon.BalloonTipText  = $"Capturing in {seconds} second{(seconds == 1 ? "" : "s")}…";
+        _trayIcon.ShowBalloonTip(seconds * 1000);
+
+        try { await Task.Delay(seconds * 1000); }
+        catch (Exception) { return; }
+
+        StartCapture();
     }
 
     private void ShowAbout()
