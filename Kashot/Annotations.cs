@@ -2,7 +2,7 @@ using System.Drawing.Drawing2D;
 
 namespace Kashot;
 
-public enum Tool { Pen, Line, Arrow, Rectangle, Ellipse, Marker, Text, Step, Pixelate }
+public enum Tool { Pen, Line, Arrow, Rectangle, Ellipse, Marker, Text, Step, Pixelate, Meme }
 
 public abstract class Annotation
 {
@@ -152,6 +152,43 @@ public class StepAnnotation : Annotation
         using var f = new Font("Segoe UI", 11f, FontStyle.Bold);
         using var sf = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center };
         g.DrawString(Number.ToString(), f, Brushes.White, rect, sf);
+    }
+}
+
+public class MemeAnnotation : Annotation
+{
+    public Point Position { get; set; }
+    public string Text { get; set; } = "";
+    public float FontSize { get; set; } = 36f;
+
+    public override void Draw(Graphics g)
+    {
+        if (string.IsNullOrWhiteSpace(Text)) return;
+
+        FontFamily? family = null;
+        foreach (var name in new[] { "Impact", "Anton", "Arial Black", "Segoe UI Black", "Segoe UI" })
+        {
+            try { family = new FontFamily(name); break; }
+            catch { }
+        }
+        family ??= FontFamily.GenericSansSerif;
+
+        using var path = new GraphicsPath();
+        path.AddString(Text.ToUpperInvariant(), family, (int)FontStyle.Bold,
+            FontSize, Position, StringFormat.GenericTypographic);
+
+        var oldSmoothing = g.SmoothingMode;
+        g.SmoothingMode = SmoothingMode.AntiAlias;
+
+        using var outline = new Pen(Color.Black, Math.Max(3f, FontSize / 9f))
+        {
+            LineJoin = LineJoin.Round,
+        };
+        g.DrawPath(outline, path);
+        using var fill = new SolidBrush(Color.White);
+        g.FillPath(fill, path);
+
+        g.SmoothingMode = oldSmoothing;
     }
 }
 

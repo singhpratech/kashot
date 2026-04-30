@@ -5,7 +5,7 @@ $ErrorActionPreference = 'Stop'
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $kashotProj = Join-Path $repoRoot 'Kashot\Kashot.csproj'
-$publishDir = Join-Path $repoRoot 'Kashot\bin\Release\net8.0-windows\win-x64\publish'
+$publishDir = Join-Path $repoRoot 'Kashot\bin\x64\Release\net8.0-windows\win-x64\publish'
 $wxs        = Join-Path $PSScriptRoot 'Kashot.wxs'
 $out        = Join-Path $repoRoot 'Kashot.msi'
 
