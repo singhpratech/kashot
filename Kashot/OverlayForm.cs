@@ -884,38 +884,70 @@ public class OverlayForm : Form
 
         _colorPopup = new Panel
         {
-            Size = new Size(154, 232),
+            Size = new Size(216, 296),
             BackColor = Color.FromArgb(45, 45, 45),
             BorderStyle = BorderStyle.FixedSingle,
         };
 
-        var paletteBtn = new Button
+        var prevBtn = new Button
         {
-            Text = $"{palette.Name}  ▸",
-            Location = new Point(4, 4),
-            Size = new Size(144, 24),
+            Location = new Point(6, 6),
+            Size = new Size(32, 32),
+            Text = "‹",
             FlatStyle = FlatStyle.Flat,
             ForeColor = Color.White,
             BackColor = Color.FromArgb(70, 70, 70),
             Cursor = Cursors.Hand,
             TabStop = false,
-            TextAlign = ContentAlignment.MiddleCenter,
-            Font = new Font("Segoe UI", 8.5f, FontStyle.Bold),
+            Font = new Font("Segoe UI", 12f, FontStyle.Bold),
         };
-        paletteBtn.FlatAppearance.BorderSize = 0;
-        paletteBtn.FlatAppearance.MouseOverBackColor = Color.FromArgb(90, 90, 90);
-        var tt1 = new ToolTip(); tt1.SetToolTip(paletteBtn, "Switch palette");
-        paletteBtn.Click += (_, _) =>
+        prevBtn.FlatAppearance.BorderSize = 0;
+        prevBtn.FlatAppearance.MouseOverBackColor = Color.FromArgb(90, 90, 90);
+        prevBtn.Click += (_, _) =>
+        {
+            _paletteIndex = (_paletteIndex + Palettes.Length - 1) % Palettes.Length;
+            ShowColorPicker();
+        };
+        _colorPopup.Controls.Add(prevBtn);
+
+        var paletteLabel = new Label
+        {
+            Location = new Point(42, 6),
+            Size = new Size(132, 32),
+            Text = palette.Name,
+            ForeColor = Color.White,
+            BackColor = Color.FromArgb(70, 70, 70),
+            TextAlign = ContentAlignment.MiddleCenter,
+            Font = new Font("Segoe UI", 10f, FontStyle.Bold),
+            AutoEllipsis = true,
+        };
+        _colorPopup.Controls.Add(paletteLabel);
+
+        var nextBtn = new Button
+        {
+            Location = new Point(178, 6),
+            Size = new Size(32, 32),
+            Text = "›",
+            FlatStyle = FlatStyle.Flat,
+            ForeColor = Color.White,
+            BackColor = Color.FromArgb(70, 70, 70),
+            Cursor = Cursors.Hand,
+            TabStop = false,
+            Font = new Font("Segoe UI", 12f, FontStyle.Bold),
+        };
+        nextBtn.FlatAppearance.BorderSize = 0;
+        nextBtn.FlatAppearance.MouseOverBackColor = Color.FromArgb(90, 90, 90);
+        nextBtn.Click += (_, _) =>
         {
             _paletteIndex = (_paletteIndex + 1) % Palettes.Length;
             ShowColorPicker();
         };
-        _colorPopup.Controls.Add(paletteBtn);
+        _colorPopup.Controls.Add(nextBtn);
 
         var swatchPanel = new Panel
         {
-            Location = new Point(4, 32),
-            Size = new Size(144, 144),
+            Location = new Point(8, 46),
+            Size = new Size(200, 200),
             BackColor = Color.Transparent,
         };
         for (int i = 0; i < palette.Colors.Length; i++)
@@ -924,8 +956,8 @@ public class OverlayForm : Form
             int row = i / 4, col = i % 4;
             var swatch = new Button
             {
-                Size = new Size(32, 32),
-                Location = new Point(col * 36, row * 36),
+                Size = new Size(44, 44),
+                Location = new Point(col * 48, row * 48),
                 FlatStyle = FlatStyle.Flat,
                 BackColor = Color.FromArgb(255, c.R, c.G, c.B),
                 Cursor = Cursors.Hand,
@@ -948,15 +980,15 @@ public class OverlayForm : Form
         var custom = new Button
         {
             Text = "Custom color…",
-            Location = new Point(4, 184),
-            Size = new Size(144, 24),
+            Location = new Point(6, 254),
+            Size = new Size(204, 32),
             FlatStyle = FlatStyle.Flat,
             ForeColor = Color.White,
             BackColor = Color.FromArgb(70, 70, 70),
             Cursor = Cursors.Hand,
             TabStop = false,
             TextAlign = ContentAlignment.MiddleCenter,
-            Font = new Font("Segoe UI", 8.5f),
+            Font = new Font("Segoe UI", 9.5f),
         };
         custom.FlatAppearance.BorderSize = 0;
         custom.FlatAppearance.MouseOverBackColor = Color.FromArgb(90, 90, 90);

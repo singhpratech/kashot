@@ -15,6 +15,7 @@ public sealed class AppSettings
     public bool WatermarkEnabled { get; set; } = true;
     public string WatermarkText { get; set; } = "PrateekSingh";
     public int PaletteIndex { get; set; } = 0;
+    public string Theme { get; set; } = "Light";
 
     [JsonIgnore]
     public Color LastColor
