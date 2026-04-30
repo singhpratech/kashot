@@ -87,7 +87,7 @@ pub fn run() -> Result<()> {
             }
             if let Some(hk) = &self.hotkeys {
                 if hk.drain_pressed() {
-                    self.capture();
+                    self.capture(loop_target);
                 }
             }
         }
