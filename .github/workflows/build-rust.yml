@@ -54,8 +54,10 @@ jobs:
         with: { workspaces: kashot-rs }
 
       - name: Install system dev libs
-        # libpipewire-0.3-dev is for libspa-sys, which xcap pulls in to support
-        # screen capture via the xdg-desktop-portal route on Wayland.
+        # libpipewire-0.3-dev → libspa-sys (xcap pulls it in for the Wayland /
+        # xdg-desktop-portal capture path).
+        # libgbm-dev → -lgbm at link time (Mesa's Generic Buffer Manager,
+        # transitive of xcap's capture backend on Linux).
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
@@ -64,7 +66,7 @@ jobs:
             libxcb-composite0-dev libxcb-randr0-dev libxcb-cursor-dev \
             libxcb-keysyms1-dev libxcb-icccm4-dev \
             libgtk-3-dev libdbus-1-dev libayatana-appindicator3-dev \
-            libpipewire-0.3-dev libxdo-dev libssl-dev pkg-config
+            libpipewire-0.3-dev libgbm-dev libxdo-dev libssl-dev pkg-config
 
       - run: cargo build --release --bin kashot
 
