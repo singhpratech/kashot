@@ -39,11 +39,27 @@ public class TrayContext : ApplicationContext
     {
         var menu = new ContextMenuStrip();
         menu.Items.Add("Capture Screen", null, (_, _) => StartCapture());
+        menu.Items.Add("Record Screen", null, (_, _) => ShowRecordingPlaceholder());
         menu.Items.Add("-");
         menu.Items.Add("Settings…", null, (_, _) => ShowSettings());
+        menu.Items.Add("About Kashot…", null, (_, _) => ShowAbout());
         menu.Items.Add("-");
         menu.Items.Add("Exit", null, (_, _) => ExitApp());
         return menu;
+    }
+
+    private void ShowAbout()
+    {
+        using var about = new AboutForm(_settings.Theme);
+        about.Icon = _trayIcon.Icon;
+        about.ShowDialog();
+    }
+
+    private void ShowRecordingPlaceholder()
+    {
+        _trayIcon.BalloonTipTitle = "Kashot — Recording";
+        _trayIcon.BalloonTipText = "Screen recording (with mic + system audio) is coming in the next release. For now, use Capture Screen for stills.";
+        _trayIcon.ShowBalloonTip(4000);
     }
 
     private void ShowSettings()
