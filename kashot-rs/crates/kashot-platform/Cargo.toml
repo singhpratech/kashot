@@ -17,3 +17,11 @@ image         = { workspace = true }
 chrono        = { workspace = true }
 thiserror     = { workspace = true }
 anyhow        = { workspace = true }
+
+# tray-icon on Linux speaks StatusNotifierItem via libayatana-appindicator,
+# which requires GTK to be initialized on the main thread before any menu /
+# tray-icon construction, and needs GTK's main context iterated to deliver
+# menu-click events. We init it in `Tray::new` and pump it from the winit
+# event loop via `Tray::pump_events`.
+[target.'cfg(target_os = "linux")'.dependencies]
+gtk = "0.18"
