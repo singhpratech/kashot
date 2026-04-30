@@ -55,7 +55,11 @@ pub fn run() -> Result<()> {
 
     impl TrayApp {
         fn poll(&mut self, loop_target: &ActiveEventLoop) {
+            // Drive any platform-native loop the tray depends on (GTK on
+            // Linux). Must run before try_recv so menu-click signals have a
+            // chance to land in the channel.
             if let Some(tray) = &self.tray {
+                tray.pump_events();
                 match tray.try_recv() {
                     TrayEvent::None     => {}
                     TrayEvent::Capture  => self.capture(),
