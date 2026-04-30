@@ -16,6 +16,12 @@ on:
 jobs:
   build:
     runs-on: windows-latest
+    # Needed by softprops/action-gh-release in the "Attach to release on tag
+    # push" step — the default GITHUB_TOKEN scope on this repo doesn't include
+    # `contents: write`, and without it the release attach fails with 403
+    # "Resource not accessible by integration".
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
 
