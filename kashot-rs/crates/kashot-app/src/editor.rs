@@ -42,6 +42,15 @@ use winit::event_loop::ActiveEventLoop;
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 use winit::window::{CursorIcon, Fullscreen, Window, WindowAttributes, WindowId, WindowLevel};
 
+// Linux X11: bypass the window manager so the overlay layers above DOCK-
+// type panels (Cinnamon, Plasma, GNOME Shell). `_NET_WM_STATE_ABOVE` (what
+// `AlwaysOnTop` maps to) sits at the same stratum as DOCK, so even a
+// "topmost" overlay still gets occluded by the panel. `override_redirect`
+// makes the X server skip the WM entirely for layering decisions —
+// the same trick panels themselves use to sit above everything.
+#[cfg(target_os = "linux")]
+use winit::platform::x11::WindowAttributesExtX11;
+
 use crate::painter::{self, ImageSurface, U32Surface};
 
 /// What the overlay window should do next after handling an event.
@@ -190,16 +199,45 @@ impl Overlay {
     ) -> Result<Self> {
         // Borderless fullscreen + always-on-top mirrors C# OverlayForm:
         //   `FormBorderStyle = None; TopMost = true; WindowState = Maximized;`
-        // Without `AlwaysOnTop` the desktop panel (Cinnamon / GNOME / Plasma)
-        // layers over the overlay because panels claim a topmost stratum
-        // by default — the overlay would only visually fill ~2/3 of the
-        // screen even when its underlying surface is full-screen-sized.
-        let attrs = WindowAttributes::default()
+        //
+        // On X11 we additionally set `override_redirect = true` so the
+        // window manager skips the window — Cinnamon / Plasma / GNOME Shell
+        // panels are DOCK-type and stay layered above plain `AlwaysOnTop`
+        // windows. With override-redirect the overlay paints directly on
+        // the root above everything, which is how panels themselves
+        // achieve always-on-top in the first place.
+        //
+        // Size + position are computed explicitly from the primary monitor
+        // because override-redirect windows don't get auto-sized to the
+        // virtual screen.
+        let monitor_size = loop_target
+            .primary_monitor()
+            .or_else(|| loop_target.available_monitors().next())
+            .map(|m| m.size())
+            .unwrap_or(winit::dpi::PhysicalSize::new(
+                screenshot.width(),
+                screenshot.height(),
+            ));
+
+        #[allow(unused_mut)]
+        let mut attrs = WindowAttributes::default()
             .with_title("Kashot")
             .with_decorations(false)
             .with_resizable(false)
-            .with_fullscreen(Some(Fullscreen::Borderless(None)))
+            .with_inner_size(monitor_size)
+            .with_position(PhysicalPosition::new(0i32, 0i32))
             .with_window_level(WindowLevel::AlwaysOnTop);
+
+        #[cfg(target_os = "linux")]
+        {
+            attrs = attrs.with_override_redirect(true);
+        }
+        // On non-Linux we still want true fullscreen mode so the OS
+        // automatically covers the taskbar / menu bar / dock.
+        #[cfg(not(target_os = "linux"))]
+        {
+            attrs = attrs.with_fullscreen(Some(Fullscreen::Borderless(None)));
+        }
 
         let window = loop_target
             .create_window(attrs)
