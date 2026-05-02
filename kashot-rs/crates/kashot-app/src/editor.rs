@@ -195,62 +195,26 @@ pub struct Overlay {
     hover_tip:     Option<(&'static str, i32, i32)>,
 }
 
-impl Drop for Overlay {
-    fn drop(&mut self) {
-        // Release the X11 keyboard grab when the overlay tears down so the
-        // next focused app keeps receiving keystrokes normally.
-        #[cfg(target_os = "linux")]
-        release_x11_focus();
-    }
-}
-
 impl Overlay {
     /// Open the fullscreen overlay window for the given screenshot.
     pub fn new(
         loop_target: &ActiveEventLoop,
         screenshot: ImageBuffer<Rgba<u8>, Vec<u8>>,
     ) -> Result<Self> {
-        // Borderless fullscreen + always-on-top mirrors C# OverlayForm:
-        //   `FormBorderStyle = None; TopMost = true; WindowState = Maximized;`
-        //
-        // On X11 we additionally set `override_redirect = true` so the
-        // window manager skips the window — Cinnamon / Plasma / GNOME Shell
-        // panels are DOCK-type and stay layered above plain `AlwaysOnTop`
-        // windows. With override-redirect the overlay paints directly on
-        // the root above everything, which is how panels themselves
-        // achieve always-on-top in the first place.
-        //
-        // Size + position are computed explicitly from the primary monitor
-        // because override-redirect windows don't get auto-sized to the
-        // virtual screen.
-        let monitor_size = loop_target
-            .primary_monitor()
-            .or_else(|| loop_target.available_monitors().next())
-            .map(|m| m.size())
-            .unwrap_or(winit::dpi::PhysicalSize::new(
-                screenshot.width(),
-                screenshot.height(),
-            ));
-
-        #[allow(unused_mut)]
-        let mut attrs = WindowAttributes::default()
+        // Plain borderless fullscreen — let the WM manage focus + stacking
+        // normally. We tried `override_redirect=true` on X11 to layer above
+        // DOCK panels, but it blocked KeyPress delivery to the Text tool on
+        // Cinnamon because keyboard focus doesn't propagate to override-
+        // redirect windows the same way. Trade-off: dock panels may still
+        // be visible at the screen edges, but every annotation tool works
+        // including Text. Mirrors C# OverlayForm:
+        //   `FormBorderStyle = None; WindowState = Maximized;`
+        let _ = WindowLevel::AlwaysOnTop;
+        let attrs = WindowAttributes::default()
             .with_title("Kashot")
             .with_decorations(false)
             .with_resizable(false)
-            .with_inner_size(monitor_size)
-            .with_position(PhysicalPosition::new(0i32, 0i32))
-            .with_window_level(WindowLevel::AlwaysOnTop);
-
-        #[cfg(target_os = "linux")]
-        {
-            attrs = attrs.with_override_redirect(true);
-        }
-        // On non-Linux we still want true fullscreen mode so the OS
-        // automatically covers the taskbar / menu bar / dock.
-        #[cfg(not(target_os = "linux"))]
-        {
-            attrs = attrs.with_fullscreen(Some(Fullscreen::Borderless(None)));
-        }
+            .with_fullscreen(Some(Fullscreen::Borderless(None)));
 
         let window = loop_target
             .create_window(attrs)
@@ -260,23 +224,11 @@ impl Overlay {
         window.set_cursor(CursorIcon::Crosshair);
         window.focus_window();
 
-        // On X11 with `override_redirect=true` the window manager skips the
-        // window — that's how we layer above DOCK panels — but it also means
-        // keyboard focus isn't routed automatically. We open a side x11rb
-        // connection and call `set_input_focus` against the overlay's XID
-        // so the Text tool actually receives KeyEvent.text. Same channel we
-        // need for Ctrl+Z / Ctrl+S etc. while drawing.
-        #[cfg(target_os = "linux")]
-        {
-            use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
-            if let Ok(handle) = window.window_handle() {
-                if let RawWindowHandle::Xlib(xlib) = handle.as_raw() {
-                    if let Err(e) = grab_x11_focus(xlib.window as u32) {
-                        eprintln!("overlay: x11 set_input_focus skipped: {e}");
-                    }
-                }
-            }
-        }
+        // No manual X11 focus grab — with the regular WM-managed fullscreen
+        // window, Cinnamon / Plasma / GNOME Shell hand the keyboard to us
+        // when we map. `Window::focus_window()` above sends the
+        // _NET_ACTIVE_WINDOW client message which is the spec-correct way
+        // to ask for focus.
 
         let ctx = Context::new(window.clone())
             .map_err(|e| anyhow!("softbuffer Context::new: {e}"))?;
@@ -1511,55 +1463,6 @@ fn draw_magnifier(
 
 // ── helpers ──────────────────────────────────────────────────────────────
 
-/// Side-channel X11 connection that pushes input focus to the overlay's
-/// override-redirect window AND grabs the keyboard. Without this the
-/// window manager — which we asked to skip the window — never tells the
-/// X server "this window owns the keyboard," and the Text tool sees no
-/// characters.
-///
-/// `set_input_focus` makes our window the focus target, so winit gets
-/// FocusIn and starts dispatching KeyEvent. `grab_keyboard` then makes
-/// every key route to us regardless of pointer position or sibling
-/// windows — required because Cinnamon's panel keeps trying to reclaim
-/// focus when the cursor crosses it.
-#[cfg(target_os = "linux")]
-fn grab_x11_focus(xid: u32) -> anyhow::Result<()> {
-    use x11rb::connection::Connection;
-    use x11rb::protocol::xproto::{ConnectionExt, GrabMode, InputFocus};
-    let (conn, _screen) = x11rb::connect(None)
-        .map_err(|e| anyhow!("x11rb::connect: {e}"))?;
-    conn.set_input_focus(InputFocus::PARENT, xid, x11rb::CURRENT_TIME)
-        .map_err(|e| anyhow!("set_input_focus request: {e}"))?
-        .check()
-        .map_err(|e| anyhow!("set_input_focus reply: {e}"))?;
-    // Grab the keyboard so every key routes here regardless of whether
-    // some other window steals focus while we're up. Released by
-    // `release_x11_focus` in the Overlay's drop path.
-    conn.grab_keyboard(
-        false,                       // don't be owner-events; redirect everything
-        xid,
-        x11rb::CURRENT_TIME,
-        GrabMode::ASYNC,             // pointer events keep flowing
-        GrabMode::ASYNC,
-    )
-        .map_err(|e| anyhow!("grab_keyboard request: {e}"))?
-        .reply()
-        .map_err(|e| anyhow!("grab_keyboard reply: {e}"))?;
-    conn.flush().map_err(|e| anyhow!("flush: {e}"))?;
-    Ok(())
-}
-
-/// Pair of `grab_x11_focus`. Releases the keyboard grab so the user's
-/// next-app keystrokes go where they expect once the overlay closes.
-#[cfg(target_os = "linux")]
-fn release_x11_focus() {
-    use x11rb::connection::Connection;
-    use x11rb::protocol::xproto::ConnectionExt;
-    let Ok((conn, _)) = x11rb::connect(None) else { return; };
-    let _ = conn.ungrab_keyboard(x11rb::CURRENT_TIME);
-    let _ = conn.flush();
-}
-
 fn rect_from(a: (i32, i32), b: (i32, i32)) -> (i32, i32, i32, i32) {
     let x = a.0.min(b.0);
     let y = a.1.min(b.1);
@@ -1771,8 +1674,9 @@ fn draw_tool_glyph(
             buf[y as usize * stride + x as usize] = rgb;
         }
     };
+    // 2-px-thick Bresenham — bumps the icon weight so the glyphs read
+    // like real toolbar icons instead of hairline sketches.
     let line2 = |buf: &mut [u32], a: (i32, i32), b: (i32, i32)| {
-        // Naive thin Bresenham — fine for icon-sized glyphs.
         let mut x0 = a.0; let mut y0 = a.1;
         let x1 = b.0; let y1 = b.1;
         let dx =  (x1 - x0).abs(); let dy = -(y1 - y0).abs();
@@ -1781,6 +1685,8 @@ fn draw_tool_glyph(
         let mut err = dx + dy;
         loop {
             stamp(buf, x0, y0);
+            stamp(buf, x0 + 1, y0);
+            stamp(buf, x0, y0 + 1);
             if x0 == x1 && y0 == y1 { break; }
             let e2 = 2 * err;
             if e2 >= dy { err += dy; x0 += sx; }
