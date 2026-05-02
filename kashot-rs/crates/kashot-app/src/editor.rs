@@ -195,6 +195,15 @@ pub struct Overlay {
     hover_tip:     Option<(&'static str, i32, i32)>,
 }
 
+impl Drop for Overlay {
+    fn drop(&mut self) {
+        // Release the X11 keyboard grab when the overlay tears down so the
+        // next focused app keeps receiving keystrokes normally.
+        #[cfg(target_os = "linux")]
+        release_x11_focus();
+    }
+}
+
 impl Overlay {
     /// Open the fullscreen overlay window for the given screenshot.
     pub fn new(
@@ -1503,23 +1512,52 @@ fn draw_magnifier(
 // ── helpers ──────────────────────────────────────────────────────────────
 
 /// Side-channel X11 connection that pushes input focus to the overlay's
-/// override-redirect window. Without this the window manager — which we
-/// asked to skip the window — never tells the X server "this window owns
-/// the keyboard," and the Text tool sees no characters. `RevertTo::PARENT`
-/// makes focus return to whatever held it before us when the overlay
-/// closes, so the user's terminal / editor / browser keeps typing.
+/// override-redirect window AND grabs the keyboard. Without this the
+/// window manager — which we asked to skip the window — never tells the
+/// X server "this window owns the keyboard," and the Text tool sees no
+/// characters.
+///
+/// `set_input_focus` makes our window the focus target, so winit gets
+/// FocusIn and starts dispatching KeyEvent. `grab_keyboard` then makes
+/// every key route to us regardless of pointer position or sibling
+/// windows — required because Cinnamon's panel keeps trying to reclaim
+/// focus when the cursor crosses it.
 #[cfg(target_os = "linux")]
 fn grab_x11_focus(xid: u32) -> anyhow::Result<()> {
     use x11rb::connection::Connection;
-    use x11rb::protocol::xproto::{ConnectionExt, InputFocus};
+    use x11rb::protocol::xproto::{ConnectionExt, GrabMode, InputFocus};
     let (conn, _screen) = x11rb::connect(None)
         .map_err(|e| anyhow!("x11rb::connect: {e}"))?;
     conn.set_input_focus(InputFocus::PARENT, xid, x11rb::CURRENT_TIME)
         .map_err(|e| anyhow!("set_input_focus request: {e}"))?
         .check()
         .map_err(|e| anyhow!("set_input_focus reply: {e}"))?;
+    // Grab the keyboard so every key routes here regardless of whether
+    // some other window steals focus while we're up. Released by
+    // `release_x11_focus` in the Overlay's drop path.
+    conn.grab_keyboard(
+        false,                       // don't be owner-events; redirect everything
+        xid,
+        x11rb::CURRENT_TIME,
+        GrabMode::ASYNC,             // pointer events keep flowing
+        GrabMode::ASYNC,
+    )
+        .map_err(|e| anyhow!("grab_keyboard request: {e}"))?
+        .reply()
+        .map_err(|e| anyhow!("grab_keyboard reply: {e}"))?;
     conn.flush().map_err(|e| anyhow!("flush: {e}"))?;
     Ok(())
+}
+
+/// Pair of `grab_x11_focus`. Releases the keyboard grab so the user's
+/// next-app keystrokes go where they expect once the overlay closes.
+#[cfg(target_os = "linux")]
+fn release_x11_focus() {
+    use x11rb::connection::Connection;
+    use x11rb::protocol::xproto::ConnectionExt;
+    let Ok((conn, _)) = x11rb::connect(None) else { return; };
+    let _ = conn.ungrab_keyboard(x11rb::CURRENT_TIME);
+    let _ = conn.flush();
 }
 
 fn rect_from(a: (i32, i32), b: (i32, i32)) -> (i32, i32, i32, i32) {
