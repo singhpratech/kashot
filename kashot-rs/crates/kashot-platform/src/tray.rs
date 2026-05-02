@@ -19,8 +19,10 @@ pub struct Tray {
     pub record_id:     tray_icon::menu::MenuId,
     pub stop_rec_id:   tray_icon::menu::MenuId,
     pub open_folder_id:tray_icon::menu::MenuId,
+    pub open_recs_id:  tray_icon::menu::MenuId,
     pub settings_id:   tray_icon::menu::MenuId,
     pub about_id:      tray_icon::menu::MenuId,
+    pub updates_id:    tray_icon::menu::MenuId,
     pub exit_id:       tray_icon::menu::MenuId,
     record_item:       MenuItem,
     stop_rec_item:     MenuItem,
@@ -42,8 +44,13 @@ pub enum TrayEvent {
     /// Open the configured screenshot save folder in the user's default
     /// file manager. Mirrors C# TrayContext "Open Save Folder".
     OpenSaveFolder,
+    /// Open the recordings folder (typically `~/Videos`).
+    OpenRecordingsFolder,
     Settings,
     About,
+    /// Open the GitHub Releases page so the user can grab the latest build.
+    /// Mirrors C# TrayContext "Check for updates".
+    CheckForUpdates,
     Exit,
 }
 
@@ -67,10 +74,12 @@ impl Tray {
         let capture   = MenuItem::new("Capture Screen",   true, None);
         let record    = MenuItem::new("Record Screen",    true, None);
         let stop_rec  = MenuItem::new("Stop Recording",   false, None);
-        let open_fold = MenuItem::new("Open Save Folder", true, None);
-        let settings  = MenuItem::new("Settings…",        true, None);
-        let about     = MenuItem::new("About",            true, None);
-        let exit      = MenuItem::new("Exit",             true, None);
+        let open_fold = MenuItem::new("Open Screenshots Folder", true, None);
+        let open_recs = MenuItem::new("Open Recordings Folder",  true, None);
+        let settings  = MenuItem::new("Settings…",               true, None);
+        let about     = MenuItem::new("About",                   true, None);
+        let updates   = MenuItem::new("Check for updates",       true, None);
+        let exit      = MenuItem::new("Exit",                    true, None);
         let sep_rec   = PredefinedMenuItem::separator();
         let sep1      = PredefinedMenuItem::separator();
         let sep2      = PredefinedMenuItem::separator();
@@ -94,8 +103,10 @@ impl Tray {
         let record_id   = record.id().clone();
         let stop_rec_id = stop_rec.id().clone();
         let open_folder_id = open_fold.id().clone();
+        let open_recs_id   = open_recs.id().clone();
         let settings_id = settings.id().clone();
         let about_id    = about.id().clone();
+        let updates_id  = updates.id().clone();
         let exit_id     = exit.id().clone();
 
         delay_menu.append(&delay_3s ).map_err(|e| Error::Tray(e.to_string()))?;
@@ -111,8 +122,11 @@ impl Tray {
         menu.append(&stop_rec).map_err(|e| Error::Tray(e.to_string()))?;
         menu.append(&sep1).map_err(|e| Error::Tray(e.to_string()))?;
         menu.append(&open_fold).map_err(|e| Error::Tray(e.to_string()))?;
+        menu.append(&open_recs).map_err(|e| Error::Tray(e.to_string()))?;
+        menu.append(&PredefinedMenuItem::separator()).map_err(|e| Error::Tray(e.to_string()))?;
         menu.append(&settings).map_err(|e| Error::Tray(e.to_string()))?;
         menu.append(&about).map_err(|e| Error::Tray(e.to_string()))?;
+        menu.append(&updates).map_err(|e| Error::Tray(e.to_string()))?;
         menu.append(&sep2).map_err(|e| Error::Tray(e.to_string()))?;
         menu.append(&exit).map_err(|e| Error::Tray(e.to_string()))?;
 
@@ -134,8 +148,10 @@ impl Tray {
             record_id,
             stop_rec_id,
             open_folder_id,
+            open_recs_id,
             settings_id,
             about_id,
+            updates_id,
             exit_id,
             record_item:   record,
             stop_rec_item: stop_rec,
@@ -155,8 +171,10 @@ impl Tray {
             Ok(ev) if ev.id == self.record_id    => TrayEvent::StartRecording,
             Ok(ev) if ev.id == self.stop_rec_id  => TrayEvent::StopRecording,
             Ok(ev) if ev.id == self.open_folder_id => TrayEvent::OpenSaveFolder,
+            Ok(ev) if ev.id == self.open_recs_id  => TrayEvent::OpenRecordingsFolder,
             Ok(ev) if ev.id == self.settings_id  => TrayEvent::Settings,
             Ok(ev) if ev.id == self.about_id     => TrayEvent::About,
+            Ok(ev) if ev.id == self.updates_id   => TrayEvent::CheckForUpdates,
             Ok(ev) if ev.id == self.exit_id      => TrayEvent::Exit,
             _ => TrayEvent::None,
         }
