@@ -38,7 +38,7 @@ use softbuffer::{Context, Surface};
 use winit::dpi::PhysicalPosition;
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::event_loop::ActiveEventLoop;
-use winit::keyboard::{Key, NamedKey};
+use winit::keyboard::{Key, ModifiersState, NamedKey};
 use winit::window::{CursorIcon, Fullscreen, Window, WindowAttributes, WindowId};
 
 use crate::painter::{self, ImageSurface, U32Surface};
@@ -49,9 +49,12 @@ pub enum OverlayOutcome {
     Continue,
     /// User cancelled (Esc, window close). Caller should drop the Overlay.
     Cancelled,
-    /// User accepted a region. Caller should drop the Overlay and persist
-    /// the cropped bitmap.
+    /// User accepted a region (Enter / right-click / Ctrl+S). Caller saves
+    /// the cropped bitmap to the configured output folder.
     Accepted(ImageBuffer<Rgba<u8>, Vec<u8>>),
+    /// User pressed Ctrl+C — caller writes the cropped bitmap to the
+    /// system clipboard via arboard instead of saving to disk.
+    Copied(ImageBuffer<Rgba<u8>, Vec<u8>>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -91,11 +94,19 @@ pub struct Overlay {
     tool:        Tool,
     stroke:      Stroke,
     annotations: Vec<Annotation>,
+    /// Stack of annotations that have been undone with Ctrl+Z but can still
+    /// be redone with Ctrl+Y / Ctrl+Shift+Z. Adding any new annotation
+    /// clears this — same convention as `Kashot/OverlayForm.cs`.
+    redo_stack:  Vec<Annotation>,
     /// In-progress annotation while `state == Drawing`.
     current:     Option<Annotation>,
     /// Next number assigned by `Tool::Step`. Resets to 1 whenever the user
     /// clears the selection (Esc on `Selected` or starts a fresh drag).
     step_count:  u32,
+    /// Live modifier state — winit 0.30 doesn't put modifiers on KeyEvent so
+    /// we track them via `WindowEvent::ModifiersChanged` and consult them in
+    /// the keyboard handler for Ctrl+Z / Ctrl+Y / Ctrl+S / Ctrl+C.
+    mods:        ModifiersState,
 }
 
 impl Overlay {
@@ -135,8 +146,10 @@ impl Overlay {
             tool:        Tool::Pen,
             stroke:      Stroke::default(),
             annotations: Vec::new(),
+            redo_stack:  Vec::new(),
             current:     None,
             step_count:  1,
+            mods:        ModifiersState::empty(),
         })
     }
 
@@ -145,6 +158,11 @@ impl Overlay {
     pub fn handle_event(&mut self, event: WindowEvent) -> OverlayOutcome {
         match event {
             WindowEvent::CloseRequested => OverlayOutcome::Cancelled,
+
+            WindowEvent::ModifiersChanged(m) => {
+                self.mods = m.state();
+                OverlayOutcome::Continue
+            }
 
             WindowEvent::KeyboardInput {
                 event: KeyEvent { logical_key, state: ElementState::Pressed, .. }, ..
@@ -216,6 +234,7 @@ impl Overlay {
                     self.state       = State::Idle;
                     self.selection   = None;
                     self.annotations.clear();
+                    self.redo_stack.clear();
                     self.step_count  = 1;
                     self.window.request_redraw();
                     OverlayOutcome::Continue
@@ -225,17 +244,54 @@ impl Overlay {
             }
             Key::Named(NamedKey::Enter) => self.commit(),
             Key::Character(s) => {
-                if self.state == State::Selected {
-                    if let Some(c) = s.chars().next() {
-                        if let Some(t) = Tool::from_key(c) {
-                            self.tool = t;
-                            self.window.request_redraw();
-                        }
+                if self.state != State::Selected {
+                    return OverlayOutcome::Continue;
+                }
+                let c    = match s.chars().next() { Some(c) => c, None => return OverlayOutcome::Continue };
+                let ctrl = self.mods.control_key();
+                let shift = self.mods.shift_key();
+                let lc    = c.to_ascii_lowercase();
+                if ctrl {
+                    match lc {
+                        // Ctrl+Z → undo, Ctrl+Shift+Z → redo
+                        'z' => { if shift { self.redo(); } else { self.undo(); } }
+                        // Ctrl+Y → redo (Windows convention)
+                        'y' => self.redo(),
+                        // Ctrl+S → commit-and-save (same as Enter)
+                        's' => return self.commit(),
+                        // Ctrl+C → commit-and-copy
+                        'c' => return self.commit_as_copy(),
+                        _ => {}
                     }
+                } else if let Some(t) = Tool::from_key(c) {
+                    self.tool = t;
+                    self.window.request_redraw();
                 }
                 OverlayOutcome::Continue
             }
             _ => OverlayOutcome::Continue,
+        }
+    }
+
+    fn undo(&mut self) {
+        if let Some(a) = self.annotations.pop() {
+            // Step counter follows the visible numbers — popping a Step
+            // brings us back to where we were.
+            if let kashot_core::annotation::AnnotationKind::Step { number, .. } = a.kind {
+                self.step_count = number;
+            }
+            self.redo_stack.push(a);
+            self.window.request_redraw();
+        }
+    }
+
+    fn redo(&mut self) {
+        if let Some(a) = self.redo_stack.pop() {
+            if let kashot_core::annotation::AnnotationKind::Step { number, .. } = a.kind {
+                self.step_count = number.saturating_add(1);
+            }
+            self.annotations.push(a);
+            self.window.request_redraw();
         }
     }
 
@@ -263,7 +319,7 @@ impl Overlay {
                     // the counter for the next click.
                     if self.tool == Tool::Step {
                         let p = Point2::new(self.cursor.0 as f32, self.cursor.1 as f32);
-                        self.annotations.push(Annotation::step(self.stroke.color, p, self.step_count));
+                        self.add_annotation(Annotation::step(self.stroke.color, p, self.step_count));
                         self.step_count = self.step_count.saturating_add(1);
                         self.window.request_redraw();
                     } else if let Some(a) = self.start_annotation() {
@@ -277,6 +333,7 @@ impl Overlay {
                     self.anchor    = self.cursor;
                     self.selection = Some((self.cursor.0, self.cursor.1, 0, 0));
                     self.annotations.clear();
+                    self.redo_stack.clear();
                     self.step_count = 1;
                     self.window.request_redraw();
                 }
@@ -284,6 +341,11 @@ impl Overlay {
             _ => {}
         }
         OverlayOutcome::Continue
+    }
+
+    fn add_annotation(&mut self, a: Annotation) {
+        self.annotations.push(a);
+        self.redo_stack.clear();
     }
 
     fn handle_left_release(&mut self) -> OverlayOutcome {
@@ -301,7 +363,7 @@ impl Overlay {
             }
             State::Drawing => {
                 if let Some(a) = self.current.take() {
-                    self.annotations.push(a);
+                    self.add_annotation(a);
                 }
                 self.state = State::Selected;
                 self.window.request_redraw();
@@ -336,25 +398,39 @@ impl Overlay {
     }
 
     fn commit(&mut self) -> OverlayOutcome {
-        if self.state == State::Selected {
-            if let Some(rect) = self.selection {
-                let mut img = crop(&self.screenshot, rect);
-                // Snapshot the un-annotated crop FIRST so pixelate's source-
-                // sampling stays idempotent under draw-order: pixelate must
-                // always sample the original screenshot, never something we
-                // already painted on. Mirrors C# `PixelateAnnotation`.
-                let pristine = img.clone();
-                let dx = -rect.0 as f32;
-                let dy = -rect.1 as f32;
-                let mut surf = ImageSurface(&mut img);
-                for a in &self.annotations {
-                    let translated = translate_annotation(a, dx, dy);
-                    painter::render_annotation(&mut surf, &translated, Some(&pristine));
-                }
-                return OverlayOutcome::Accepted(img);
-            }
+        match self.compose_final() {
+            Some(img) => OverlayOutcome::Accepted(img),
+            None      => OverlayOutcome::Continue,
         }
-        OverlayOutcome::Continue
+    }
+
+    fn commit_as_copy(&mut self) -> OverlayOutcome {
+        match self.compose_final() {
+            Some(img) => OverlayOutcome::Copied(img),
+            None      => OverlayOutcome::Continue,
+        }
+    }
+
+    /// Crop + composite annotations into the output bitmap. Shared between
+    /// the save and copy commit paths so they're guaranteed to produce the
+    /// same pixels — only what the caller does with the bitmap differs.
+    fn compose_final(&self) -> Option<ImageBuffer<Rgba<u8>, Vec<u8>>> {
+        if self.state != State::Selected { return None; }
+        let rect = self.selection?;
+        let mut img = crop(&self.screenshot, rect);
+        // Snapshot the un-annotated crop FIRST so pixelate's source-sampling
+        // stays idempotent under draw-order: pixelate must always sample the
+        // original screenshot, never something we already painted on.
+        // Mirrors C# `PixelateAnnotation`.
+        let pristine = img.clone();
+        let dx = -rect.0 as f32;
+        let dy = -rect.1 as f32;
+        let mut surf = ImageSurface(&mut img);
+        for a in &self.annotations {
+            let translated = translate_annotation(a, dx, dy);
+            painter::render_annotation(&mut surf, &translated, Some(&pristine));
+        }
+        Some(img)
     }
 
     fn redraw(&mut self) {
@@ -430,7 +506,16 @@ impl Overlay {
             }
         }
 
-        // Pass 4: toolbar (only while a region is locked in).
+        // Pass 4: dimension chip — small dark pill at bottom-right of the
+        // selection showing the locked-in width × height. Visible whenever
+        // there's a selection (including mid-drag), matches C# OverlayForm.
+        if let Some((x, y, w, h)) = self.selection {
+            if w > 8 && h > 8 {
+                draw_dimension_chip(&mut buf, win_w, win_h, x + w, y + h, w as u32, h as u32);
+            }
+        }
+
+        // Pass 5: toolbar (only while a region is locked in).
         if matches!(self.state, State::Selected | State::Drawing) {
             draw_toolbar(&mut buf, win_w, win_h, self.tool, self.stroke.color);
         }
@@ -561,6 +646,85 @@ fn translate_annotation(a: &Annotation, dx: f32, dy: f32) -> Annotation {
         K::Step      { color, center, number } => K::Step { color, center: shift(center), number },
     };
     Annotation { kind }
+}
+
+/// Width × height chip rendered just outside the bottom-right corner of the
+/// selection. Uses the existing 5×7 digit font (via `painter::draw_number`)
+/// and a tiny hand-drawn `×` glyph between the two numbers. Background is a
+/// 75 %-opaque dark fill so it stays legible on light or dark screenshots.
+fn draw_dimension_chip(
+    buf: &mut [u32], stride: usize, height: usize,
+    anchor_x: i32, anchor_y: i32, w: u32, h: u32,
+) {
+    const SCALE:  i32 = 2;
+    const PAD_X:  i32 = 6;
+    const PAD_Y:  i32 = 4;
+    const X_GLYPH_W: i32 = 5 * SCALE;
+    const GAP:    i32 = SCALE * 2;
+
+    let glyph_h    = 7 * SCALE;
+    let digits_w_w = digit_count(w) as i32 * 5 * SCALE + (digit_count(w) as i32 - 1).max(0) * SCALE;
+    let digits_h_w = digit_count(h) as i32 * 5 * SCALE + (digit_count(h) as i32 - 1).max(0) * SCALE;
+    let inner_w    = digits_w_w + GAP + X_GLYPH_W + GAP + digits_h_w;
+    let chip_w     = inner_w + PAD_X * 2;
+    let chip_h     = glyph_h + PAD_Y * 2;
+
+    // Place chip just inside the selection's bottom-right corner. Flip
+    // outward if it would clip the screen edge.
+    let mut x0 = anchor_x - chip_w - 4;
+    let mut y0 = anchor_y - chip_h - 4;
+    if x0 < 0 { x0 = anchor_x + 4; }
+    if y0 < 0 { y0 = anchor_y + 4; }
+    let x1 = x0 + chip_w;
+    let y1 = y0 + chip_h;
+
+    // 75 %-opaque dark fill — no real alpha blend on the u32 buffer, so just
+    // mix toward the existing pixel by 1/4. This also keeps the chip from
+    // wiping out the screenshot underneath.
+    let xa = x0.max(0) as usize;
+    let xb = (x1.min(stride as i32) as usize).max(xa);
+    let ya = y0.max(0) as usize;
+    let yb = (y1.min(height as i32) as usize).max(ya);
+    for y in ya..yb.min(height) {
+        for x in xa..xb.min(stride) {
+            let dst = buf[y * stride + x];
+            let dr = (dst >> 16) & 0xFF;
+            let dg = (dst >> 8)  & 0xFF;
+            let db =  dst        & 0xFF;
+            // src = 0x16191D, weight 192/256.
+            let r = (dr * 64 + 0x16 * 192) / 256;
+            let g = (dg * 64 + 0x19 * 192) / 256;
+            let b = (db * 64 + 0x1D * 192) / 256;
+            buf[y * stride + x] = (r << 16) | (g << 8) | b;
+        }
+    }
+
+    // Render the digits + 'x' separator using the painter via a tiny inline
+    // U32Surface (the painter alpha-blends, which leaves the chip background
+    // visible underneath the strokes — that's intentional).
+    let mut surf = crate::painter::U32Surface { buf, stride: stride as i32, height: height as i32 };
+    let text_y = y0 + PAD_Y;
+    let mut cx = x0 + PAD_X;
+    crate::painter::draw_number(&mut surf, cx, text_y, SCALE, w, kashot_core::color::Rgba::WHITE);
+    cx += digits_w_w + GAP;
+    draw_x_glyph(&mut surf, cx, text_y, SCALE);
+    cx += X_GLYPH_W + GAP;
+    crate::painter::draw_number(&mut surf, cx, text_y, SCALE, h, kashot_core::color::Rgba::WHITE);
+}
+
+fn digit_count(mut n: u32) -> u32 {
+    if n == 0 { return 1; }
+    let mut c = 0u32; while n > 0 { c += 1; n /= 10; } c
+}
+
+/// Tiny `×` drawn as two diagonal lines through a 5-wide × 7-tall cell. Same
+/// scale convention as `draw_number`.
+fn draw_x_glyph(surf: &mut crate::painter::U32Surface, x: i32, y: i32, scale: i32) {
+    use kashot_core::color::Rgba;
+    let w = 5 * scale;
+    let h = 7 * scale;
+    crate::painter::line(surf, x, y + scale, x + w - 1, y + h - scale - 1, scale as f32, Rgba::WHITE);
+    crate::painter::line(surf, x + w - 1, y + scale, x, y + h - scale - 1, scale as f32, Rgba::WHITE);
 }
 
 fn draw_rect_border(
