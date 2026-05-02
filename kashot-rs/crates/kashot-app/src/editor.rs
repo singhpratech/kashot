@@ -1346,22 +1346,6 @@ fn draw_magnifier(
     draw_filled_rect(buf, win_w, win_h, cx, inner_y, cx + 1, inner_y + MAG_SIZE, red);
 }
 
-fn palette_strip_origin(win_w: usize) -> (i32, i32) {
-    let strip_w = PALETTE_SWATCH_W * 16;
-    let x = ((win_w as i32) - strip_w) / 2;
-    let (_ox, oy) = toolbar_origin(win_w);
-    let toolbar_bottom = oy + TOOLBAR_BTN + TOOLBAR_PAD * 2;
-    (x.max(0), toolbar_bottom + PALETTE_GAP_TOP)
-}
-
-fn palette_hit(win_w: usize, (cx, cy): (i32, i32)) -> Option<kashot_core::color::Rgba> {
-    let (px, py) = palette_strip_origin(win_w);
-    if cy < py || cy >= py + PALETTE_SWATCH_H { return None; }
-    if cx < px || cx >= px + PALETTE_SWATCH_W * 16 { return None; }
-    let idx = ((cx - px) / PALETTE_SWATCH_W) as usize;
-    Some(kashot_core::annotation::Palettes::get(0).colors[idx])
-}
-
 // ── helpers ──────────────────────────────────────────────────────────────
 
 fn rect_from(a: (i32, i32), b: (i32, i32)) -> (i32, i32, i32, i32) {
