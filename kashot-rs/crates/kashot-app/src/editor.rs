@@ -89,11 +89,25 @@ enum State {
 
 /// Toolbar geometry — kept simple and centered horizontally near the top
 /// of the screen. We rebuild it on every redraw, which is cheap.
-const TOOLBAR_TOP:    i32 = 18;
-const TOOLBAR_PAD:    i32 = 8;
-const TOOLBAR_BTN:    i32 = 36;
-const TOOLBAR_GAP:    i32 = 4;
-const TOOLBAR_RADIUS: i32 = 8;
+const TOOLBAR_TOP:        i32 = 18;
+const TOOLBAR_PAD:        i32 = 8;
+const TOOLBAR_BTN:        i32 = 36;
+const TOOLBAR_GAP:        i32 = 4;
+const TOOLBAR_RADIUS:     i32 = 8;
+/// Wide gap between the tools group and the thickness picker so the two
+/// visually read as separate sections.
+const TOOLBAR_GROUP_GAP:  i32 = 14;
+/// Stroke widths the thickness picker offers. Index 1 (4 px) is the default
+/// — same as `Stroke::default().thickness` in kashot-core.
+const THICKNESSES:        [f32; 3] = [2.0, 4.0, 8.0];
+
+/// Magnifier — small zoomed lens shown near the cursor in Idle / Selecting,
+/// so the user can position the selection edge by individual pixels.
+const MAG_ZOOM:    i32 = 7;
+const MAG_RADIUS:  i32 = 8;          // sample ±8 source pixels around cursor
+const MAG_PIXELS:  i32 = MAG_RADIUS * 2 + 1;
+const MAG_SIZE:    i32 = MAG_PIXELS * MAG_ZOOM;
+const MAG_OFFSET:  i32 = 24;         // pixel offset from cursor to chip corner
 
 pub struct Overlay {
     screenshot:  ImageBuffer<Rgba<u8>, Vec<u8>>,
@@ -206,6 +220,11 @@ impl Overlay {
                         // Update the cursor icon based on which edge we're
                         // hovering, matching the C# OverlayForm convention.
                         self.update_resize_cursor();
+                    }
+                    State::Idle => {
+                        // Magnifier follows the cursor in Idle so the user
+                        // can place the first selection edge by pixel.
+                        self.window.request_redraw();
                     }
                     _ => {}
                 }
@@ -409,8 +428,14 @@ impl Overlay {
                 self.window.request_redraw();
                 return OverlayOutcome::Continue;
             }
-            // Color-palette swatch under the toolbar — click to switch.
+            // Thickness picker — 3 small dots to the right of the tool row.
             let win_w = self.window.inner_size().width as usize;
+            if let Some(t) = thickness_hit(win_w, self.cursor) {
+                self.stroke.thickness = t;
+                self.window.request_redraw();
+                return OverlayOutcome::Continue;
+            }
+            // Color-palette swatch under the toolbar — click to switch.
             if let Some(c) = palette_hit(win_w, self.cursor) {
                 self.stroke.color = c;
                 self.window.request_redraw();
@@ -709,8 +734,15 @@ impl Overlay {
         }
 
         // Pass 5: toolbar (only while a region is locked in).
-        if matches!(self.state, State::Selected | State::Drawing) {
-            draw_toolbar(&mut buf, win_w, win_h, self.tool, self.stroke.color);
+        if matches!(self.state, State::Selected | State::Drawing | State::Resizing | State::TextInput) {
+            draw_toolbar(&mut buf, win_w, win_h, self.tool, self.stroke.color, self.stroke.thickness);
+        }
+
+        // Pass 6: magnifier — only useful when the user is positioning the
+        // selection edge by individual pixels. Once a region is locked in,
+        // the toolbar+palette take over and the lens just gets in the way.
+        if matches!(self.state, State::Idle | State::Selecting) {
+            draw_magnifier(&mut buf, win_w, win_h, &self.screenshot, self.cursor);
         }
 
         if let Err(e) = buf.present() {
@@ -733,10 +765,16 @@ impl Overlay {
 // ── toolbar (free fns; can't be methods because they share the softbuffer
 //    `buf` borrow with `self.surface`) ──────────────────────────────────────
 
+fn toolbar_total_w() -> i32 {
+    let n_tools = Tool::ALL.len() as i32;
+    let n_thick = THICKNESSES.len() as i32;
+    let tools_w = n_tools * TOOLBAR_BTN + (n_tools - 1) * TOOLBAR_GAP;
+    let thick_w = n_thick * TOOLBAR_BTN + (n_thick - 1) * TOOLBAR_GAP;
+    tools_w + TOOLBAR_GROUP_GAP + thick_w + TOOLBAR_PAD * 2
+}
+
 fn toolbar_origin(win_w: usize) -> (i32, i32) {
-    let n = Tool::ALL.len() as i32;
-    let inner = n * TOOLBAR_BTN + (n - 1) * TOOLBAR_GAP;
-    let total = inner + TOOLBAR_PAD * 2;
+    let total = toolbar_total_w();
     let x = ((win_w as i32) - total) / 2;
     (x.max(0), TOOLBAR_TOP)
 }
@@ -748,35 +786,47 @@ fn toolbar_button_rect(win_w: usize, idx: i32) -> (i32, i32, i32, i32) {
     (x, y, x + TOOLBAR_BTN, y + TOOLBAR_BTN)
 }
 
-fn draw_toolbar(
-    buf:    &mut [u32],
-    win_w:  usize,
-    win_h:  usize,
-    active: Tool,
-    swatch: kashot_core::color::Rgba,
-) {
-    const BG:           u32 = 0x00_22_22_24;
-    const BTN:          u32 = 0x00_2E_2E_32;
-    const BTN_ACTIVE:   u32 = 0x00_64_95_ED;
-    const BTN_DISABLED: u32 = 0x00_3A_3A_3E;
-    const STRIPE:       u32 = 0x00_DC_26_26;
-    const TEXT:         u32 = 0x00_E8_E8_EC;
+fn thickness_button_rect(win_w: usize, idx: i32) -> (i32, i32, i32, i32) {
+    let (ox, oy) = toolbar_origin(win_w);
+    let n_tools  = Tool::ALL.len() as i32;
+    let tools_w  = n_tools * TOOLBAR_BTN + (n_tools - 1) * TOOLBAR_GAP;
+    let x = ox + TOOLBAR_PAD + tools_w + TOOLBAR_GROUP_GAP + idx * (TOOLBAR_BTN + TOOLBAR_GAP);
+    let y = oy + TOOLBAR_PAD;
+    (x, y, x + TOOLBAR_BTN, y + TOOLBAR_BTN)
+}
 
-    let n = Tool::ALL.len() as i32;
-    let inner = n * TOOLBAR_BTN + (n - 1) * TOOLBAR_GAP;
-    let total = inner + TOOLBAR_PAD * 2;
+fn thickness_hit(win_w: usize, (cx, cy): (i32, i32)) -> Option<f32> {
+    for (i, t) in THICKNESSES.iter().enumerate() {
+        let (x0, y0, x1, y1) = thickness_button_rect(win_w, i as i32);
+        if cx >= x0 && cx < x1 && cy >= y0 && cy < y1 {
+            return Some(*t);
+        }
+    }
+    None
+}
+
+fn draw_toolbar(
+    buf:       &mut [u32],
+    win_w:     usize,
+    win_h:     usize,
+    active:    Tool,
+    swatch:    kashot_core::color::Rgba,
+    thickness: f32,
+) {
+    const BG:         u32 = 0x00_22_22_24;
+    const BTN:        u32 = 0x00_2E_2E_32;
+    const BTN_ACTIVE: u32 = 0x00_64_95_ED;
+    const TEXT:       u32 = 0x00_E8_E8_EC;
+
     let (ox, oy) = toolbar_origin(win_w);
     let h_total  = TOOLBAR_BTN + TOOLBAR_PAD * 2;
+    let total    = toolbar_total_w();
 
     draw_rounded_rect(buf, win_w, win_h, ox, oy, ox + total, oy + h_total, TOOLBAR_RADIUS, BG);
 
     for (i, t) in Tool::ALL.iter().enumerate() {
         let (x0, y0, x1, y1) = toolbar_button_rect(win_w, i as i32);
-        let is_active = *t == active;
-        // Every tool now ships — no `working` mask needed. Kept the constant
-        // around in case future betas want to gate something behind a flag.
-        let _ = (BTN_DISABLED, STRIPE);
-        let bg = if is_active { BTN_ACTIVE } else { BTN };
+        let bg = if *t == active { BTN_ACTIVE } else { BTN };
         draw_rounded_rect(buf, win_w, win_h, x0, y0, x1, y1, 6, bg);
         draw_tool_glyph(buf, win_w, win_h, x0, y0, x1, y1, *t, TEXT);
     }
@@ -785,6 +835,21 @@ fn draw_toolbar(
         let (x0, _y0, x1, y1) = toolbar_button_rect(win_w, active_idx as i32);
         let rgb = ((swatch.r as u32) << 16) | ((swatch.g as u32) << 8) | swatch.b as u32;
         draw_filled_rect(buf, win_w, win_h, x0 + 4, y1 + 2, x1 - 4, y1 + 5, rgb);
+    }
+
+    // Thickness picker — 3 buttons to the right of the tool row, separated
+    // by `TOOLBAR_GROUP_GAP`. Each button shows a filled disc whose diameter
+    // matches the corresponding stroke width.
+    for i in 0..THICKNESSES.len() {
+        let (x0, y0, x1, y1) = thickness_button_rect(win_w, i as i32);
+        let is_active = (THICKNESSES[i] - thickness).abs() < 0.01;
+        let bg = if is_active { BTN_ACTIVE } else { BTN };
+        draw_rounded_rect(buf, win_w, win_h, x0, y0, x1, y1, 6, bg);
+        let cx = (x0 + x1) / 2;
+        let cy = (y0 + y1) / 2;
+        let r  = (THICKNESSES[i] as i32).max(1) + 2;
+        let mut surf = crate::painter::U32Surface { buf, stride: win_w as i32, height: win_h as i32 };
+        crate::painter::fill_disc(&mut surf, cx, cy, r, kashot_core::color::Rgba::WHITE);
     }
 
     // Color palette strip below the toolbar — 16 vivid swatches in a single
@@ -812,6 +877,57 @@ fn draw_toolbar(
 const PALETTE_SWATCH_W: i32 = 22;
 const PALETTE_SWATCH_H: i32 = 14;
 const PALETTE_GAP_TOP:  i32 = 8;
+
+/// Magnifier lens. Samples the original screenshot in a (2·R+1)² window
+/// around the cursor and draws each source pixel as a `MAG_ZOOM`-sized
+/// square. Adds a 1-px border + crosshair through the center pixel.
+/// Auto-flips position so it never falls off the screen edge.
+fn draw_magnifier(
+    buf:    &mut [u32],
+    win_w:  usize,
+    win_h:  usize,
+    shot:   &image::ImageBuffer<image::Rgba<u8>, Vec<u8>>,
+    cursor: (i32, i32),
+) {
+    let chip = MAG_SIZE + 4;          // includes border
+    let mut x0 = cursor.0 + MAG_OFFSET;
+    let mut y0 = cursor.1 + MAG_OFFSET;
+    if x0 + chip > win_w as i32 { x0 = cursor.0 - MAG_OFFSET - chip; }
+    if y0 + chip > win_h as i32 { y0 = cursor.1 - MAG_OFFSET - chip; }
+    if x0 < 0 || y0 < 0 { return; }   // not enough room either way
+
+    let shot_w = shot.width()  as i32;
+    let shot_h = shot.height() as i32;
+
+    // Background fill (kept opaque so the lens stays readable on dark
+    // shots) + 1-px white border.
+    draw_filled_rect(buf, win_w, win_h, x0, y0, x0 + chip, y0 + chip, 0x00_10_10_14);
+    draw_rect_border(buf, win_w, win_h, x0, y0, x0 + chip, y0 + chip, 0x00_FF_FF_FF);
+
+    let inner_x = x0 + 2;
+    let inner_y = y0 + 2;
+    for sy in 0..MAG_PIXELS {
+        for sx in 0..MAG_PIXELS {
+            let src_x = cursor.0 + sx - MAG_RADIUS;
+            let src_y = cursor.1 + sy - MAG_RADIUS;
+            let px = if src_x >= 0 && src_x < shot_w && src_y >= 0 && src_y < shot_h {
+                let p = shot.get_pixel(src_x as u32, src_y as u32).0;
+                ((p[0] as u32) << 16) | ((p[1] as u32) << 8) | p[2] as u32
+            } else { 0x00_00_00_00 };
+            let dx = inner_x + sx * MAG_ZOOM;
+            let dy = inner_y + sy * MAG_ZOOM;
+            draw_filled_rect(buf, win_w, win_h, dx, dy, dx + MAG_ZOOM, dy + MAG_ZOOM, px);
+        }
+    }
+
+    // Crosshair through the center pixel — a 1-px red plus inside the lens
+    // makes the exact source pixel obvious.
+    let cx = inner_x + MAG_RADIUS * MAG_ZOOM;
+    let cy = inner_y + MAG_RADIUS * MAG_ZOOM;
+    let red = 0x00_DC_26_26;
+    draw_filled_rect(buf, win_w, win_h, inner_x, cy, inner_x + MAG_SIZE, cy + 1, red);
+    draw_filled_rect(buf, win_w, win_h, cx, inner_y, cx + 1, inner_y + MAG_SIZE, red);
+}
 
 fn palette_strip_origin(win_w: usize) -> (i32, i32) {
     let strip_w = PALETTE_SWATCH_W * 16;
