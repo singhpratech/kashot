@@ -184,6 +184,19 @@ pub struct Overlay {
     /// Recomputed on every CursorMoved while in `Selected`. Mirrors the
     /// `tip` arg in C# OverlayForm `MakeButton(tip, …)`.
     hover_tip:     Option<(&'static str, i32, i32)>,
+    /// On X11, set true once we've called XSetInputFocus + XGrabKeyboard
+    /// against the overlay's window. Done lazily on the first redraw so
+    /// the window is already mapped by the time we make the X requests.
+    /// Without this Cinnamon never delivers KeyPress to the overlay and
+    /// the Text tool sees no characters.
+    focus_pushed:  bool,
+}
+
+impl Drop for Overlay {
+    fn drop(&mut self) {
+        #[cfg(target_os = "linux")]
+        release_x11_focus();
+    }
 }
 
 impl Overlay {
@@ -262,6 +275,7 @@ impl Overlay {
             palette_open: false,
             palette_index: 0,
             hover_tip:     None,
+            focus_pushed:  false,
         })
     }
 
@@ -831,7 +845,30 @@ impl Overlay {
         Some(img)
     }
 
+    /// Force keyboard focus + grab to our window via raw X11 calls. Called
+    /// once, lazily on the first redraw — by which point the window is
+    /// definitely mapped and X is willing to accept SetInputFocus on it.
+    #[cfg(target_os = "linux")]
+    fn push_x11_focus(&mut self) {
+        if self.focus_pushed { return; }
+        use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+        let xid = match self.window.window_handle() {
+            Ok(h) => match h.as_raw() {
+                RawWindowHandle::Xlib(x) => x.window as u32,
+                _ => return,
+            }
+            Err(_) => return,
+        };
+        match force_x11_focus(xid) {
+            Ok(()) => eprintln!("kashot: x11 focus + grab pushed for window 0x{xid:x}"),
+            Err(e) => eprintln!("kashot: x11 focus push failed: {e}"),
+        }
+        self.focus_pushed = true;
+    }
+
     fn redraw(&mut self) {
+        #[cfg(target_os = "linux")]
+        self.push_x11_focus();
         let phys = self.window.inner_size();
         let (Some(w), Some(h)) = (NonZeroU32::new(phys.width), NonZeroU32::new(phys.height)) else { return; };
         if let Err(e) = self.surface.resize(w, h) {
@@ -1278,6 +1315,38 @@ fn palette_header_hit(origin: (i32, i32), (cx, cy): (i32, i32)) -> Option<bool> 
     let (nx0, ny0, nx1, ny1) = palette_header_button_rect(origin, false);
     if cx >= nx0 && cx < nx1 && cy >= ny0 && cy < ny1 { return Some(false); }
     None
+}
+
+/// Force focus + keyboard grab onto the given X11 window XID. Without this
+/// Cinnamon ignores winit's `_NET_ACTIVE_WINDOW` request and never routes
+/// KeyPress events to us, so the Text tool sees nothing.
+#[cfg(target_os = "linux")]
+fn force_x11_focus(xid: u32) -> anyhow::Result<()> {
+    use x11rb::connection::Connection;
+    use x11rb::protocol::xproto::{ConnectionExt, GrabMode, InputFocus};
+    let (conn, _screen) = x11rb::connect(None)
+        .map_err(|e| anyhow!("x11rb::connect: {e}"))?;
+    conn.set_input_focus(InputFocus::PARENT, xid, x11rb::CURRENT_TIME)
+        .map_err(|e| anyhow!("set_input_focus: {e}"))?
+        .check()
+        .map_err(|e| anyhow!("set_input_focus check: {e}"))?;
+    conn.grab_keyboard(false, xid, x11rb::CURRENT_TIME, GrabMode::ASYNC, GrabMode::ASYNC)
+        .map_err(|e| anyhow!("grab_keyboard: {e}"))?
+        .reply()
+        .map_err(|e| anyhow!("grab_keyboard reply: {e}"))?;
+    conn.flush().map_err(|e| anyhow!("flush: {e}"))?;
+    Ok(())
+}
+
+/// Drop the X11 keyboard grab when the overlay closes so the next focused
+/// app gets typed input back.
+#[cfg(target_os = "linux")]
+fn release_x11_focus() {
+    use x11rb::connection::Connection;
+    use x11rb::protocol::xproto::ConnectionExt;
+    let Ok((conn, _)) = x11rb::connect(None) else { return; };
+    let _ = conn.ungrab_keyboard(x11rb::CURRENT_TIME);
+    let _ = conn.flush();
 }
 
 /// Small dark pill carrying a button label, drawn near where the user's
