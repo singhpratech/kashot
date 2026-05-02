@@ -154,20 +154,25 @@ pub fn run() -> Result<()> {
         }
 
         /// Persist a final image (already cropped to the user's selection in
-        /// the overlay editor) to the configured save directory.
-        fn save_final(&mut self, img: image::ImageBuffer<image::Rgba<u8>, Vec<u8>>) {
+        /// the overlay editor) to the configured save directory. Applies
+        /// the watermark first if `WatermarkEnabled` is set in settings.
+        fn save_final(&mut self, mut img: image::ImageBuffer<image::Rgba<u8>, Vec<u8>>) {
+            apply_watermark(&mut img, &self.settings);
             match save_capture(&mut self.settings, &img) {
                 Ok(path) => eprintln!("Saved {}", path.display()),
                 Err(e)   => eprintln!("Save failed: {e}"),
             }
         }
 
-        /// Push the final cropped image into the system clipboard. Uses arboard,
-        /// which speaks the right protocol on every platform (X11 selection on
-        /// Linux, NSPasteboard on macOS, OpenClipboard on Windows). On Linux
-        /// arboard runs a background thread to keep the selection alive while
-        /// the source process exits — that's fine because Kashot stays resident.
-        fn copy_final(&mut self, img: image::ImageBuffer<image::Rgba<u8>, Vec<u8>>) {
+        /// Push the final cropped image into the system clipboard. Uses
+        /// arboard, which speaks the right protocol on every platform (X11
+        /// selection on Linux, NSPasteboard on macOS, OpenClipboard on
+        /// Windows). On Linux arboard runs a background thread to keep the
+        /// selection alive while the source process exits — that's fine
+        /// because Kashot stays resident. Watermark is applied first so the
+        /// pasted bitmap matches what `save_final` writes to disk.
+        fn copy_final(&mut self, mut img: image::ImageBuffer<image::Rgba<u8>, Vec<u8>>) {
+            apply_watermark(&mut img, &self.settings);
             let (w, h) = (img.width() as usize, img.height() as usize);
             let bytes  = img.into_raw();
             match arboard::Clipboard::new() {
@@ -224,38 +229,70 @@ pub fn run() -> Result<()> {
             }
         }
 
-        /// Native folder picker for the save directory. Title is kept short
-        /// so it fits in panel-truncated dialog headers; the file dialog
-        /// itself shows "Save to:" semantically via its own UI.
+        /// Settings entry point. The full Windows `SettingsForm` has fields
+        /// for hotkey / save folder / start-with-OS / theme / watermark — a
+        /// proper custom dialog is queued behind the iced UI port. Until
+        /// then this opens the on-disk `settings.json` in the user's default
+        /// editor so every option is editable, *and* offers the save-folder
+        /// picker as the most-used quick path. Three-way YesNoCancel:
+        ///   Yes    → open settings.json in default editor (covers all keys)
+        ///   No     → quick-pick a new save folder via file dialog
+        ///   Cancel → no-op
         fn show_settings(&mut self) {
-            let starting = save_directory(&self.settings);
-            let picked = rfd::FileDialog::new()
-                .set_title("Kashot — Save folder")
-                .set_directory(&starting)
-                .pick_folder();
-            if let Some(p) = picked {
-                self.settings.save_directory = p.to_string_lossy().to_string();
-                if let Err(e) = self.settings.save() {
-                    eprintln!("Failed to persist settings: {e}");
-                } else {
-                    eprintln!("Saved screenshots will now go to {}", p.display());
+            let cfg_path = AppSettings::settings_path().unwrap_or_else(|| std::path::PathBuf::from("settings.json"));
+            let res = rfd::MessageDialog::new()
+                .set_level(rfd::MessageLevel::Info)
+                .set_title("Kashot — Settings")
+                .set_description(format!(
+                    "Kashot stores all settings in:\n{}\n\n\
+                     Yes: open the file in your default text editor\n      \
+                          (capture hotkey, theme, watermark, start-with-OS, ...)\n\n\
+                     No: quick-pick the screenshot save folder\n\n\
+                     Cancel: do nothing",
+                    cfg_path.display()
+                ))
+                .set_buttons(rfd::MessageButtons::YesNoCancel)
+                .show();
+            match res {
+                rfd::MessageDialogResult::Yes => {
+                    open_url(&cfg_path.to_string_lossy());
                 }
+                rfd::MessageDialogResult::No => {
+                    let starting = save_directory(&self.settings);
+                    let picked = rfd::FileDialog::new()
+                        .set_title("Kashot — Save folder")
+                        .set_directory(&starting)
+                        .pick_folder();
+                    if let Some(p) = picked {
+                        self.settings.save_directory = p.to_string_lossy().to_string();
+                        if let Err(e) = self.settings.save() {
+                            eprintln!("Failed to persist settings: {e}");
+                        } else {
+                            eprintln!("Saved screenshots will now go to {}", p.display());
+                        }
+                    }
+                }
+                _ => {}
             }
         }
 
-        /// Native About modal — version + repo + "View releases" affordance.
-        /// Two-button (Yes/No) so the user can jump straight to the GitHub
-        /// releases page to check for updates without leaving the app.
+        /// Native About modal — mirrors `Kashot/AboutForm.cs` text 1:1:
+        /// name, version, "With love from PrateekSingh ❤", copyright, link
+        /// to the project, and a Yes/No to jump to the releases page.
         fn show_about(&self) {
+            let year = chrono::Local::now().format("%Y");
             let res = rfd::MessageDialog::new()
                 .set_level(rfd::MessageLevel::Info)
                 .set_title("About Kashot")
                 .set_description(format!(
                     "Kashot v{}\n\
                      The lightweight screenshot tool.\n\n\
-                     github.com/singhpratech/kashot · MIT\n\n\
+                     With love from PrateekSingh ❤\n\
+                     © {} PrateekSingh. All rights reserved.\n\n\
+                     github.com/singhpratech/kashot · kashot.org · MIT\n\n\
                      Open the releases page to check for updates?",
-                    env!("CARGO_PKG_VERSION")
+                    env!("CARGO_PKG_VERSION"),
+                    year
                 ))
                 .set_buttons(rfd::MessageButtons::YesNo)
                 .show();
@@ -316,7 +353,8 @@ pub fn run() -> Result<()> {
             if let Some(i) = drop_pin { self.pinned.swap_remove(i); }
             if let Some(img) = accepted { self.save_final(img); }
             if let Some(img) = copied   { self.copy_final(img); }
-            if let Some((img, pos)) = pinned_payload {
+            if let Some((mut img, pos)) = pinned_payload {
+                apply_watermark(&mut img, &self.settings);
                 match PinView::new(_loop_target, img, pos) {
                     Ok(pv)  => self.pinned.push(pv),
                     Err(e)  => eprintln!("Pin failed: {e}"),
@@ -356,6 +394,39 @@ pub fn run() -> Result<()> {
 }
 
 // ── helpers ─────────────────────────────────────────────────────────────────
+
+/// Stamp the configured watermark text onto the bottom-right of the final
+/// bitmap, mirroring the C# `OverlayForm.GetFinalImage` watermark pass. No-op
+/// when `WatermarkEnabled` is false or the text is empty.
+///
+/// Uses the in-tree 5×7 bitmap font through `painter::draw_text`, which
+/// alpha-blends so the watermark sits on top of whatever pixels the user
+/// captured. The text is painted twice — once in semi-opaque black (offset
+/// by 1 px shadow) and once in white — so it stays legible on both light
+/// and dark screenshots.
+fn apply_watermark(img: &mut image::ImageBuffer<image::Rgba<u8>, Vec<u8>>, settings: &AppSettings) {
+    if !settings.watermark_enabled { return; }
+    let text = settings.watermark_text.trim();
+    if text.is_empty() { return; }
+    use kashot_core::color::Rgba;
+    let scale = 2;
+    let text_w = crate::bitmap_font::measure(text, scale);
+    let text_h = crate::bitmap_font::GLYPH_H * scale;
+    let pad    = 8;
+    let img_w  = img.width()  as i32;
+    let img_h  = img.height() as i32;
+    if text_w + pad * 2 > img_w || text_h + pad * 2 > img_h {
+        // Watermark bigger than the saved frame — drop it rather than mangle.
+        return;
+    }
+    let x = img_w - text_w - pad;
+    let y = img_h - text_h - pad;
+    let mut surf = crate::painter::ImageSurface(img);
+    // Drop shadow.
+    crate::painter::draw_text(&mut surf, x + 1, y + 1, scale, text, Rgba::new(0, 0, 0, 180));
+    // Highlight.
+    crate::painter::draw_text(&mut surf, x,     y,     scale, text, Rgba::new(255, 255, 255, 220));
+}
 
 fn save_capture(
     settings: &mut AppSettings,

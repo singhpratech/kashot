@@ -90,17 +90,42 @@ fn spawn_recorder(output: &Path) -> Result<Child> {
     let path = output.to_str().ok_or_else(||
         Error::Recording("non-UTF-8 output path".into()))?;
 
-    let res = Command::new("ffmpeg")
-        .args([
-            "-y",                   // overwrite existing output
-            "-f", "x11grab",
-            "-framerate", "30",
-            "-i", &display,
-            "-c:v", "libx264",
-            "-preset", "ultrafast",
-            "-pix_fmt", "yuv420p",
-            path,
-        ])
+    // Try to capture the default microphone if PulseAudio (or pipewire-
+    // pulse) is reachable. `pactl info` exits 0 when a server is up; if it
+    // isn't, fall back to video-only so headless / no-audio boxes still
+    // record cleanly. `KASHOT_NO_MIC=1` lets the user force video-only.
+    let pulse_ok = Command::new("pactl")
+        .arg("info")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+    let no_mic_env = std::env::var("KASHOT_NO_MIC")
+        .map(|v| v != "0")
+        .unwrap_or(false);
+    let record_audio = pulse_ok && !no_mic_env;
+
+    let mut cmd = Command::new("ffmpeg");
+    cmd.arg("-y")                                    // overwrite existing output
+       .args(["-f", "x11grab"])
+       .args(["-framerate", "30"])
+       .args(["-i", &display]);
+    if record_audio {
+        cmd.args(["-f", "pulse"])
+           .args(["-i", "default"]);
+    }
+    cmd.args(["-c:v", "libx264"])
+       .args(["-preset", "ultrafast"])
+       .args(["-pix_fmt", "yuv420p"]);
+    if record_audio {
+        cmd.args(["-c:a", "aac"])
+           .args(["-b:a", "160k"]);
+    }
+    cmd.arg(path);
+
+    let res = cmd
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
