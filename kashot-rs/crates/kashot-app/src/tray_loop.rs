@@ -78,6 +78,7 @@ pub fn run() -> Result<()> {
                     TrayEvent::None                  => {}
                     TrayEvent::Capture               => self.capture(loop_target),
                     TrayEvent::CaptureDelayed(secs)  => self.capture_after(loop_target, Duration::from_secs(secs as u64)),
+                    TrayEvent::CancelPending         => {} // handled inline by the delay loop
                     TrayEvent::StartRecording        => self.start_recording(),
                     TrayEvent::StopRecording         => self.stop_recording(),
                     TrayEvent::Settings              => self.show_settings(),
@@ -117,11 +118,24 @@ pub fn run() -> Result<()> {
                 eprintln!("Capturing in {} second{}…",
                     user_delay.as_secs(),
                     if user_delay.as_secs() == 1 { "" } else { "s" });
+                if let Some(t) = &self.tray { t.set_pending(true); }
                 let until = Instant::now() + user_delay;
+                let mut cancelled = false;
                 while Instant::now() < until {
-                    if let Some(t) = &self.tray { t.pump_events(); }
+                    if let Some(t) = &self.tray {
+                        t.pump_events();
+                        // Drain pending tray events — if the user clicked
+                        // "Cancel pending capture", abort the countdown.
+                        if let TrayEvent::CancelPending = t.try_recv() {
+                            eprintln!("Cancel pending capture — aborting countdown.");
+                            cancelled = true;
+                            break;
+                        }
+                    }
                     std::thread::sleep(Duration::from_millis(50));
                 }
+                if let Some(t) = &self.tray { t.set_pending(false); }
+                if cancelled { self.capturing = false; return; }
             }
 
             // Brief settle delay so the tray menu / flyout can fully dismiss
