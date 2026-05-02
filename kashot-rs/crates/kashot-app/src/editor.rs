@@ -200,12 +200,28 @@ impl Overlay {
         // be visible at the screen edges, but every annotation tool works
         // including Text. Mirrors C# OverlayForm:
         //   `FormBorderStyle = None; WindowState = Maximized;`
-        let _ = WindowLevel::AlwaysOnTop;
+        // `Fullscreen::Borderless(None)` opens at a default size on Cinnamon
+        // (~800×600). Setting an explicit inner_size to the primary monitor's
+        // physical size + position (0,0) + AlwaysOnTop makes the WM open us
+        // at full screen even when fullscreen state isn't honored.
+        let monitor_size = loop_target
+            .primary_monitor()
+            .or_else(|| loop_target.available_monitors().next())
+            .map(|m| m.size())
+            .unwrap_or(winit::dpi::PhysicalSize::new(
+                screenshot.width(),
+                screenshot.height(),
+            ));
+        let primary = loop_target.primary_monitor()
+            .or_else(|| loop_target.available_monitors().next());
         let attrs = WindowAttributes::default()
             .with_title("Kashot")
             .with_decorations(false)
             .with_resizable(false)
-            .with_fullscreen(Some(Fullscreen::Borderless(None)));
+            .with_inner_size(monitor_size)
+            .with_position(PhysicalPosition::new(0i32, 0i32))
+            .with_window_level(WindowLevel::AlwaysOnTop)
+            .with_fullscreen(Some(Fullscreen::Borderless(primary)));
 
         let window = loop_target
             .create_window(attrs)
@@ -339,6 +355,7 @@ impl Overlay {
     }
 
     fn handle_key(&mut self, key: Key) -> OverlayOutcome {
+        eprintln!("kashot: key={:?} state={:?} mods={:?}", key, self.state, self.mods);
         // Text-input state owns the keyboard while it's active — typed
         // characters extend the pending annotation; Enter commits, Esc
         // cancels, Backspace pops the last char.
@@ -399,6 +416,7 @@ impl Overlay {
 
     fn handle_text_key(&mut self, key: Key) -> OverlayOutcome {
         use kashot_core::annotation::AnnotationKind;
+        eprintln!("kashot: text-input key={:?}", key);
         match key {
             Key::Named(NamedKey::Escape) => {
                 self.current = None;
@@ -603,6 +621,7 @@ impl Overlay {
                         let p = Point2::new(self.cursor.0 as f32, self.cursor.1 as f32);
                         self.current = Some(Annotation::text(self.stroke.color, p, ""));
                         self.state   = State::TextInput;
+                        eprintln!("kashot: entered TextInput at ({}, {})", p.x, p.y);
                         self.window.request_redraw();
                     } else if let Some(a) = self.start_annotation() {
                         self.current = Some(a);
