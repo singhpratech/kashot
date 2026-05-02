@@ -42,15 +42,6 @@ use winit::event_loop::ActiveEventLoop;
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 use winit::window::{CursorIcon, Fullscreen, Window, WindowAttributes, WindowId, WindowLevel};
 
-// Linux X11: bypass the window manager so the overlay layers above DOCK-
-// type panels (Cinnamon, Plasma, GNOME Shell). `_NET_WM_STATE_ABOVE` (what
-// `AlwaysOnTop` maps to) sits at the same stratum as DOCK, so even a
-// "topmost" overlay still gets occluded by the panel. `override_redirect`
-// makes the X server skip the WM entirely for layering decisions —
-// the same trick panels themselves use to sit above everything.
-#[cfg(target_os = "linux")]
-use winit::platform::x11::WindowAttributesExtX11;
-
 use crate::painter::{self, ImageSurface, U32Surface};
 
 /// What the overlay window should do next after handling an event.
@@ -1130,11 +1121,11 @@ fn draw_tool_panel(
         let bg = if highlight { BTN_ACTIVE } else { BTN };
         draw_rounded_rect(buf, win_w, win_h, x0, y0, x1, y1, 6, bg);
         match b {
-            ToolPanelButton::Tool(t)    => icons::render_icon(buf, win_w, win_h, x0, y0, x1, y1, icons::IconKind::Tool(*t), [232,232,236,255], None, thickness),
-            ToolPanelButton::Color      => icons::render_icon(buf, win_w, win_h, x0, y0, x1, y1, icons::IconKind::Color, [232,232,236,255], Some([swatch.r, swatch.g, swatch.b, 255]), thickness),
-            ToolPanelButton::Thickness  => icons::render_icon(buf, win_w, win_h, x0, y0, x1, y1, icons::IconKind::Thickness, [232,232,236,255], None, thickness),
-            ToolPanelButton::Undo       => icons::render_icon(buf, win_w, win_h, x0, y0, x1, y1, icons::IconKind::Undo, [232,232,236,255], None, thickness),
-            ToolPanelButton::Redo       => icons::render_icon(buf, win_w, win_h, x0, y0, x1, y1, icons::IconKind::Redo, [232,232,236,255], None, thickness),
+            ToolPanelButton::Tool(t)    => crate::icons::render_icon(buf, win_w, win_h, x0, y0, x1, y1, crate::icons::IconKind::Tool(*t), [232,232,236,255], None, thickness),
+            ToolPanelButton::Color      => crate::icons::render_icon(buf, win_w, win_h, x0, y0, x1, y1, crate::icons::IconKind::Color, [232,232,236,255], Some([swatch.r, swatch.g, swatch.b, 255]), thickness),
+            ToolPanelButton::Thickness  => crate::icons::render_icon(buf, win_w, win_h, x0, y0, x1, y1, crate::icons::IconKind::Thickness, [232,232,236,255], None, thickness),
+            ToolPanelButton::Undo       => crate::icons::render_icon(buf, win_w, win_h, x0, y0, x1, y1, crate::icons::IconKind::Undo, [232,232,236,255], None, thickness),
+            ToolPanelButton::Redo       => crate::icons::render_icon(buf, win_w, win_h, x0, y0, x1, y1, crate::icons::IconKind::Redo, [232,232,236,255], None, thickness),
         }
     }
 }
@@ -1157,10 +1148,10 @@ fn draw_action_panel(
         let (x0, y0, x1, y1) = action_panel_button_rect(origin, i as i32);
         draw_rounded_rect(buf, win_w, win_h, x0, y0, x1, y1, 6, BTN);
         match b {
-            ActionButton::Pin   => icons::render_icon(buf, win_w, win_h, x0, y0, x1, y1, icons::IconKind::Pin,   [232,232,236,255], None, 4.0),
-            ActionButton::Copy  => icons::render_icon(buf, win_w, win_h, x0, y0, x1, y1, icons::IconKind::Copy,  [232,232,236,255], None, 4.0),
-            ActionButton::Save  => icons::render_icon(buf, win_w, win_h, x0, y0, x1, y1, icons::IconKind::Save,  [232,232,236,255], None, 4.0),
-            ActionButton::Close => icons::render_icon(buf, win_w, win_h, x0, y0, x1, y1, icons::IconKind::Close, [232,232,236,255], None, 4.0),
+            ActionButton::Pin   => crate::icons::render_icon(buf, win_w, win_h, x0, y0, x1, y1, crate::icons::IconKind::Pin,   [232,232,236,255], None, 4.0),
+            ActionButton::Copy  => crate::icons::render_icon(buf, win_w, win_h, x0, y0, x1, y1, crate::icons::IconKind::Copy,  [232,232,236,255], None, 4.0),
+            ActionButton::Save  => crate::icons::render_icon(buf, win_w, win_h, x0, y0, x1, y1, crate::icons::IconKind::Save,  [232,232,236,255], None, 4.0),
+            ActionButton::Close => crate::icons::render_icon(buf, win_w, win_h, x0, y0, x1, y1, crate::icons::IconKind::Close, [232,232,236,255], None, 4.0),
         }
     }
 }
