@@ -15,6 +15,7 @@
 
 mod bitmap_font;
 mod editor;
+mod icons;
 mod painter;
 mod pin;
 mod tray_loop;
