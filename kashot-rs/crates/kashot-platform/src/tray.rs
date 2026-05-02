@@ -11,17 +11,19 @@ use tray_icon::{Icon as TrayIconImage, TrayIcon, TrayIconBuilder};
 
 pub struct Tray {
     _icon: TrayIcon,
-    pub capture_id:  tray_icon::menu::MenuId,
-    pub delay3_id:   tray_icon::menu::MenuId,
-    pub delay5_id:   tray_icon::menu::MenuId,
-    pub delay10_id:  tray_icon::menu::MenuId,
-    pub record_id:   tray_icon::menu::MenuId,
-    pub stop_rec_id: tray_icon::menu::MenuId,
-    pub settings_id: tray_icon::menu::MenuId,
-    pub about_id:    tray_icon::menu::MenuId,
-    pub exit_id:     tray_icon::menu::MenuId,
-    record_item:     MenuItem,
-    stop_rec_item:   MenuItem,
+    pub capture_id:    tray_icon::menu::MenuId,
+    pub delay3_id:     tray_icon::menu::MenuId,
+    pub delay5_id:     tray_icon::menu::MenuId,
+    pub delay10_id:    tray_icon::menu::MenuId,
+    pub cancel_id:     tray_icon::menu::MenuId,
+    pub record_id:     tray_icon::menu::MenuId,
+    pub stop_rec_id:   tray_icon::menu::MenuId,
+    pub settings_id:   tray_icon::menu::MenuId,
+    pub about_id:      tray_icon::menu::MenuId,
+    pub exit_id:       tray_icon::menu::MenuId,
+    record_item:       MenuItem,
+    stop_rec_item:     MenuItem,
+    cancel_item:       MenuItem,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -31,6 +33,9 @@ pub enum TrayEvent {
     /// Capture after N seconds. Lets the user dismiss menus, position
     /// windows, etc. before the screenshot fires.
     CaptureDelayed(u32),
+    /// Cancel the in-flight delay capture. Polled during the delay loop —
+    /// resets `_capturing` and skips the screenshot.
+    CancelPending,
     StartRecording,
     StopRecording,
     Settings,
@@ -72,11 +77,15 @@ impl Tray {
         let delay_3s   = MenuItem::new("3 seconds",  true, None);
         let delay_5s   = MenuItem::new("5 seconds",  true, None);
         let delay_10s  = MenuItem::new("10 seconds", true, None);
+        // Disabled until a delay is actually in flight — the tray loop calls
+        // `set_pending` to enable/disable as `capture_after` enters/exits.
+        let cancel     = MenuItem::new("Cancel pending capture", false, None);
 
         let capture_id  = capture.id().clone();
         let delay3_id   = delay_3s.id().clone();
         let delay5_id   = delay_5s.id().clone();
         let delay10_id  = delay_10s.id().clone();
+        let cancel_id   = cancel.id().clone();
         let record_id   = record.id().clone();
         let stop_rec_id = stop_rec.id().clone();
         let settings_id = settings.id().clone();
@@ -86,6 +95,8 @@ impl Tray {
         delay_menu.append(&delay_3s ).map_err(|e| Error::Tray(e.to_string()))?;
         delay_menu.append(&delay_5s ).map_err(|e| Error::Tray(e.to_string()))?;
         delay_menu.append(&delay_10s).map_err(|e| Error::Tray(e.to_string()))?;
+        delay_menu.append(&PredefinedMenuItem::separator()).map_err(|e| Error::Tray(e.to_string()))?;
+        delay_menu.append(&cancel   ).map_err(|e| Error::Tray(e.to_string()))?;
 
         menu.append(&capture).map_err(|e| Error::Tray(e.to_string()))?;
         menu.append(&delay_menu).map_err(|e| Error::Tray(e.to_string()))?;
@@ -112,6 +123,7 @@ impl Tray {
             delay3_id,
             delay5_id,
             delay10_id,
+            cancel_id,
             record_id,
             stop_rec_id,
             settings_id,
@@ -119,6 +131,7 @@ impl Tray {
             exit_id,
             record_item:   record,
             stop_rec_item: stop_rec,
+            cancel_item:   cancel,
         })
     }
 
@@ -130,6 +143,7 @@ impl Tray {
             Ok(ev) if ev.id == self.delay3_id    => TrayEvent::CaptureDelayed(3),
             Ok(ev) if ev.id == self.delay5_id    => TrayEvent::CaptureDelayed(5),
             Ok(ev) if ev.id == self.delay10_id   => TrayEvent::CaptureDelayed(10),
+            Ok(ev) if ev.id == self.cancel_id    => TrayEvent::CancelPending,
             Ok(ev) if ev.id == self.record_id    => TrayEvent::StartRecording,
             Ok(ev) if ev.id == self.stop_rec_id  => TrayEvent::StopRecording,
             Ok(ev) if ev.id == self.settings_id  => TrayEvent::Settings,
@@ -137,6 +151,13 @@ impl Tray {
             Ok(ev) if ev.id == self.exit_id      => TrayEvent::Exit,
             _ => TrayEvent::None,
         }
+    }
+
+    /// Toggle the "Cancel pending capture" item — enabled only while a
+    /// delay capture is in flight, mirroring how `Stop Recording` is gated
+    /// by recording state.
+    pub fn set_pending(&self, pending: bool) {
+        self.cancel_item.set_enabled(pending);
     }
 
     /// Reflect recording state in the menu — only one of "Record Screen" /
