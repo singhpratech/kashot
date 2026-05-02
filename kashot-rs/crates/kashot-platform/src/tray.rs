@@ -82,11 +82,14 @@ impl Tray {
         // Replaces the single "Record Screen" item with a 4-way submenu so
         // the user can pick mic / system / both / none per recording.
         let record_menu = Submenu::new("Record screen", true);
-        let rec_none  = MenuItem::new("Video only",                       true, None);
-        let rec_mic   = MenuItem::new("With microphone",                  true, None);
-        let rec_sys   = MenuItem::new("With system audio",                true, None);
-        let rec_both  = MenuItem::new("With microphone + system audio",   true, None);
-        let stop_rec  = MenuItem::new("Stop Recording",   false, None);
+        // Concise labels with leading emoji icons — most Linux/macOS menu
+        // renderers handle these fine; on the rare host where they don't
+        // the trailing text still reads cleanly.
+        let rec_none  = MenuItem::new("🎬  No audio",          true, None);
+        let rec_mic   = MenuItem::new("🎙   Microphone",        true, None);
+        let rec_sys   = MenuItem::new("🔊  System audio",      true, None);
+        let rec_both  = MenuItem::new("🎙🔊  Mic + System",     true, None);
+        let stop_rec  = MenuItem::new("⏹  Stop Recording",     false, None);
         let open_fold = MenuItem::new("Open Screenshots Folder", true, None);
         let open_recs = MenuItem::new("Open Recordings Folder",  true, None);
         let settings  = MenuItem::new("Settings…",               true, None);
