@@ -142,6 +142,31 @@ pub fn run() -> Result<()> {
             }
         }
 
+        /// Push the final cropped image into the system clipboard. Uses arboard,
+        /// which speaks the right protocol on every platform (X11 selection on
+        /// Linux, NSPasteboard on macOS, OpenClipboard on Windows). On Linux
+        /// arboard runs a background thread to keep the selection alive while
+        /// the source process exits — that's fine because Kashot stays resident.
+        fn copy_final(&mut self, img: image::ImageBuffer<image::Rgba<u8>, Vec<u8>>) {
+            let (w, h) = (img.width() as usize, img.height() as usize);
+            let bytes  = img.into_raw();
+            match arboard::Clipboard::new() {
+                Ok(mut clip) => {
+                    let data = arboard::ImageData {
+                        width:  w,
+                        height: h,
+                        bytes:  std::borrow::Cow::Owned(bytes),
+                    };
+                    if let Err(e) = clip.set_image(data) {
+                        eprintln!("Clipboard copy failed: {e}");
+                    } else {
+                        eprintln!("Copied {w}×{h} to clipboard");
+                    }
+                }
+                Err(e) => eprintln!("Clipboard unavailable: {e}"),
+            }
+        }
+
         /// Start recording the primary display. Output lands in the user's
         /// Videos directory (or a fallback) as `kashot_<timestamp>.mp4`.
         fn start_recording(&mut self) {
@@ -229,18 +254,21 @@ pub fn run() -> Result<()> {
             // from a destroyed surface) is silently dropped.
             let drop_overlay;
             let mut accepted: Option<image::ImageBuffer<image::Rgba<u8>, Vec<u8>>> = None;
+            let mut copied:   Option<image::ImageBuffer<image::Rgba<u8>, Vec<u8>>> = None;
             if let Some(ov) = self.overlay.as_mut() {
                 if ov.window_id() == id {
                     match ov.handle_event(ev) {
                         OverlayOutcome::Continue       => { drop_overlay = false; }
                         OverlayOutcome::Cancelled      => { drop_overlay = true; }
                         OverlayOutcome::Accepted(img)  => { drop_overlay = true; accepted = Some(img); }
+                        OverlayOutcome::Copied(img)    => { drop_overlay = true; copied   = Some(img); }
                     }
                 } else { drop_overlay = false; }
             } else { drop_overlay = false; }
 
             if drop_overlay { self.overlay = None; }
             if let Some(img) = accepted { self.save_final(img); }
+            if let Some(img) = copied   { self.copy_final(img); }
         }
 
         fn about_to_wait(&mut self, loop_target: &ActiveEventLoop) {
