@@ -93,6 +93,9 @@ pub struct Overlay {
     annotations: Vec<Annotation>,
     /// In-progress annotation while `state == Drawing`.
     current:     Option<Annotation>,
+    /// Next number assigned by `Tool::Step`. Resets to 1 whenever the user
+    /// clears the selection (Esc on `Selected` or starts a fresh drag).
+    step_count:  u32,
 }
 
 impl Overlay {
@@ -133,6 +136,7 @@ impl Overlay {
             stroke:      Stroke::default(),
             annotations: Vec::new(),
             current:     None,
+            step_count:  1,
         })
     }
 
@@ -212,6 +216,7 @@ impl Overlay {
                     self.state       = State::Idle;
                     self.selection   = None;
                     self.annotations.clear();
+                    self.step_count  = 1;
                     self.window.request_redraw();
                     OverlayOutcome::Continue
                 } else {
@@ -253,7 +258,15 @@ impl Overlay {
             }
             State::Selected => {
                 if self.cursor_in_selection() {
-                    if let Some(a) = self.start_annotation() {
+                    // Step is click-to-place — never enters `Drawing`. Drop a
+                    // numbered marker right where the user clicked and bump
+                    // the counter for the next click.
+                    if self.tool == Tool::Step {
+                        let p = Point2::new(self.cursor.0 as f32, self.cursor.1 as f32);
+                        self.annotations.push(Annotation::step(self.stroke.color, p, self.step_count));
+                        self.step_count = self.step_count.saturating_add(1);
+                        self.window.request_redraw();
+                    } else if let Some(a) = self.start_annotation() {
                         self.current = Some(a);
                         self.state   = State::Drawing;
                         self.window.request_redraw();
@@ -264,6 +277,7 @@ impl Overlay {
                     self.anchor    = self.cursor;
                     self.selection = Some((self.cursor.0, self.cursor.1, 0, 0));
                     self.annotations.clear();
+                    self.step_count = 1;
                     self.window.request_redraw();
                 }
             }
@@ -311,10 +325,13 @@ impl Overlay {
             Tool::Arrow     => Annotation::arrow(self.stroke, p),
             Tool::Rectangle => Annotation::rectangle(self.stroke, p),
             Tool::Ellipse   => Annotation::ellipse(self.stroke, p),
-            // Tools queued for later slices — clicking their toolbar button
-            // selects them, but starting a drag is a no-op until we ship the
-            // rasterizer paths for them.
-            Tool::Line | Tool::Marker | Tool::Text | Tool::Step | Tool::Pixelate => return None,
+            Tool::Line      => Annotation::line(self.stroke, p),
+            Tool::Marker    => Annotation::marker(self.stroke, p),
+            Tool::Pixelate  => Annotation::pixelate(p),
+            // Step is handled inline at click site (no `Drawing` state).
+            Tool::Step      => return None,
+            // Text needs a font rasterizer + TextInput substate (slice 4).
+            Tool::Text      => return None,
         })
     }
 
@@ -322,14 +339,17 @@ impl Overlay {
         if self.state == State::Selected {
             if let Some(rect) = self.selection {
                 let mut img = crop(&self.screenshot, rect);
-                // Burn annotations into the cropped output, translating their
-                // coordinates from window-space into the crop's local space.
+                // Snapshot the un-annotated crop FIRST so pixelate's source-
+                // sampling stays idempotent under draw-order: pixelate must
+                // always sample the original screenshot, never something we
+                // already painted on. Mirrors C# `PixelateAnnotation`.
+                let pristine = img.clone();
                 let dx = -rect.0 as f32;
                 let dy = -rect.1 as f32;
                 let mut surf = ImageSurface(&mut img);
                 for a in &self.annotations {
                     let translated = translate_annotation(a, dx, dy);
-                    painter::render_annotation(&mut surf, &translated);
+                    painter::render_annotation(&mut surf, &translated, Some(&pristine));
                 }
                 return OverlayOutcome::Accepted(img);
             }
@@ -386,10 +406,10 @@ impl Overlay {
         // a scissor here, but we still skip when there's no selection.
         let mut surf = U32Surface { buf: &mut buf, stride: win_w as i32, height: win_h as i32 };
         for a in &self.annotations {
-            painter::render_annotation(&mut surf, a);
+            painter::render_annotation(&mut surf, a, Some(&self.screenshot));
         }
         if let Some(a) = self.current.as_ref() {
-            painter::render_annotation(&mut surf, a);
+            painter::render_annotation(&mut surf, a, Some(&self.screenshot));
         }
 
         // Pass 3: selection border + 8 handles.
@@ -475,7 +495,9 @@ fn draw_toolbar(
     for (i, t) in Tool::ALL.iter().enumerate() {
         let (x0, y0, x1, y1) = toolbar_button_rect(win_w, i as i32);
         let is_active = *t == active;
-        let working   = matches!(t, Tool::Pen | Tool::Arrow | Tool::Rectangle | Tool::Ellipse);
+        // Text needs a font rasterizer + TextInput substate (slice 4); every
+        // other tool ships in this PR.
+        let working   = !matches!(t, Tool::Text);
         let bg = if is_active { BTN_ACTIVE } else if working { BTN } else { BTN_DISABLED };
         draw_rounded_rect(buf, win_w, win_h, x0, y0, x1, y1, 6, bg);
         draw_tool_glyph(buf, win_w, win_h, x0, y0, x1, y1, *t, TEXT);
