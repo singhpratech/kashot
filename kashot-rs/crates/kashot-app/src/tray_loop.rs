@@ -79,7 +79,7 @@ pub fn run() -> Result<()> {
                     TrayEvent::Capture               => self.capture(loop_target),
                     TrayEvent::CaptureDelayed(secs)  => self.capture_after(loop_target, Duration::from_secs(secs as u64)),
                     TrayEvent::CancelPending         => {} // handled inline by the delay loop
-                    TrayEvent::StartRecording        => self.start_recording(),
+                    TrayEvent::StartRecording(opts)  => self.start_recording(opts),
                     TrayEvent::StopRecording         => self.stop_recording(),
                     TrayEvent::OpenSaveFolder        => self.open_save_folder(),
                     TrayEvent::OpenRecordingsFolder  => self.open_recordings_folder(),
@@ -200,7 +200,7 @@ pub fn run() -> Result<()> {
         /// Shows a desktop notification so the user knows recording is live
         /// (the tray menu's "Stop Recording" item is the canonical control,
         /// but the notification also reminds where to click).
-        fn start_recording(&mut self) {
+        fn start_recording(&mut self, opts: kashot_platform::recorder::RecordingOptions) {
             if self.recorder.is_recording() {
                 eprintln!("Already recording.");
                 return;
@@ -208,12 +208,18 @@ pub fn run() -> Result<()> {
             let dir   = recordings_directory();
             let stamp = Local::now().format("%Y%m%d_%H%M%S");
             let out   = dir.join(format!("kashot_{stamp}.mp4"));
-            match self.recorder.start(out.clone()) {
+            let audio_label = match (opts.mic, opts.system_audio) {
+                (false, false) => "video only",
+                (true,  false) => "with microphone",
+                (false, true)  => "with system audio",
+                (true,  true)  => "with mic + system audio",
+            };
+            match self.recorder.start(out.clone(), opts) {
                 Ok(()) => {
-                    eprintln!("Recording → {}", out.display());
+                    eprintln!("Recording ({audio_label}) → {}", out.display());
                     if let Some(t) = &self.tray { t.set_recording(true); }
                     notify("Kashot — recording started",
-                        &format!("Saving to {}\n\nClick the tray icon → \"Stop Recording\" to finish.",
+                        &format!("{audio_label}\nSaving to {}\n\nClick the tray icon → \"Stop Recording\" to finish.",
                             out.display()),
                         true);
                 }
