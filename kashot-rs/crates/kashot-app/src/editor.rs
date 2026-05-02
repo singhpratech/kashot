@@ -40,7 +40,7 @@ use winit::dpi::PhysicalPosition;
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::event_loop::ActiveEventLoop;
 use winit::keyboard::{Key, ModifiersState, NamedKey};
-use winit::window::{CursorIcon, Fullscreen, Window, WindowAttributes, WindowId};
+use winit::window::{CursorIcon, Fullscreen, Window, WindowAttributes, WindowId, WindowLevel};
 
 use crate::painter::{self, ImageSurface, U32Surface};
 
@@ -188,11 +188,18 @@ impl Overlay {
         loop_target: &ActiveEventLoop,
         screenshot: ImageBuffer<Rgba<u8>, Vec<u8>>,
     ) -> Result<Self> {
+        // Borderless fullscreen + always-on-top mirrors C# OverlayForm:
+        //   `FormBorderStyle = None; TopMost = true; WindowState = Maximized;`
+        // Without `AlwaysOnTop` the desktop panel (Cinnamon / GNOME / Plasma)
+        // layers over the overlay because panels claim a topmost stratum
+        // by default — the overlay would only visually fill ~2/3 of the
+        // screen even when its underlying surface is full-screen-sized.
         let attrs = WindowAttributes::default()
             .with_title("Kashot")
             .with_decorations(false)
             .with_resizable(false)
-            .with_fullscreen(Some(Fullscreen::Borderless(None)));
+            .with_fullscreen(Some(Fullscreen::Borderless(None)))
+            .with_window_level(WindowLevel::AlwaysOnTop);
 
         let window = loop_target
             .create_window(attrs)
