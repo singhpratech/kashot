@@ -15,6 +15,7 @@
 
 mod editor;
 mod painter;
+mod pin;
 mod tray_loop;
 
 use anyhow::Result;
