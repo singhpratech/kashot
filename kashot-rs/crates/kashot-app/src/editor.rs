@@ -33,6 +33,7 @@ use std::rc::Rc;
 use anyhow::{anyhow, Result};
 use image::{ImageBuffer, Rgba};
 use kashot_core::annotation::{Annotation, Point2, Stroke};
+use kashot_core::state::{hit_test_edge, Edge};
 use kashot_core::tool::Tool;
 use softbuffer::{Context, Surface};
 use winit::dpi::PhysicalPosition;
@@ -55,6 +56,11 @@ pub enum OverlayOutcome {
     /// User pressed Ctrl+C — caller writes the cropped bitmap to the
     /// system clipboard via arboard instead of saving to disk.
     Copied(ImageBuffer<Rgba<u8>, Vec<u8>>),
+    /// User pressed Ctrl+P — caller floats the bitmap as a pinned, always-
+    /// on-top window at the selection's screen position. Carries the (x, y)
+    /// of the selection so the pin window opens right where the user
+    /// captured. Mirrors `Kashot/PinForm.cs`.
+    Pinned(ImageBuffer<Rgba<u8>, Vec<u8>>, (i32, i32)),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -71,6 +77,10 @@ enum State {
     /// `current` holds the in-progress annotation. Mouse-move extends it,
     /// mouse-up commits it to `annotations`.
     Drawing,
+    /// User grabbed an edge or corner of the locked-in selection — mouse-
+    /// move adjusts the corresponding side of the rect, mouse-up returns
+    /// to `Selected`. The grabbed edge lives in `resize_edge`.
+    Resizing,
 }
 
 /// Toolbar geometry — kept simple and centered horizontally near the top
@@ -107,6 +117,8 @@ pub struct Overlay {
     /// we track them via `WindowEvent::ModifiersChanged` and consult them in
     /// the keyboard handler for Ctrl+Z / Ctrl+Y / Ctrl+S / Ctrl+C.
     mods:        ModifiersState,
+    /// Which edge / corner is being dragged while `state == Resizing`.
+    resize_edge: Edge,
 }
 
 impl Overlay {
@@ -150,6 +162,7 @@ impl Overlay {
             current:     None,
             step_count:  1,
             mods:        ModifiersState::empty(),
+            resize_edge: Edge::None,
         })
     }
 
@@ -180,6 +193,15 @@ impl Overlay {
                             a.extend(Point2::new(x as f32, y as f32));
                             self.window.request_redraw();
                         }
+                    }
+                    State::Resizing => {
+                        self.apply_resize();
+                        self.window.request_redraw();
+                    }
+                    State::Selected => {
+                        // Update the cursor icon based on which edge we're
+                        // hovering, matching the C# OverlayForm convention.
+                        self.update_resize_cursor();
                     }
                     _ => {}
                 }
@@ -261,6 +283,8 @@ impl Overlay {
                         's' => return self.commit(),
                         // Ctrl+C → commit-and-copy
                         'c' => return self.commit_as_copy(),
+                        // Ctrl+P → commit-and-pin (float bitmap on screen)
+                        'p' => return self.commit_as_pin(),
                         _ => {}
                     }
                 } else if let Some(t) = Tool::from_key(c) {
@@ -303,6 +327,13 @@ impl Overlay {
                 self.window.request_redraw();
                 return OverlayOutcome::Continue;
             }
+            // Color-palette swatch under the toolbar — click to switch.
+            let win_w = self.window.inner_size().width as usize;
+            if let Some(c) = palette_hit(win_w, self.cursor) {
+                self.stroke.color = c;
+                self.window.request_redraw();
+                return OverlayOutcome::Continue;
+            }
         }
 
         match self.state {
@@ -313,6 +344,21 @@ impl Overlay {
                 self.window.request_redraw();
             }
             State::Selected => {
+                // Edge-resize takes priority over starting a draw — if the
+                // cursor is sitting on an edge or corner of the selection,
+                // clicking there grabs that edge for resizing.
+                if let Some(sel) = self.selection {
+                    let hit = hit_test_edge(
+                        (sel.0 as f32, sel.1 as f32, sel.2 as f32, sel.3 as f32),
+                        (self.cursor.0 as f32, self.cursor.1 as f32),
+                    );
+                    if hit.is_some() {
+                        self.state       = State::Resizing;
+                        self.resize_edge = hit;
+                        self.window.request_redraw();
+                        return OverlayOutcome::Continue;
+                    }
+                }
                 if self.cursor_in_selection() {
                     // Step is click-to-place — never enters `Drawing`. Drop a
                     // numbered marker right where the user clicked and bump
@@ -368,9 +414,55 @@ impl Overlay {
                 self.state = State::Selected;
                 self.window.request_redraw();
             }
+            State::Resizing => {
+                self.state       = State::Selected;
+                self.resize_edge = Edge::None;
+                self.window.set_cursor(CursorIcon::Crosshair);
+                self.window.request_redraw();
+            }
             _ => {}
         }
         OverlayOutcome::Continue
+    }
+
+    /// Mutate the selection rect according to the edge being dragged.
+    fn apply_resize(&mut self) {
+        let Some((mut x, mut y, mut w, mut h)) = self.selection else { return; };
+        let (cx, cy) = self.cursor;
+        match self.resize_edge {
+            Edge::Left       => { let dx = cx - x; w -= dx; x  = cx; }
+            Edge::Right      => { w = cx - x; }
+            Edge::Top        => { let dy = cy - y; h -= dy; y  = cy; }
+            Edge::Bottom     => { h = cy - y; }
+            Edge::TopLeft    => { let dx = cx - x; let dy = cy - y; w -= dx; h -= dy; x = cx; y = cy; }
+            Edge::TopRight   => { let dy = cy - y; w = cx - x; h -= dy; y = cy; }
+            Edge::BottomLeft => { let dx = cx - x; w -= dx; h = cy - y; x = cx; }
+            Edge::BottomRight=> { w = cx - x; h = cy - y; }
+            Edge::None       => {}
+        }
+        // Clamp to non-negative width/height — flip the rect if the user
+        // dragged past the opposite edge.
+        if w < 0 { x += w; w = -w; }
+        if h < 0 { y += h; h = -h; }
+        if w < 4 { w = 4; }
+        if h < 4 { h = 4; }
+        self.selection = Some((x, y, w, h));
+    }
+
+    fn update_resize_cursor(&self) {
+        let Some(sel) = self.selection else { return; };
+        let hit = hit_test_edge(
+            (sel.0 as f32, sel.1 as f32, sel.2 as f32, sel.3 as f32),
+            (self.cursor.0 as f32, self.cursor.1 as f32),
+        );
+        let icon = match hit {
+            Edge::Left | Edge::Right                  => CursorIcon::EwResize,
+            Edge::Top  | Edge::Bottom                 => CursorIcon::NsResize,
+            Edge::TopLeft | Edge::BottomRight         => CursorIcon::NwseResize,
+            Edge::TopRight | Edge::BottomLeft         => CursorIcon::NeswResize,
+            Edge::None                                => CursorIcon::Crosshair,
+        };
+        self.window.set_cursor(icon);
     }
 
     fn cursor_in_selection(&self) -> bool {
@@ -407,6 +499,17 @@ impl Overlay {
     fn commit_as_copy(&mut self) -> OverlayOutcome {
         match self.compose_final() {
             Some(img) => OverlayOutcome::Copied(img),
+            None      => OverlayOutcome::Continue,
+        }
+    }
+
+    fn commit_as_pin(&mut self) -> OverlayOutcome {
+        let pos = match self.selection {
+            Some((x, y, _, _)) => (x, y),
+            None               => return OverlayOutcome::Continue,
+        };
+        match self.compose_final() {
+            Some(img) => OverlayOutcome::Pinned(img, pos),
             None      => OverlayOutcome::Continue,
         }
     }
@@ -596,6 +699,47 @@ fn draw_toolbar(
         let rgb = ((swatch.r as u32) << 16) | ((swatch.g as u32) << 8) | swatch.b as u32;
         draw_filled_rect(buf, win_w, win_h, x0 + 4, y1 + 2, x1 - 4, y1 + 5, rgb);
     }
+
+    // Color palette strip below the toolbar — 16 vivid swatches in a single
+    // row, click to switch the active stroke color. Centered under the
+    // toolbar background pill.
+    let pal = kashot_core::annotation::Palettes::get(0); // "Vivid"
+    let (px, py) = palette_strip_origin(win_w);
+    draw_rounded_rect(buf, win_w, win_h, px - 4, py - 4,
+                      px + PALETTE_SWATCH_W * 16 + 4, py + PALETTE_SWATCH_H + 4, 6, BG);
+    for i in 0..16 {
+        let c = pal.colors[i];
+        let rgb = ((c.r as u32) << 16) | ((c.g as u32) << 8) | c.b as u32;
+        let sx0 = px + (i as i32) * PALETTE_SWATCH_W;
+        let sx1 = sx0 + PALETTE_SWATCH_W - 1;
+        let sy0 = py;
+        let sy1 = py + PALETTE_SWATCH_H;
+        draw_filled_rect(buf, win_w, win_h, sx0, sy0, sx1, sy1, rgb);
+        // Highlight the currently active swatch with a 1-px white border.
+        if c.r == swatch.r && c.g == swatch.g && c.b == swatch.b {
+            draw_rect_border(buf, win_w, win_h, sx0, sy0, sx1, sy1, 0x00_FF_FF_FF);
+        }
+    }
+}
+
+const PALETTE_SWATCH_W: i32 = 22;
+const PALETTE_SWATCH_H: i32 = 14;
+const PALETTE_GAP_TOP:  i32 = 8;
+
+fn palette_strip_origin(win_w: usize) -> (i32, i32) {
+    let strip_w = PALETTE_SWATCH_W * 16;
+    let x = ((win_w as i32) - strip_w) / 2;
+    let (_ox, oy) = toolbar_origin(win_w);
+    let toolbar_bottom = oy + TOOLBAR_BTN + TOOLBAR_PAD * 2;
+    (x.max(0), toolbar_bottom + PALETTE_GAP_TOP)
+}
+
+fn palette_hit(win_w: usize, (cx, cy): (i32, i32)) -> Option<kashot_core::color::Rgba> {
+    let (px, py) = palette_strip_origin(win_w);
+    if cy < py || cy >= py + PALETTE_SWATCH_H { return None; }
+    if cx < px || cx >= px + PALETTE_SWATCH_W * 16 { return None; }
+    let idx = ((cx - px) / PALETTE_SWATCH_W) as usize;
+    Some(kashot_core::annotation::Palettes::get(0).colors[idx])
 }
 
 // ── helpers ──────────────────────────────────────────────────────────────

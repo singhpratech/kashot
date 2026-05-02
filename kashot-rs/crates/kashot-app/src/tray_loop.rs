@@ -19,6 +19,7 @@ use kashot_platform::{
 };
 
 use crate::editor::{Overlay, OverlayOutcome};
+use crate::pin::PinView;
 use winit::application::ApplicationHandler;
 use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
@@ -57,6 +58,11 @@ pub fn run() -> Result<()> {
         /// Holds the captured screenshot and the user's selection state until
         /// they accept (Enter / right-click) or cancel (Esc).
         overlay:    Option<Overlay>,
+        /// Floating "Pin" windows the user has chosen to keep on screen.
+        /// Each is its own borderless winit window; the tray app routes
+        /// their `WindowEvent`s by `WindowId` and drops them when their
+        /// handler signals close.
+        pinned:     Vec<PinView>,
         last_tick:  Instant,
         capturing:  bool,
     }
@@ -252,23 +258,56 @@ pub fn run() -> Result<()> {
             // Route the event into the overlay editor if it owns the window.
             // Anything else (close-requested on a phantom window, stray events
             // from a destroyed surface) is silently dropped.
-            let drop_overlay;
-            let mut accepted: Option<image::ImageBuffer<image::Rgba<u8>, Vec<u8>>> = None;
-            let mut copied:   Option<image::ImageBuffer<image::Rgba<u8>, Vec<u8>>> = None;
-            if let Some(ov) = self.overlay.as_mut() {
-                if ov.window_id() == id {
-                    match ov.handle_event(ev) {
-                        OverlayOutcome::Continue       => { drop_overlay = false; }
-                        OverlayOutcome::Cancelled      => { drop_overlay = true; }
-                        OverlayOutcome::Accepted(img)  => { drop_overlay = true; accepted = Some(img); }
-                        OverlayOutcome::Copied(img)    => { drop_overlay = true; copied   = Some(img); }
+            // Decide the routing target *before* consuming the event so we
+            // only dispatch once. Overlay wins if it owns the id; otherwise
+            // search the pinned-window list.
+            enum Target { Overlay, Pinned(usize), Unknown }
+            let target = if self.overlay.as_ref().map(|ov| ov.window_id() == id).unwrap_or(false) {
+                Target::Overlay
+            } else if let Some((i, _)) = self.pinned.iter().enumerate().find(|(_, p)| p.window_id() == id) {
+                Target::Pinned(i)
+            } else {
+                Target::Unknown
+            };
+
+            let mut drop_overlay = false;
+            let mut accepted:     Option<image::ImageBuffer<image::Rgba<u8>, Vec<u8>>> = None;
+            let mut copied:       Option<image::ImageBuffer<image::Rgba<u8>, Vec<u8>>> = None;
+            let mut pinned_payload: Option<(image::ImageBuffer<image::Rgba<u8>, Vec<u8>>, (i32, i32))> = None;
+            let mut drop_pin: Option<usize> = None;
+
+            match target {
+                Target::Overlay => {
+                    if let Some(ov) = self.overlay.as_mut() {
+                        match ov.handle_event(ev) {
+                            OverlayOutcome::Continue        => {}
+                            OverlayOutcome::Cancelled       => { drop_overlay = true; }
+                            OverlayOutcome::Accepted(img)   => { drop_overlay = true; accepted = Some(img); }
+                            OverlayOutcome::Copied(img)     => { drop_overlay = true; copied   = Some(img); }
+                            OverlayOutcome::Pinned(img, p)  => { drop_overlay = true; pinned_payload = Some((img, p)); }
+                        }
                     }
-                } else { drop_overlay = false; }
-            } else { drop_overlay = false; }
+                }
+                Target::Pinned(i) => {
+                    if let Some(p) = self.pinned.get_mut(i) {
+                        if p.handle_event(ev) {
+                            drop_pin = Some(i);
+                        }
+                    }
+                }
+                Target::Unknown => {}
+            }
 
             if drop_overlay { self.overlay = None; }
+            if let Some(i) = drop_pin { self.pinned.swap_remove(i); }
             if let Some(img) = accepted { self.save_final(img); }
             if let Some(img) = copied   { self.copy_final(img); }
+            if let Some((img, pos)) = pinned_payload {
+                match PinView::new(_loop_target, img, pos) {
+                    Ok(pv)  => self.pinned.push(pv),
+                    Err(e)  => eprintln!("Pin failed: {e}"),
+                }
+            }
         }
 
         fn about_to_wait(&mut self, loop_target: &ActiveEventLoop) {
@@ -291,6 +330,7 @@ pub fn run() -> Result<()> {
         tray,
         recorder: Recorder::new(),
         overlay: None,
+        pinned:  Vec::new(),
         last_tick: Instant::now(),
         capturing: false,
     };
