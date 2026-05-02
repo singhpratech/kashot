@@ -11,6 +11,11 @@ public class TrayContext : ApplicationContext
     private KashotRecorder? _recorder;
     private ToolStripMenuItem? _recordItem;
     private ToolStripMenuItem? _stopRecordItem;
+    /// Disabled until a delay capture is in flight; clicking it sets the
+    /// CancellationTokenSource so the awaited Task.Delay returns early
+    /// without firing the screenshot.
+    private ToolStripMenuItem? _cancelDelayItem;
+    private System.Threading.CancellationTokenSource? _delayCts;
 
     public TrayContext()
     {
@@ -52,6 +57,10 @@ public class TrayContext : ApplicationContext
         delay.DropDownItems.Add("3 seconds",    null, (_, _) => StartCaptureAfter(3));
         delay.DropDownItems.Add("5 seconds",    null, (_, _) => StartCaptureAfter(5));
         delay.DropDownItems.Add("10 seconds",   null, (_, _) => StartCaptureAfter(10));
+        delay.DropDownItems.Add(new ToolStripSeparator());
+        _cancelDelayItem = new ToolStripMenuItem("Cancel pending capture", null, (_, _) => CancelPendingCapture())
+                           { Enabled = false };
+        delay.DropDownItems.Add(_cancelDelayItem);
         menu.Items.Add(delay);
 
         menu.Items.Add("-");
@@ -166,16 +175,39 @@ public class TrayContext : ApplicationContext
     private async void StartCaptureAfter(int seconds)
     {
         if (_overlay is { IsDisposed: false }) return;
+        if (_delayCts != null) return; // a countdown is already running
 
         _trayIcon.ContextMenuStrip?.Close();
         _trayIcon.BalloonTipTitle = "Kashot";
         _trayIcon.BalloonTipText  = $"Capturing in {seconds} second{(seconds == 1 ? "" : "s")}…";
         _trayIcon.ShowBalloonTip(seconds * 1000);
 
-        try { await Task.Delay(seconds * 1000); }
-        catch (Exception) { return; }
+        _delayCts = new System.Threading.CancellationTokenSource();
+        if (_cancelDelayItem != null) _cancelDelayItem.Enabled = true;
 
+        try { await Task.Delay(seconds * 1000, _delayCts.Token); }
+        catch (TaskCanceledException) { ResetDelayState(); return; }
+        catch (Exception) { ResetDelayState(); return; }
+
+        ResetDelayState();
         StartCapture();
+    }
+
+    /// User clicked "Cancel pending capture" — kill the awaited delay so the
+    /// caller's `await` returns via TaskCanceledException and resets state.
+    private void CancelPendingCapture()
+    {
+        _delayCts?.Cancel();
+        _trayIcon.BalloonTipTitle = "Kashot";
+        _trayIcon.BalloonTipText  = "Cancelled pending capture.";
+        _trayIcon.ShowBalloonTip(1500);
+    }
+
+    private void ResetDelayState()
+    {
+        _delayCts?.Dispose();
+        _delayCts = null;
+        if (_cancelDelayItem != null) _cancelDelayItem.Enabled = false;
     }
 
     private void ShowAbout()
