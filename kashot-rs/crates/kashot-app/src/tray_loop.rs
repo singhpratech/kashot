@@ -336,7 +336,10 @@ pub fn run() -> Result<()> {
         /// to the project, and a Yes/No to jump to the releases page.
         fn show_about(&self) {
             let year = chrono::Local::now().format("%Y");
-            let res = rfd::MessageDialog::new()
+            // Pure info dialog — single Ok button. The "Check for updates"
+            // tray item is the canonical way to reach the releases page,
+            // so About stays clean instead of asking a Yes/No question.
+            rfd::MessageDialog::new()
                 .set_level(rfd::MessageLevel::Info)
                 .set_title("About Kashot")
                 .set_description(format!(
@@ -344,16 +347,12 @@ pub fn run() -> Result<()> {
                      The lightweight screenshot tool.\n\n\
                      With love from PrateekSingh ❤\n\
                      © {} PrateekSingh. All rights reserved.\n\n\
-                     github.com/singhpratech/kashot · kashot.org · MIT\n\n\
-                     Open the releases page to check for updates?",
+                     github.com/singhpratech/kashot · kashot.org · MIT",
                     env!("CARGO_PKG_VERSION"),
                     year
                 ))
-                .set_buttons(rfd::MessageButtons::YesNo)
+                .set_buttons(rfd::MessageButtons::Ok)
                 .show();
-            if res == rfd::MessageDialogResult::Yes {
-                open_url("https://github.com/singhpratech/kashot/releases");
-            }
         }
     }
 
