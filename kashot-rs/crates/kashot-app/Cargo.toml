@@ -19,6 +19,7 @@ kashot-platform = { path = "../kashot-platform" }
 # `rfd` is in early — Settings and About use it for native dialogs today, the
 # editor will keep using it for the Save / Open file pickers.
 image       = { workspace = true }
+arboard     = { workspace = true }
 chrono      = { workspace = true }
 serde       = { workspace = true }
 serde_json  = { workspace = true }
