@@ -82,8 +82,10 @@ pub fn run() -> Result<()> {
                     TrayEvent::StartRecording        => self.start_recording(),
                     TrayEvent::StopRecording         => self.stop_recording(),
                     TrayEvent::OpenSaveFolder        => self.open_save_folder(),
+                    TrayEvent::OpenRecordingsFolder  => self.open_recordings_folder(),
                     TrayEvent::Settings              => self.show_settings(),
                     TrayEvent::About                 => self.show_about(),
+                    TrayEvent::CheckForUpdates       => open_url("https://github.com/singhpratech/kashot/releases"),
                     TrayEvent::Exit                  => {
                         // Stop any active recording before tearing down so
                         // the MP4 moov atom gets finalized. Best-effort —
@@ -195,6 +197,9 @@ pub fn run() -> Result<()> {
 
         /// Start recording the primary display. Output lands in the user's
         /// Videos directory (or a fallback) as `kashot_<timestamp>.mp4`.
+        /// Shows a desktop notification so the user knows recording is live
+        /// (the tray menu's "Stop Recording" item is the canonical control,
+        /// but the notification also reminds where to click).
         fn start_recording(&mut self) {
             if self.recorder.is_recording() {
                 eprintln!("Already recording.");
@@ -207,6 +212,10 @@ pub fn run() -> Result<()> {
                 Ok(()) => {
                     eprintln!("Recording → {}", out.display());
                     if let Some(t) = &self.tray { t.set_recording(true); }
+                    notify("Kashot — recording started",
+                        &format!("Saving to {}\n\nClick the tray icon → \"Stop Recording\" to finish.",
+                            out.display()),
+                        true);
                 }
                 Err(e) => {
                     eprintln!("Recording failed to start: {e}");
@@ -225,6 +234,9 @@ pub fn run() -> Result<()> {
                 Ok(path) => {
                     eprintln!("Saved recording {}", path.display());
                     if let Some(t) = &self.tray { t.set_recording(false); }
+                    notify("Kashot — recording saved",
+                        &format!("{}", path.display()),
+                        false);
                 }
                 Err(e) => eprintln!("Stop recording failed: {e}"),
             }
@@ -236,6 +248,12 @@ pub fn run() -> Result<()> {
         /// user where their screenshots actually live.
         fn open_save_folder(&self) {
             let dir = save_directory(&self.settings);
+            open_url(&dir.to_string_lossy());
+        }
+
+        fn open_recordings_folder(&self) {
+            let dir = recordings_directory();
+            std::fs::create_dir_all(&dir).ok();
             open_url(&dir.to_string_lossy());
         }
 
@@ -528,6 +546,57 @@ fn tray_tooltip(s: &AppSettings) -> String {
 /// Open `url` in the user's default browser. Best-effort — failures are
 /// logged but the dialog already gave them the URL as plain text, so they
 /// can copy it manually.
+/// Send a desktop notification via `notify-send` on Linux, `osascript` on
+/// macOS, `powershell BurntToast` on Windows. Best-effort — silent failure
+/// if the binary isn't available. `urgent=true` keeps the toast on screen
+/// 5 s instead of 3 s.
+fn notify(title: &str, body: &str, urgent: bool) {
+    let timeout = if urgent { "5000" } else { "3000" };
+    #[cfg(target_os = "linux")]
+    {
+        let _ = std::process::Command::new("notify-send")
+            .args(["-a", "Kashot", "-t", timeout, title, body])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn();
+        return;
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let script = format!(
+            "display notification \"{}\" with title \"{}\"",
+            body.replace('"', "\\\""),
+            title.replace('"', "\\\""),
+        );
+        let _ = std::process::Command::new("osascript")
+            .args(["-e", &script])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn();
+        return;
+    }
+    #[cfg(target_os = "windows")]
+    {
+        // PowerShell toast — no extra dep on the user side.
+        let script = format!(
+            "[Windows.UI.Notifications.ToastNotificationManager,Windows.UI.Notifications,ContentType=WindowsRuntime] | Out-Null; \
+             [Windows.Data.Xml.Dom.XmlDocument,Windows.Data.Xml.Dom.XmlDocument,ContentType=WindowsRuntime] | Out-Null; \
+             $template = [Windows.UI.Notifications.ToastNotificationManager]::GetTemplateContent([Windows.UI.Notifications.ToastTemplateType]::ToastText02); \
+             $template.GetElementsByTagName('text').Item(0).InnerText = '{}'; \
+             $template.GetElementsByTagName('text').Item(1).InnerText = '{}'; \
+             [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('Kashot').Show($template);",
+            title.replace('\'', "''"),
+            body.replace('\'', "''"),
+        );
+        let _ = std::process::Command::new("powershell")
+            .args(["-NoProfile", "-Command", &script])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn();
+        let _ = timeout;
+    }
+}
+
 fn open_url(url: &str) {
     use std::process::Command;
     let opener = if cfg!(target_os = "windows") {

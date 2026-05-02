@@ -118,7 +118,11 @@ fn spawn_recorder(output: &Path) -> Result<Child> {
     }
     cmd.args(["-c:v", "libx264"])
        .args(["-preset", "ultrafast"])
-       .args(["-pix_fmt", "yuv420p"]);
+       .args(["-pix_fmt", "yuv420p"])
+       // x264 + yuv420p require both dimensions to be even. Many display
+       // sizes (RDP, weird laptop panels) end on an odd pixel; this filter
+       // pads up to the next even pixel so encoding always succeeds.
+       .args(["-vf", "pad=ceil(iw/2)*2:ceil(ih/2)*2"]);
     if record_audio {
         cmd.args(["-c:a", "aac"])
            .args(["-b:a", "160k"]);
