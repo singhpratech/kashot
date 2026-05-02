@@ -1130,11 +1130,11 @@ fn draw_tool_panel(
         let bg = if highlight { BTN_ACTIVE } else { BTN };
         draw_rounded_rect(buf, win_w, win_h, x0, y0, x1, y1, 6, bg);
         match b {
-            ToolPanelButton::Tool(t)    => draw_tool_glyph(buf, win_w, win_h, x0, y0, x1, y1, *t, TEXT),
-            ToolPanelButton::Color      => draw_color_glyph(buf, win_w, win_h, x0, y0, x1, y1, swatch),
-            ToolPanelButton::Thickness  => draw_thickness_glyph(buf, win_w, win_h, x0, y0, x1, y1, thickness, TEXT),
-            ToolPanelButton::Undo       => draw_undo_glyph(buf, win_w, win_h, x0, y0, x1, y1, TEXT),
-            ToolPanelButton::Redo       => draw_redo_glyph(buf, win_w, win_h, x0, y0, x1, y1, TEXT),
+            ToolPanelButton::Tool(t)    => icons::render_icon(buf, win_w, win_h, x0, y0, x1, y1, icons::IconKind::Tool(*t), [232,232,236,255], None, thickness),
+            ToolPanelButton::Color      => icons::render_icon(buf, win_w, win_h, x0, y0, x1, y1, icons::IconKind::Color, [232,232,236,255], Some([swatch.r, swatch.g, swatch.b, 255]), thickness),
+            ToolPanelButton::Thickness  => icons::render_icon(buf, win_w, win_h, x0, y0, x1, y1, icons::IconKind::Thickness, [232,232,236,255], None, thickness),
+            ToolPanelButton::Undo       => icons::render_icon(buf, win_w, win_h, x0, y0, x1, y1, icons::IconKind::Undo, [232,232,236,255], None, thickness),
+            ToolPanelButton::Redo       => icons::render_icon(buf, win_w, win_h, x0, y0, x1, y1, icons::IconKind::Redo, [232,232,236,255], None, thickness),
         }
     }
 }
@@ -1157,10 +1157,10 @@ fn draw_action_panel(
         let (x0, y0, x1, y1) = action_panel_button_rect(origin, i as i32);
         draw_rounded_rect(buf, win_w, win_h, x0, y0, x1, y1, 6, BTN);
         match b {
-            ActionButton::Pin   => draw_pin_glyph(buf, win_w, win_h, x0, y0, x1, y1, TEXT),
-            ActionButton::Copy  => draw_copy_glyph(buf, win_w, win_h, x0, y0, x1, y1, TEXT),
-            ActionButton::Save  => draw_save_glyph(buf, win_w, win_h, x0, y0, x1, y1, TEXT),
-            ActionButton::Close => draw_close_glyph(buf, win_w, win_h, x0, y0, x1, y1, TEXT),
+            ActionButton::Pin   => icons::render_icon(buf, win_w, win_h, x0, y0, x1, y1, icons::IconKind::Pin,   [232,232,236,255], None, 4.0),
+            ActionButton::Copy  => icons::render_icon(buf, win_w, win_h, x0, y0, x1, y1, icons::IconKind::Copy,  [232,232,236,255], None, 4.0),
+            ActionButton::Save  => icons::render_icon(buf, win_w, win_h, x0, y0, x1, y1, icons::IconKind::Save,  [232,232,236,255], None, 4.0),
+            ActionButton::Close => icons::render_icon(buf, win_w, win_h, x0, y0, x1, y1, icons::IconKind::Close, [232,232,236,255], None, 4.0),
         }
     }
 }
@@ -1236,13 +1236,28 @@ fn draw_chevron(
 ) {
     let cx = (x0 + x1) / 2;
     let cy = (y0 + y1) / 2;
-    let color = 0x00_E8_E8_EC;
+    let line = |buf: &mut [u32], mut sx0: i32, mut sy0: i32, ex: i32, ey: i32| {
+        let dx =  (ex - sx0).abs();
+        let dy = -(ey - sy0).abs();
+        let stepx = if sx0 < ex { 1 } else { -1 };
+        let stepy = if sy0 < ey { 1 } else { -1 };
+        let mut err = dx + dy;
+        loop {
+            if sx0 >= 0 && (sx0 as usize) < stride && sy0 >= 0 && (sy0 as usize) < height {
+                buf[sy0 as usize * stride + sx0 as usize] = 0x00_E8_E8_EC;
+            }
+            if sx0 == ex && sy0 == ey { break; }
+            let e2 = 2 * err;
+            if e2 >= dy { err += dy; sx0 += stepx; }
+            if e2 <= dx { err += dx; sy0 += stepy; }
+        }
+    };
     if left {
-        panel_line(buf, stride, height, cx + 4, cy - 6, cx - 4, cy,     color);
-        panel_line(buf, stride, height, cx - 4, cy,     cx + 4, cy + 6, color);
+        line(buf, cx + 4, cy - 6, cx - 4, cy);
+        line(buf, cx - 4, cy,     cx + 4, cy + 6);
     } else {
-        panel_line(buf, stride, height, cx - 4, cy - 6, cx + 4, cy,     color);
-        panel_line(buf, stride, height, cx + 4, cy,     cx - 4, cy + 6, color);
+        line(buf, cx - 4, cy - 6, cx + 4, cy);
+        line(buf, cx + 4, cy,     cx - 4, cy + 6);
     }
 }
 
@@ -1253,128 +1268,6 @@ fn palette_header_hit(origin: (i32, i32), (cx, cy): (i32, i32)) -> Option<bool> 
     let (nx0, ny0, nx1, ny1) = palette_header_button_rect(origin, false);
     if cx >= nx0 && cx < nx1 && cy >= ny0 && cy < ny1 { return Some(false); }
     None
-}
-
-// ── glyph helpers used only by the new layout ──────────────────────────────
-
-fn draw_color_glyph(buf: &mut [u32], stride: usize, height: usize,
-                    x0: i32, y0: i32, x1: i32, y1: i32, c: kashot_core::color::Rgba) {
-    let cx = (x0 + x1) / 2;
-    let cy = (y0 + y1) / 2;
-    let r  = ((x1 - x0) / 2) - 5;
-    let mut surf = crate::painter::U32Surface { buf, stride: stride as i32, height: height as i32 };
-    crate::painter::fill_disc(&mut surf, cx, cy, r, c);
-}
-
-fn draw_thickness_glyph(buf: &mut [u32], stride: usize, height: usize,
-                        x0: i32, y0: i32, x1: i32, y1: i32, thickness: f32, _color: u32) {
-    // Horizontal stroke of the active thickness, centered. Visual hint of
-    // what a click-cycle will produce next.
-    let cy = (y0 + y1) / 2;
-    let r  = (thickness / 2.0).max(1.0) as i32;
-    for dy in -r..=r {
-        for x in (x0 + 6)..(x1 - 6) {
-            let yy = cy + dy;
-            if yy >= 0 && (yy as usize) < height && x >= 0 && (x as usize) < stride {
-                buf[yy as usize * stride + x as usize] = 0x00_E8_E8_EC;
-            }
-        }
-    }
-}
-
-fn draw_undo_glyph(buf: &mut [u32], stride: usize, height: usize,
-                   x0: i32, y0: i32, x1: i32, y1: i32, color: u32) {
-    let cx = (x0 + x1) / 2;
-    let cy = (y0 + y1) / 2;
-    // Curved-arrow approximation: short stroke + arrowhead pointing left.
-    panel_line(buf, stride, height, cx + 6, cy - 4, cx - 6, cy - 4, color);
-    panel_line(buf, stride, height, cx - 6, cy - 4, cx - 6, cy + 4, color);
-    panel_line(buf, stride, height, cx - 6, cy - 4, cx - 2, cy - 7, color);
-    panel_line(buf, stride, height, cx - 6, cy - 4, cx - 2, cy - 1, color);
-}
-
-fn draw_redo_glyph(buf: &mut [u32], stride: usize, height: usize,
-                   x0: i32, y0: i32, x1: i32, y1: i32, color: u32) {
-    let cx = (x0 + x1) / 2;
-    let cy = (y0 + y1) / 2;
-    panel_line(buf, stride, height, cx - 6, cy - 4, cx + 6, cy - 4, color);
-    panel_line(buf, stride, height, cx + 6, cy - 4, cx + 6, cy + 4, color);
-    panel_line(buf, stride, height, cx + 6, cy - 4, cx + 2, cy - 7, color);
-    panel_line(buf, stride, height, cx + 6, cy - 4, cx + 2, cy - 1, color);
-}
-
-fn draw_pin_glyph(buf: &mut [u32], stride: usize, height: usize,
-                  x0: i32, y0: i32, x1: i32, y1: i32, color: u32) {
-    let cx = (x0 + x1) / 2;
-    // Pin head (filled circle) + body line + base.
-    for dy in -8..=-2 {
-        for dx in -3..=3 {
-            if dx * dx + (dy + 5) * (dy + 5) <= 9 {
-                let yy = (y0 + (y1 - y0) / 2 + dy).max(0) as usize;
-                let xx = (cx + dx).max(0) as usize;
-                if yy < height && xx < stride { buf[yy * stride + xx] = color; }
-            }
-        }
-    }
-    panel_line(buf, stride, height, cx, (y0 + y1) / 2 - 2, cx, y1 - 6, color);
-    panel_line(buf, stride, height, cx - 4, y1 - 6, cx + 4, y1 - 6, color);
-}
-
-fn draw_copy_glyph(buf: &mut [u32], stride: usize, height: usize,
-                   x0: i32, y0: i32, x1: i32, y1: i32, color: u32) {
-    // Two overlapping rounded rectangles.
-    let pad = 8;
-    let r0 = (x0 + pad - 2, y0 + pad - 2, x1 - pad - 2, y1 - pad - 2);
-    let r1 = (x0 + pad + 2, y0 + pad + 2, x1 - pad + 2, y1 - pad + 2);
-    panel_rect(buf, stride, height, r0.0, r0.1, r0.2, r0.3, color);
-    panel_rect(buf, stride, height, r1.0, r1.1, r1.2, r1.3, color);
-}
-
-fn draw_save_glyph(buf: &mut [u32], stride: usize, height: usize,
-                   x0: i32, y0: i32, x1: i32, y1: i32, color: u32) {
-    // Floppy: outer box + inner notch on top.
-    let pad = 7;
-    panel_rect(buf, stride, height, x0 + pad, y0 + pad, x1 - pad, y1 - pad, color);
-    let nx0 = x0 + pad + 4;
-    let nx1 = x1 - pad - 4;
-    panel_rect(buf, stride, height, nx0, y0 + pad, nx1, y0 + pad + 6, color);
-    // Label rectangle inside.
-    panel_rect(buf, stride, height, x0 + pad + 3, y1 - pad - 8, x1 - pad - 3, y1 - pad - 2, color);
-}
-
-fn draw_close_glyph(buf: &mut [u32], stride: usize, height: usize,
-                    x0: i32, y0: i32, x1: i32, y1: i32, color: u32) {
-    let pad = 10;
-    panel_line(buf, stride, height, x0 + pad, y0 + pad, x1 - pad, y1 - pad, color);
-    panel_line(buf, stride, height, x1 - pad, y0 + pad, x0 + pad, y1 - pad, color);
-}
-
-/// Thin-line Bresenham helper kept local so the icon glyphs don't depend
-/// on `painter::line` (which also stamps a brush disc per step).
-fn panel_line(buf: &mut [u32], stride: usize, height: usize,
-              mut x0: i32, mut y0: i32, x1: i32, y1: i32, color: u32) {
-    let dx =  (x1 - x0).abs();
-    let dy = -(y1 - y0).abs();
-    let sx = if x0 < x1 { 1 } else { -1 };
-    let sy = if y0 < y1 { 1 } else { -1 };
-    let mut err = dx + dy;
-    loop {
-        if x0 >= 0 && (x0 as usize) < stride && y0 >= 0 && (y0 as usize) < height {
-            buf[y0 as usize * stride + x0 as usize] = color;
-        }
-        if x0 == x1 && y0 == y1 { break; }
-        let e2 = 2 * err;
-        if e2 >= dy { err += dy; x0 += sx; }
-        if e2 <= dx { err += dx; y0 += sy; }
-    }
-}
-
-fn panel_rect(buf: &mut [u32], stride: usize, height: usize,
-              x0: i32, y0: i32, x1: i32, y1: i32, color: u32) {
-    panel_line(buf, stride, height, x0, y0, x1, y0, color);
-    panel_line(buf, stride, height, x1, y0, x1, y1, color);
-    panel_line(buf, stride, height, x1, y1, x0, y1, color);
-    panel_line(buf, stride, height, x0, y1, x0, y0, color);
 }
 
 /// Small dark pill carrying a button label, drawn near where the user's
@@ -1655,154 +1548,3 @@ fn draw_diagonal_stripe(
     }
 }
 
-/// Draw a procedural glyph for each tool — same convention the C# overlay
-/// uses (`IconPen`, `IconArrow`, ...). These are intentionally minimalist:
-/// a few line strokes inside the button bounds. A future slice can swap
-/// these for actual SVG icons if we want to.
-fn draw_tool_glyph(
-    buf: &mut [u32], stride: usize, height: usize,
-    x0: i32, y0: i32, x1: i32, y1: i32, tool: Tool, rgb: u32,
-) {
-    let (cx, cy) = ((x0 + x1) / 2, (y0 + y1) / 2);
-    let pad = 8;
-    let ix0 = x0 + pad;
-    let iy0 = y0 + pad;
-    let ix1 = x1 - pad;
-    let iy1 = y1 - pad;
-    let stamp = |buf: &mut [u32], x: i32, y: i32| {
-        if x >= 0 && (x as usize) < stride && y >= 0 && (y as usize) < height {
-            buf[y as usize * stride + x as usize] = rgb;
-        }
-    };
-    // 2-px-thick Bresenham — bumps the icon weight so the glyphs read
-    // like real toolbar icons instead of hairline sketches.
-    let line2 = |buf: &mut [u32], a: (i32, i32), b: (i32, i32)| {
-        let mut x0 = a.0; let mut y0 = a.1;
-        let x1 = b.0; let y1 = b.1;
-        let dx =  (x1 - x0).abs(); let dy = -(y1 - y0).abs();
-        let sx = if x0 < x1 { 1 } else { -1 };
-        let sy = if y0 < y1 { 1 } else { -1 };
-        let mut err = dx + dy;
-        loop {
-            stamp(buf, x0, y0);
-            stamp(buf, x0 + 1, y0);
-            stamp(buf, x0, y0 + 1);
-            if x0 == x1 && y0 == y1 { break; }
-            let e2 = 2 * err;
-            if e2 >= dy { err += dy; x0 += sx; }
-            if e2 <= dx { err += dx; y0 += sy; }
-        }
-    };
-    let fill = |buf: &mut [u32], x0: i32, y0: i32, x1: i32, y1: i32| {
-        for yy in y0..y1 {
-            for xx in x0..x1 {
-                stamp(buf, xx, yy);
-            }
-        }
-    };
-    match tool {
-        Tool::Pen => {
-            // Diagonal stroke ending in a triangular pen tip at the bottom-
-            // left — distinguishes it from the bare Line glyph.
-            line2(buf, (ix0 + 2, iy1 - 2), (ix1 - 2, iy0 + 2));
-            line2(buf, (ix0 + 1, iy1 - 1), (ix0 + 5, iy1 - 5));
-            line2(buf, (ix0 + 5, iy1 - 5), (ix0 + 5, iy1 - 1));
-            line2(buf, (ix0 + 1, iy1 - 5), (ix0 + 5, iy1 - 5));
-            line2(buf, (ix0 + 1, iy1 - 1), (ix0 + 5, iy1 - 1));
-        }
-        Tool::Line => {
-            // Bare diagonal — no embellishment.
-            line2(buf, (ix0, iy1), (ix1, iy0));
-        }
-        Tool::Arrow => {
-            // Diagonal + arrowhead at top-right.
-            line2(buf, (ix0, iy1), (ix1, iy0));
-            line2(buf, (ix1, iy0), (ix1 - 6, iy0));
-            line2(buf, (ix1, iy0), (ix1, iy0 + 6));
-            line2(buf, (ix1 - 1, iy0), (ix1 - 6, iy0 + 1));
-            line2(buf, (ix1, iy0 + 1), (ix1 - 1, iy0 + 6));
-        }
-        Tool::Rectangle => {
-            // 2-px outline so it doesn't read as just a thin square.
-            for d in 0..2 {
-                line2(buf, (ix0 + d, iy0 + d), (ix1 - d, iy0 + d));
-                line2(buf, (ix1 - d, iy0 + d), (ix1 - d, iy1 - d));
-                line2(buf, (ix1 - d, iy1 - d), (ix0 + d, iy1 - d));
-                line2(buf, (ix0 + d, iy1 - d), (ix0 + d, iy0 + d));
-            }
-        }
-        Tool::Ellipse => {
-            let rx = (ix1 - ix0) / 2;
-            let ry = (iy1 - iy0) / 2;
-            for inset in 0..2 {
-                let mut prev = (cx + rx - inset, cy);
-                for k in 1..=64 {
-                    let t = (k as f32) / 64.0 * std::f32::consts::TAU;
-                    let p = (
-                        cx + (((rx - inset) as f32) * t.cos()) as i32,
-                        cy + (((ry - inset) as f32) * t.sin()) as i32,
-                    );
-                    line2(buf, prev, p);
-                    prev = p;
-                }
-            }
-        }
-        Tool::Marker => {
-            // Highlighter body: wide rounded rect + a slanted tip on top, so
-            // it visually reads as a marker pen, not just "thick line".
-            fill(buf, ix0 + 2, iy0 + 5, ix1 - 2, iy1 - 1);
-            // Tip — short slanted bar above the body.
-            fill(buf, ix0 + 4, iy0 + 2, ix1 - 4, iy0 + 5);
-            // Cap line at the very top.
-            fill(buf, ix0 + 5, iy0 + 0, ix1 - 5, iy0 + 2);
-        }
-        Tool::Text => {
-            // Bold serif-ish "T". Two-pixel-thick horizontal bar + thick
-            // vertical stem so it reads instantly as text.
-            fill(buf, ix0 + 1, iy0 + 1, ix1 - 1, iy0 + 4);
-            fill(buf, cx - 2, iy0 + 1, cx + 2, iy1 - 1);
-        }
-        Tool::Step => {
-            // Filled disc with a centered "1" — this is the actual numbered-
-            // step look, not the previous wireframe circle.
-            let r = ((ix1 - ix0) / 2).min((iy1 - iy0) / 2) - 1;
-            for dy in -r..=r {
-                for dx in -r..=r {
-                    if dx * dx + dy * dy <= r * r {
-                        stamp(buf, cx + dx, cy + dy);
-                    }
-                }
-            }
-            // Negative-space "1" cut by inverting (we don't have alpha-bits
-            // here, so just stamp a contrasting digit using the panel BG.
-            // Cheaper: draw a thin 1 with the bg color via a second stamp).
-            let bg_stamp = |buf: &mut [u32], x: i32, y: i32| {
-                if x >= 0 && (x as usize) < stride && y >= 0 && (y as usize) < height {
-                    buf[y as usize * stride + x as usize] = 0x00_2E_2E_32;
-                }
-            };
-            for yy in (cy - 4)..=(cy + 4) {
-                bg_stamp(buf, cx,     yy);
-                bg_stamp(buf, cx + 1, yy);
-            }
-            // Tiny serif top.
-            bg_stamp(buf, cx - 2, cy - 3);
-            bg_stamp(buf, cx - 1, cy - 4);
-        }
-        Tool::Pixelate => {
-            // 4×4 mosaic — denser than the previous 3×3 so it reads as
-            // "pixelation" instead of "checkerboard".
-            for gy in 0..4 {
-                for gx in 0..4 {
-                    let bx = ix0 + gx * (ix1 - ix0) / 4;
-                    let by = iy0 + gy * (iy1 - iy0) / 4;
-                    let bw = (ix1 - ix0) / 4;
-                    let bh = (iy1 - iy0) / 4;
-                    if (gx + gy) & 1 == 0 {
-                        fill(buf, bx, by, bx + bw, by + bh);
-                    }
-                }
-            }
-        }
-    }
-}
