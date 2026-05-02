@@ -174,7 +174,12 @@ pub struct Overlay {
     /// True while the color palette popup is showing. Toggled by clicking
     /// the Color button in the tool panel; closes when the user picks a
     /// swatch or clicks anywhere outside the popup.
-    palette_open: bool,
+    palette_open:  bool,
+    /// Active palette in the popup (0..=3 → Vivid / Highlighter / Pastel /
+    /// Pro). Stored on Overlay rather than in `Stroke` so swapping between
+    /// palettes doesn't change the live stroke color until the user picks
+    /// a new swatch. Mirrors C# `_paletteIndex`.
+    palette_index: usize,
 }
 
 impl Overlay {
@@ -220,6 +225,7 @@ impl Overlay {
             mods:        ModifiersState::empty(),
             resize_edge: Edge::None,
             palette_open: false,
+            palette_index: 0,
         })
     }
 
@@ -475,8 +481,18 @@ impl Overlay {
                 // the panel underneath.
                 if self.palette_open {
                     let pp_origin = palette_popup_origin(win_w, tp_origin);
+                    // Header arrows — prev/next palette.
+                    if let Some(prev) = palette_header_hit(pp_origin, self.cursor) {
+                        if prev {
+                            self.palette_index = (self.palette_index + PALETTE_COUNT - 1) % PALETTE_COUNT;
+                        } else {
+                            self.palette_index = (self.palette_index + 1) % PALETTE_COUNT;
+                        }
+                        self.window.request_redraw();
+                        return OverlayOutcome::Continue;
+                    }
                     if let Some(idx) = palette_popup_hit(pp_origin, self.cursor) {
-                        let pal = kashot_core::annotation::Palettes::get(0);
+                        let pal = kashot_core::annotation::Palettes::get(self.palette_index);
                         self.stroke.color = pal.colors[idx];
                         self.palette_open = false;
                         self.window.request_redraw();
@@ -822,7 +838,7 @@ impl Overlay {
                 draw_action_panel(&mut buf, win_w, win_h, sel);
                 if self.palette_open {
                     let tp_origin = tool_panel_origin(win_w, win_h, sel);
-                    draw_palette_popup(&mut buf, win_w, win_h, tp_origin, self.stroke.color);
+                    draw_palette_popup(&mut buf, win_w, win_h, tp_origin, self.stroke.color, self.palette_index);
                 }
             }
         }
@@ -928,17 +944,38 @@ fn action_panel_hit(panel_origin: (i32, i32), (cx, cy): (i32, i32)) -> Option<Ac
     None
 }
 
-// ── color popup (16 swatches in 4×4 grid) ──────────────────────────────────
+// ── color popup (header + 4×4 grid of 16 swatches) ────────────────────────
 
-const PALETTE_SWATCH: i32 = 22;
+const PALETTE_SWATCH: i32 = 40;
 const PALETTE_COLS:   i32 = 4;
 const PALETTE_ROWS:   i32 = 4;
-const PALETTE_PAD:    i32 = 5;
+const PALETTE_PAD:    i32 = 6;
+/// Header row with prev / palette-name / next.
+const PALETTE_HEADER: i32 = 32;
+/// Gap between header and swatch grid.
+const PALETTE_HEADER_GAP: i32 = 8;
+/// Total palette count from kashot-core (Vivid / Highlighter / Pastel / Pro).
+const PALETTE_COUNT: usize = 4;
 
 fn palette_popup_dims() -> (i32, i32) {
-    let w = PALETTE_COLS * PALETTE_SWATCH + (PALETTE_COLS - 1) * PANEL_GAP + PALETTE_PAD * 2;
-    let h = PALETTE_ROWS * PALETTE_SWATCH + (PALETTE_ROWS - 1) * PANEL_GAP + PALETTE_PAD * 2;
+    let grid_w = PALETTE_COLS * PALETTE_SWATCH + (PALETTE_COLS - 1) * PANEL_GAP;
+    let grid_h = PALETTE_ROWS * PALETTE_SWATCH + (PALETTE_ROWS - 1) * PANEL_GAP;
+    let w = grid_w + PALETTE_PAD * 2;
+    let h = PALETTE_HEADER + PALETTE_HEADER_GAP + grid_h + PALETTE_PAD * 2;
     (w, h)
+}
+
+fn palette_header_button_rect(origin: (i32, i32), prev: bool) -> (i32, i32, i32, i32) {
+    let (pw, _ph) = palette_popup_dims();
+    let y0 = origin.1 + PALETTE_PAD;
+    let y1 = y0 + PALETTE_HEADER;
+    if prev {
+        let x0 = origin.0 + PALETTE_PAD;
+        (x0, y0, x0 + PALETTE_HEADER, y1)
+    } else {
+        let x1 = origin.0 + pw - PALETTE_PAD;
+        (x1 - PALETTE_HEADER, y0, x1, y1)
+    }
 }
 
 /// Where the color popup opens — to the LEFT of the tool panel, top-aligned
@@ -958,8 +995,9 @@ fn palette_popup_origin(win_w: usize, panel_origin: (i32, i32)) -> (i32, i32) {
 fn palette_popup_swatch_rect(origin: (i32, i32), idx: i32) -> (i32, i32, i32, i32) {
     let row = idx / PALETTE_COLS;
     let col = idx % PALETTE_COLS;
+    let grid_y0 = origin.1 + PALETTE_PAD + PALETTE_HEADER + PALETTE_HEADER_GAP;
     let x = origin.0 + PALETTE_PAD + col * (PALETTE_SWATCH + PANEL_GAP);
-    let y = origin.1 + PALETTE_PAD + row * (PALETTE_SWATCH + PANEL_GAP);
+    let y = grid_y0 + row * (PALETTE_SWATCH + PANEL_GAP);
     (x, y, x + PALETTE_SWATCH, y + PALETTE_SWATCH)
 }
 
@@ -1046,26 +1084,93 @@ fn draw_action_panel(
 }
 
 fn draw_palette_popup(
-    buf:    &mut [u32],
-    win_w:  usize,
-    win_h:  usize,
-    panel_origin: (i32, i32),
-    active_color: kashot_core::color::Rgba,
+    buf:           &mut [u32],
+    win_w:         usize,
+    win_h:         usize,
+    panel_origin:  (i32, i32),
+    active_color:  kashot_core::color::Rgba,
+    palette_index: usize,
 ) {
-    const BG: u32 = 0x00_22_22_24;
+    const BG:        u32 = 0x00_22_22_24;
+    const HEADER_BG: u32 = 0x00_2E_2E_32;
+
     let origin = palette_popup_origin(win_w, panel_origin);
     let (pw, ph) = palette_popup_dims();
     draw_rounded_rect(buf, win_w, win_h, origin.0, origin.1, origin.0 + pw, origin.1 + ph, PANEL_RADIUS, BG);
-    let pal = kashot_core::annotation::Palettes::get(0);
+
+    // Header — prev arrow + palette name + next arrow.
+    let prev = palette_header_button_rect(origin, true);
+    let next = palette_header_button_rect(origin, false);
+    draw_rounded_rect(buf, win_w, win_h, prev.0, prev.1, prev.2, prev.3, 4, HEADER_BG);
+    draw_rounded_rect(buf, win_w, win_h, next.0, next.1, next.2, next.3, 4, HEADER_BG);
+    {
+        // Center label between the two buttons, same height.
+        let lx0 = prev.2 + 4;
+        let lx1 = next.0 - 4;
+        let ly0 = prev.1;
+        let ly1 = prev.3;
+        draw_rounded_rect(buf, win_w, win_h, lx0, ly0, lx1, ly1, 4, HEADER_BG);
+        let name = palette_name(palette_index);
+        let scale = 2;
+        let text_w = crate::bitmap_font::measure(name, scale);
+        let text_x = (lx0 + lx1) / 2 - text_w / 2;
+        let text_y = (ly0 + ly1) / 2 - (crate::bitmap_font::GLYPH_H * scale) / 2;
+        let mut surf = crate::painter::U32Surface { buf, stride: win_w as i32, height: win_h as i32 };
+        crate::painter::draw_text(&mut surf, text_x, text_y, scale, name, kashot_core::color::Rgba::WHITE);
+        // Arrow glyphs.
+        draw_chevron(buf, win_w, win_h, prev.0, prev.1, prev.2, prev.3, true);
+        draw_chevron(buf, win_w, win_h, next.0, next.1, next.2, next.3, false);
+    }
+
+    // Swatches.
+    let pal = kashot_core::annotation::Palettes::get(palette_index);
     for i in 0..16usize {
         let c = pal.colors[i];
         let (x0, y0, x1, y1) = palette_popup_swatch_rect(origin, i as i32);
         let rgb = ((c.r as u32) << 16) | ((c.g as u32) << 8) | c.b as u32;
         draw_filled_rect(buf, win_w, win_h, x0, y0, x1, y1, rgb);
-        if c.r == active_color.r && c.g == active_color.g && c.b == active_color.b {
-            draw_rect_border(buf, win_w, win_h, x0, y0, x1, y1, 0x00_FF_FF_FF);
+        let selected = c.r == active_color.r && c.g == active_color.g && c.b == active_color.b;
+        let bw = if selected { 0x00_FF_FF_FF } else { 0x00_50_50_54 };
+        draw_rect_border(buf, win_w, win_h, x0, y0, x1, y1, bw);
+        if selected {
+            // Double border to make selection unmistakable.
+            draw_rect_border(buf, win_w, win_h, x0 + 1, y0 + 1, x1 - 1, y1 - 1, 0x00_FF_FF_FF);
         }
     }
+}
+
+fn palette_name(idx: usize) -> &'static str {
+    match idx % PALETTE_COUNT {
+        0 => "Vivid",
+        1 => "Highlighter",
+        2 => "Pastel",
+        _ => "Pro",
+    }
+}
+
+fn draw_chevron(
+    buf: &mut [u32], stride: usize, height: usize,
+    x0: i32, y0: i32, x1: i32, y1: i32, left: bool,
+) {
+    let cx = (x0 + x1) / 2;
+    let cy = (y0 + y1) / 2;
+    let color = 0x00_E8_E8_EC;
+    if left {
+        panel_line(buf, stride, height, cx + 4, cy - 6, cx - 4, cy,     color);
+        panel_line(buf, stride, height, cx - 4, cy,     cx + 4, cy + 6, color);
+    } else {
+        panel_line(buf, stride, height, cx - 4, cy - 6, cx + 4, cy,     color);
+        panel_line(buf, stride, height, cx + 4, cy,     cx - 4, cy + 6, color);
+    }
+}
+
+/// Returns Some(true) if the prev-arrow button was hit, Some(false) if next.
+fn palette_header_hit(origin: (i32, i32), (cx, cy): (i32, i32)) -> Option<bool> {
+    let (px0, py0, px1, py1) = palette_header_button_rect(origin, true);
+    if cx >= px0 && cx < px1 && cy >= py0 && cy < py1 { return Some(true); }
+    let (nx0, ny0, nx1, ny1) = palette_header_button_rect(origin, false);
+    if cx >= nx0 && cx < nx1 && cy >= ny0 && cy < ny1 { return Some(false); }
+    None
 }
 
 // ── glyph helpers used only by the new layout ──────────────────────────────
