@@ -24,6 +24,22 @@ use crate::{Error, Result};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 
+/// What audio sources to mix into the recording. Mirrors the C#
+/// `KashotRecorder.Start(path, micEnabled, systemAudioEnabled)` triple.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct RecordingOptions {
+    pub mic:          bool,
+    pub system_audio: bool,
+}
+
+impl RecordingOptions {
+    pub const NONE:        Self = Self { mic: false, system_audio: false };
+    pub const MIC_ONLY:    Self = Self { mic: true,  system_audio: false };
+    pub const SYSTEM_ONLY: Self = Self { mic: false, system_audio: true  };
+    pub const MIC_AND_SYS: Self = Self { mic: true,  system_audio: true  };
+    pub fn has_audio(self) -> bool { self.mic || self.system_audio }
+}
+
 pub struct Recorder {
     child:  Option<Child>,
     output: Option<PathBuf>,
@@ -40,14 +56,14 @@ impl Recorder {
     /// Begin recording the primary display to `output`. Errors if a recording
     /// is already in progress, if the parent directory can't be created, or
     /// if the platform's recording tool isn't available.
-    pub fn start(&mut self, output: PathBuf) -> Result<()> {
+    pub fn start(&mut self, output: PathBuf, options: RecordingOptions) -> Result<()> {
         if self.is_recording() {
             return Err(Error::Recording("a recording is already in progress".into()));
         }
         if let Some(parent) = output.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let child = spawn_recorder(&output)?;
+        let child = spawn_recorder(&output, options)?;
         self.child  = Some(child);
         self.output = Some(output);
         Ok(())
@@ -85,15 +101,14 @@ impl Drop for Recorder {
 // ── platform spawn / signal ─────────────────────────────────────────────────
 
 #[cfg(target_os = "linux")]
-fn spawn_recorder(output: &Path) -> Result<Child> {
+fn spawn_recorder(output: &Path, options: RecordingOptions) -> Result<Child> {
     let display = std::env::var("DISPLAY").unwrap_or_else(|_| ":0".into());
     let path = output.to_str().ok_or_else(||
         Error::Recording("non-UTF-8 output path".into()))?;
 
-    // Try to capture the default microphone if PulseAudio (or pipewire-
-    // pulse) is reachable. `pactl info` exits 0 when a server is up; if it
-    // isn't, fall back to video-only so headless / no-audio boxes still
-    // record cleanly. `KASHOT_NO_MIC=1` lets the user force video-only.
+    // Pulse must be reachable for either audio source to work — `pactl info`
+    // returns 0 when a server is up. If it isn't reachable we silently drop
+    // back to video-only so headless / no-audio boxes still record cleanly.
     let pulse_ok = Command::new("pactl")
         .arg("info")
         .stdin(Stdio::null())
@@ -102,30 +117,49 @@ fn spawn_recorder(output: &Path) -> Result<Child> {
         .status()
         .map(|s| s.success())
         .unwrap_or(false);
-    let no_mic_env = std::env::var("KASHOT_NO_MIC")
-        .map(|v| v != "0")
-        .unwrap_or(false);
-    let record_audio = pulse_ok && !no_mic_env;
+    let opt = if pulse_ok { options } else { RecordingOptions::NONE };
+
+    // System-audio source is the default sink's monitor (`<sink>.monitor`).
+    let monitor_source = if opt.system_audio {
+        Command::new("pactl")
+            .arg("get-default-sink")
+            .stdin(Stdio::null())
+            .stderr(Stdio::null())
+            .output()
+            .ok()
+            .and_then(|o| String::from_utf8(o.stdout).ok())
+            .map(|s| format!("{}.monitor", s.trim()))
+    } else { None };
 
     let mut cmd = Command::new("ffmpeg");
-    cmd.arg("-y")                                    // overwrite existing output
-       .args(["-f", "x11grab"])
-       .args(["-framerate", "30"])
-       .args(["-i", &display]);
-    if record_audio {
-        cmd.args(["-f", "pulse"])
-           .args(["-i", "default"]);
+    cmd.arg("-y")
+       .args(["-f", "x11grab", "-framerate", "30", "-i", &display]);
+    // Optional mic input as the second stream (index 1).
+    if opt.mic {
+        cmd.args(["-f", "pulse", "-i", "default"]);
     }
-    cmd.args(["-c:v", "libx264"])
-       .args(["-preset", "ultrafast"])
-       .args(["-pix_fmt", "yuv420p"])
-       // x264 + yuv420p require both dimensions to be even. Many display
-       // sizes (RDP, weird laptop panels) end on an odd pixel; this filter
-       // pads up to the next even pixel so encoding always succeeds.
+    // Optional system-audio input. If mic is also set, this becomes
+    // stream index 2; otherwise index 1.
+    if let Some(monitor) = monitor_source.as_deref() {
+        cmd.args(["-f", "pulse", "-i", monitor]);
+    }
+    cmd.args(["-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p"])
+       // x264 + yuv420p require even dimensions; common RDP / odd laptop
+       // panels otherwise hit "height not divisible by 2" and abort.
        .args(["-vf", "pad=ceil(iw/2)*2:ceil(ih/2)*2"]);
-    if record_audio {
-        cmd.args(["-c:a", "aac"])
-           .args(["-b:a", "160k"]);
+    match (opt.mic, monitor_source.as_deref()) {
+        (true, Some(_)) => {
+            // Mix mic + system into one stereo track. Stream 1 = mic, 2 = sys.
+            cmd.args(["-filter_complex", "[1:a][2:a]amix=inputs=2:duration=longest:dropout_transition=0[aout]"])
+               .args(["-map", "0:v", "-map", "[aout]"])
+               .args(["-c:a", "aac", "-b:a", "160k"]);
+        }
+        (true, None) | (false, Some(_)) => {
+            cmd.args(["-c:a", "aac", "-b:a", "160k"]);
+        }
+        (false, None) => {
+            // Pure video.
+        }
     }
     cmd.arg(path);
 
@@ -145,7 +179,8 @@ fn spawn_recorder(output: &Path) -> Result<Child> {
 }
 
 #[cfg(target_os = "macos")]
-fn spawn_recorder(output: &Path) -> Result<Child> {
+fn spawn_recorder(output: &Path, options: RecordingOptions) -> Result<Child> {
+    let _ = options; // screencapture has limited audio control; ignore for now
     let path = output.to_str().ok_or_else(||
         Error::Recording("non-UTF-8 output path".into()))?;
 
@@ -159,7 +194,7 @@ fn spawn_recorder(output: &Path) -> Result<Child> {
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-fn spawn_recorder(_output: &Path) -> Result<Child> {
+fn spawn_recorder(_output: &Path, _options: RecordingOptions) -> Result<Child> {
     Err(Error::Recording(
         "recording is not supported on this platform — \
          the Windows MSI uses the C# ScreenRecorderLib build".into()))
