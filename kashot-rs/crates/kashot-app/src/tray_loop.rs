@@ -81,6 +81,7 @@ pub fn run() -> Result<()> {
                     TrayEvent::CancelPending         => {} // handled inline by the delay loop
                     TrayEvent::StartRecording        => self.start_recording(),
                     TrayEvent::StopRecording         => self.stop_recording(),
+                    TrayEvent::OpenSaveFolder        => self.open_save_folder(),
                     TrayEvent::Settings              => self.show_settings(),
                     TrayEvent::About                 => self.show_about(),
                     TrayEvent::Exit                  => {
@@ -229,6 +230,15 @@ pub fn run() -> Result<()> {
             }
         }
 
+        /// Open the configured screenshot save directory in the user's
+        /// default file manager (xdg-open / open / Explorer). Mirrors C#
+        /// `TrayContext.OpenSaveFolder` so the tray menu item lands the
+        /// user where their screenshots actually live.
+        fn open_save_folder(&self) {
+            let dir = save_directory(&self.settings);
+            open_url(&dir.to_string_lossy());
+        }
+
         /// Settings entry point. The full Windows `SettingsForm` has fields
         /// for hotkey / save folder / start-with-OS / theme / watermark — a
         /// proper custom dialog is queued behind the iced UI port. Until
@@ -240,16 +250,37 @@ pub fn run() -> Result<()> {
         ///   Cancel → no-op
         fn show_settings(&mut self) {
             let cfg_path = AppSettings::settings_path().unwrap_or_else(|| std::path::PathBuf::from("settings.json"));
+            let save_dir = save_directory(&self.settings);
+            let rec_dir  = recordings_directory();
+            let watermark = if self.settings.watermark_enabled {
+                format!("ON (\"{}\")", self.settings.watermark_text)
+            } else { "OFF".to_owned() };
+            let theme = if self.settings.theme.is_empty() {
+                "Light".to_owned()
+            } else { self.settings.theme.clone() };
             let res = rfd::MessageDialog::new()
                 .set_level(rfd::MessageLevel::Info)
                 .set_title("Kashot — Settings")
                 .set_description(format!(
-                    "Kashot stores all settings in:\n{}\n\n\
-                     Yes: open the file in your default text editor\n      \
-                          (capture hotkey, theme, watermark, start-with-OS, ...)\n\n\
-                     No: quick-pick the screenshot save folder\n\n\
-                     Cancel: do nothing",
-                    cfg_path.display()
+                    "Capture hotkey:   {}\n\
+                     Watermark:        {}\n\
+                     Theme:            {}\n\
+                     Palette:          {}\n\n\
+                     ── Paths ──────────────────────────────\n\
+                     Settings file:    {}\n\
+                     Screenshots:      {}\n\
+                     Recordings:       {}\n\n\
+                     Yes:    Open settings.json in default editor\n         \
+                             (every option editable: hotkey, theme, watermark, …)\n\n\
+                     No:     Change screenshot save folder\n\n\
+                     Cancel: Close",
+                    describe_hotkey(&self.settings),
+                    watermark,
+                    theme,
+                    self.settings.palette_index,
+                    cfg_path.display(),
+                    save_dir.display(),
+                    rec_dir.display(),
                 ))
                 .set_buttons(rfd::MessageButtons::YesNoCancel)
                 .show();

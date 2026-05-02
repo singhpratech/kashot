@@ -18,6 +18,7 @@ pub struct Tray {
     pub cancel_id:     tray_icon::menu::MenuId,
     pub record_id:     tray_icon::menu::MenuId,
     pub stop_rec_id:   tray_icon::menu::MenuId,
+    pub open_folder_id:tray_icon::menu::MenuId,
     pub settings_id:   tray_icon::menu::MenuId,
     pub about_id:      tray_icon::menu::MenuId,
     pub exit_id:       tray_icon::menu::MenuId,
@@ -38,6 +39,9 @@ pub enum TrayEvent {
     CancelPending,
     StartRecording,
     StopRecording,
+    /// Open the configured screenshot save folder in the user's default
+    /// file manager. Mirrors C# TrayContext "Open Save Folder".
+    OpenSaveFolder,
     Settings,
     About,
     Exit,
@@ -63,6 +67,7 @@ impl Tray {
         let capture   = MenuItem::new("Capture Screen",   true, None);
         let record    = MenuItem::new("Record Screen",    true, None);
         let stop_rec  = MenuItem::new("Stop Recording",   false, None);
+        let open_fold = MenuItem::new("Open Save Folder", true, None);
         let settings  = MenuItem::new("Settings…",        true, None);
         let about     = MenuItem::new("About",            true, None);
         let exit      = MenuItem::new("Exit",             true, None);
@@ -88,6 +93,7 @@ impl Tray {
         let cancel_id   = cancel.id().clone();
         let record_id   = record.id().clone();
         let stop_rec_id = stop_rec.id().clone();
+        let open_folder_id = open_fold.id().clone();
         let settings_id = settings.id().clone();
         let about_id    = about.id().clone();
         let exit_id     = exit.id().clone();
@@ -104,6 +110,7 @@ impl Tray {
         menu.append(&record).map_err(|e| Error::Tray(e.to_string()))?;
         menu.append(&stop_rec).map_err(|e| Error::Tray(e.to_string()))?;
         menu.append(&sep1).map_err(|e| Error::Tray(e.to_string()))?;
+        menu.append(&open_fold).map_err(|e| Error::Tray(e.to_string()))?;
         menu.append(&settings).map_err(|e| Error::Tray(e.to_string()))?;
         menu.append(&about).map_err(|e| Error::Tray(e.to_string()))?;
         menu.append(&sep2).map_err(|e| Error::Tray(e.to_string()))?;
@@ -126,6 +133,7 @@ impl Tray {
             cancel_id,
             record_id,
             stop_rec_id,
+            open_folder_id,
             settings_id,
             about_id,
             exit_id,
@@ -146,6 +154,7 @@ impl Tray {
             Ok(ev) if ev.id == self.cancel_id    => TrayEvent::CancelPending,
             Ok(ev) if ev.id == self.record_id    => TrayEvent::StartRecording,
             Ok(ev) if ev.id == self.stop_rec_id  => TrayEvent::StopRecording,
+            Ok(ev) if ev.id == self.open_folder_id => TrayEvent::OpenSaveFolder,
             Ok(ev) if ev.id == self.settings_id  => TrayEvent::Settings,
             Ok(ev) if ev.id == self.about_id     => TrayEvent::About,
             Ok(ev) if ev.id == self.exit_id      => TrayEvent::Exit,
