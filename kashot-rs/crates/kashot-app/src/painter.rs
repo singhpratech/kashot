@@ -274,6 +274,31 @@ pub fn fill_disc<S: Surface>(s: &mut S, cx: i32, cy: i32, r: i32, color: KashotR
     }
 }
 
+/// Render a string starting at (x, y) using the in-tree 5×7 bitmap font.
+/// Same scale convention as `draw_number`: `scale=2` → 10×14 per glyph
+/// with a 2px column gap.
+pub fn draw_text<S: Surface>(s: &mut S, x: i32, y: i32, scale: i32, text: &str, color: KashotRgba) {
+    let mut cx = x;
+    let glyph_w = crate::bitmap_font::GLYPH_W * scale;
+    let gap     = scale;
+    for ch in text.chars() {
+        let g = crate::bitmap_font::glyph(ch);
+        for (row, bits) in g.iter().enumerate() {
+            for col in 0..crate::bitmap_font::GLYPH_W {
+                let on = (bits >> (4 - col)) & 1 == 1;
+                if on {
+                    for sy in 0..scale {
+                        for sx in 0..scale {
+                            blend(s, cx + col * scale + sx, y + row as i32 * scale + sy, rgba_arr(color));
+                        }
+                    }
+                }
+            }
+        }
+        cx += glyph_w + gap;
+    }
+}
+
 /// Numbered step circle: filled disc of `color`, white digits centered inside.
 pub fn step_marker<S: Surface>(s: &mut S, center: Point2, number: u32, color: KashotRgba) {
     const RADIUS: i32 = 14;
@@ -378,8 +403,13 @@ pub fn render_annotation<S: Surface>(
                 pixelate_rect(s, src, *start, *end, *block_size);
             }
         }
-        // Text lands in the next slice (needs a font rasterizer).
-        AnnotationKind::Text     { .. } => {}
+        AnnotationKind::Text { color, position, text, font_size } => {
+            // The 5×7 font scales by integer pixel multiples; map font_size
+            // (in C# point-ish units) onto a sane scale: 14pt → 2×, 24pt → 3×,
+            // 36pt → 4×. Default Stroke font_size is 14.0 → 2× → ~14px tall.
+            let scale = ((*font_size / 7.0).round() as i32).max(1);
+            draw_text(s, position.x as i32, position.y as i32, scale, text, *color);
+        }
     }
 }
 
