@@ -16,7 +16,10 @@ pub struct Tray {
     pub delay5_id:     tray_icon::menu::MenuId,
     pub delay10_id:    tray_icon::menu::MenuId,
     pub cancel_id:     tray_icon::menu::MenuId,
-    pub record_id:     tray_icon::menu::MenuId,
+    pub rec_none_id:   tray_icon::menu::MenuId,
+    pub rec_mic_id:    tray_icon::menu::MenuId,
+    pub rec_sys_id:    tray_icon::menu::MenuId,
+    pub rec_both_id:   tray_icon::menu::MenuId,
     pub stop_rec_id:   tray_icon::menu::MenuId,
     pub open_folder_id:tray_icon::menu::MenuId,
     pub open_recs_id:  tray_icon::menu::MenuId,
@@ -24,7 +27,10 @@ pub struct Tray {
     pub about_id:      tray_icon::menu::MenuId,
     pub updates_id:    tray_icon::menu::MenuId,
     pub exit_id:       tray_icon::menu::MenuId,
-    record_item:       MenuItem,
+    rec_none_item:     MenuItem,
+    rec_mic_item:      MenuItem,
+    rec_sys_item:      MenuItem,
+    rec_both_item:     MenuItem,
     stop_rec_item:     MenuItem,
     cancel_item:       MenuItem,
 }
@@ -39,7 +45,8 @@ pub enum TrayEvent {
     /// Cancel the in-flight delay capture. Polled during the delay loop —
     /// resets `_capturing` and skips the screenshot.
     CancelPending,
-    StartRecording,
+    /// Begin recording with the given audio sources mixed in.
+    StartRecording(crate::recorder::RecordingOptions),
     StopRecording,
     /// Open the configured screenshot save folder in the user's default
     /// file manager. Mirrors C# TrayContext "Open Save Folder".
@@ -72,7 +79,13 @@ impl Tray {
         let menu = Menu::new();
 
         let capture   = MenuItem::new("Capture Screen",   true, None);
-        let record    = MenuItem::new("Record Screen",    true, None);
+        // Replaces the single "Record Screen" item with a 4-way submenu so
+        // the user can pick mic / system / both / none per recording.
+        let record_menu = Submenu::new("Record screen", true);
+        let rec_none  = MenuItem::new("Video only",                       true, None);
+        let rec_mic   = MenuItem::new("With microphone",                  true, None);
+        let rec_sys   = MenuItem::new("With system audio",                true, None);
+        let rec_both  = MenuItem::new("With microphone + system audio",   true, None);
         let stop_rec  = MenuItem::new("Stop Recording",   false, None);
         let open_fold = MenuItem::new("Open Screenshots Folder", true, None);
         let open_recs = MenuItem::new("Open Recordings Folder",  true, None);
@@ -100,7 +113,10 @@ impl Tray {
         let delay5_id   = delay_5s.id().clone();
         let delay10_id  = delay_10s.id().clone();
         let cancel_id   = cancel.id().clone();
-        let record_id   = record.id().clone();
+        let rec_none_id = rec_none.id().clone();
+        let rec_mic_id  = rec_mic.id().clone();
+        let rec_sys_id  = rec_sys.id().clone();
+        let rec_both_id = rec_both.id().clone();
         let stop_rec_id = stop_rec.id().clone();
         let open_folder_id = open_fold.id().clone();
         let open_recs_id   = open_recs.id().clone();
@@ -118,7 +134,11 @@ impl Tray {
         menu.append(&capture).map_err(|e| Error::Tray(e.to_string()))?;
         menu.append(&delay_menu).map_err(|e| Error::Tray(e.to_string()))?;
         menu.append(&sep_rec).map_err(|e| Error::Tray(e.to_string()))?;
-        menu.append(&record).map_err(|e| Error::Tray(e.to_string()))?;
+        record_menu.append(&rec_none).map_err(|e| Error::Tray(e.to_string()))?;
+        record_menu.append(&rec_mic ).map_err(|e| Error::Tray(e.to_string()))?;
+        record_menu.append(&rec_sys ).map_err(|e| Error::Tray(e.to_string()))?;
+        record_menu.append(&rec_both).map_err(|e| Error::Tray(e.to_string()))?;
+        menu.append(&record_menu).map_err(|e| Error::Tray(e.to_string()))?;
         menu.append(&stop_rec).map_err(|e| Error::Tray(e.to_string()))?;
         menu.append(&sep1).map_err(|e| Error::Tray(e.to_string()))?;
         menu.append(&open_fold).map_err(|e| Error::Tray(e.to_string()))?;
@@ -145,7 +165,10 @@ impl Tray {
             delay5_id,
             delay10_id,
             cancel_id,
-            record_id,
+            rec_none_id,
+            rec_mic_id,
+            rec_sys_id,
+            rec_both_id,
             stop_rec_id,
             open_folder_id,
             open_recs_id,
@@ -153,7 +176,10 @@ impl Tray {
             about_id,
             updates_id,
             exit_id,
-            record_item:   record,
+            rec_none_item: rec_none,
+            rec_mic_item:  rec_mic,
+            rec_sys_item:  rec_sys,
+            rec_both_item: rec_both,
             stop_rec_item: stop_rec,
             cancel_item:   cancel,
         })
@@ -168,7 +194,10 @@ impl Tray {
             Ok(ev) if ev.id == self.delay5_id    => TrayEvent::CaptureDelayed(5),
             Ok(ev) if ev.id == self.delay10_id   => TrayEvent::CaptureDelayed(10),
             Ok(ev) if ev.id == self.cancel_id    => TrayEvent::CancelPending,
-            Ok(ev) if ev.id == self.record_id    => TrayEvent::StartRecording,
+            Ok(ev) if ev.id == self.rec_none_id  => TrayEvent::StartRecording(crate::recorder::RecordingOptions::NONE),
+            Ok(ev) if ev.id == self.rec_mic_id   => TrayEvent::StartRecording(crate::recorder::RecordingOptions::MIC_ONLY),
+            Ok(ev) if ev.id == self.rec_sys_id   => TrayEvent::StartRecording(crate::recorder::RecordingOptions::SYSTEM_ONLY),
+            Ok(ev) if ev.id == self.rec_both_id  => TrayEvent::StartRecording(crate::recorder::RecordingOptions::MIC_AND_SYS),
             Ok(ev) if ev.id == self.stop_rec_id  => TrayEvent::StopRecording,
             Ok(ev) if ev.id == self.open_folder_id => TrayEvent::OpenSaveFolder,
             Ok(ev) if ev.id == self.open_recs_id  => TrayEvent::OpenRecordingsFolder,
@@ -191,7 +220,11 @@ impl Tray {
     /// "Stop Recording" is enabled at a time, mirroring the model of the
     /// `Recorder` shim.
     pub fn set_recording(&self, recording: bool) {
-        self.record_item.set_enabled(!recording);
+        let enabled = !recording;
+        self.rec_none_item.set_enabled(enabled);
+        self.rec_mic_item .set_enabled(enabled);
+        self.rec_sys_item .set_enabled(enabled);
+        self.rec_both_item.set_enabled(enabled);
         self.stop_rec_item.set_enabled(recording);
     }
 
