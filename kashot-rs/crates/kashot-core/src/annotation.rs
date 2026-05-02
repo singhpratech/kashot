@@ -93,8 +93,13 @@ impl Annotation {
         Annotation { kind: AnnotationKind::Ellipse { stroke, start: a, end: a } }
     }
     pub fn marker(stroke: Stroke, p: Point2) -> Annotation {
-        // marker thickness is 6× the configured thickness, semi-transparent
-        let stroke = Stroke { thickness: stroke.thickness * 6.0, color: stroke.color };
+        // Marker thickness is 6× the configured thickness, with alpha pinned
+        // to 0xC8 so a vivid color reads as a highlighter regardless of which
+        // palette the user has active. Mirrors `Kashot/Annotations.cs::MarkerAnnotation`.
+        let stroke = Stroke {
+            thickness: stroke.thickness * 6.0,
+            color:     stroke.color.with_alpha(0xC8),
+        };
         Annotation { kind: AnnotationKind::Marker { stroke, points: vec![p] } }
     }
     pub fn text(color: Rgba, p: Point2, text: impl Into<String>) -> Annotation {
