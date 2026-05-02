@@ -259,10 +259,12 @@ impl Overlay {
         // need for Ctrl+Z / Ctrl+S etc. while drawing.
         #[cfg(target_os = "linux")]
         {
-            use winit::platform::x11::WindowExtX11;
-            if let Some(xid) = window.xlib_window() {
-                if let Err(e) = grab_x11_focus(xid as u32) {
-                    eprintln!("overlay: x11 set_input_focus skipped: {e}");
+            use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+            if let Ok(handle) = window.window_handle() {
+                if let RawWindowHandle::Xlib(xlib) = handle.as_raw() {
+                    if let Err(e) = grab_x11_focus(xlib.window as u32) {
+                        eprintln!("overlay: x11 set_input_focus skipped: {e}");
+                    }
                 }
             }
         }
