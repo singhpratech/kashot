@@ -87,19 +87,53 @@ enum State {
     TextInput,
 }
 
-/// Toolbar geometry — kept simple and centered horizontally near the top
-/// of the screen. We rebuild it on every redraw, which is cheap.
-const TOOLBAR_TOP:        i32 = 18;
-const TOOLBAR_PAD:        i32 = 8;
-const TOOLBAR_BTN:        i32 = 36;
-const TOOLBAR_GAP:        i32 = 4;
-const TOOLBAR_RADIUS:     i32 = 8;
-/// Wide gap between the tools group and the thickness picker so the two
-/// visually read as separate sections.
-const TOOLBAR_GROUP_GAP:  i32 = 14;
-/// Stroke widths the thickness picker offers. Index 1 (4 px) is the default
-/// — same as `Stroke::default().thickness` in kashot-core.
-const THICKNESSES:        [f32; 3] = [2.0, 4.0, 8.0];
+/// Tool / action panel geometry. Mirrors `Kashot/OverlayForm.cs::PositionToolbars`:
+/// the tool panel is a vertical column adjacent to the right edge of the
+/// selection; the action panel is a horizontal row beneath the selection,
+/// right-aligned. Both fall back to the opposite side if they'd clip the
+/// screen edge. Free-floating, never covering the whole screen.
+const PANEL_BTN:    i32 = 36;
+const PANEL_GAP:    i32 = 4;
+const PANEL_PAD:    i32 = 5;
+const PANEL_RADIUS: i32 = 8;
+/// Wide gap between visually distinct groups inside the tool panel.
+const PANEL_GROUP_GAP: i32 = 8;
+/// Stroke widths the thickness button cycles through. Default is index 1
+/// (4 px) — matches `Stroke::default().thickness` in kashot-core.
+const THICKNESSES: [f32; 3] = [2.0, 4.0, 8.0];
+
+/// Tool-panel button identities. The first 9 mirror `Tool::ALL`; the last 4
+/// (`Color`, `Thickness`, `Undo`, `Redo`) are buttons that don't pick a tool
+/// — they trigger a popup or an action. Mirrors C# CreateToolPanel.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ToolPanelButton { Tool(Tool), Color, Thickness, Undo, Redo }
+
+const TOOL_PANEL_BUTTONS: [ToolPanelButton; 13] = [
+    ToolPanelButton::Tool(Tool::Pen),
+    ToolPanelButton::Tool(Tool::Line),
+    ToolPanelButton::Tool(Tool::Arrow),
+    ToolPanelButton::Tool(Tool::Rectangle),
+    ToolPanelButton::Tool(Tool::Ellipse),
+    ToolPanelButton::Tool(Tool::Marker),
+    ToolPanelButton::Tool(Tool::Text),
+    ToolPanelButton::Tool(Tool::Step),
+    ToolPanelButton::Tool(Tool::Pixelate),
+    // Visual divider sits between index 8 and 9 — see `tool_panel_dims`.
+    ToolPanelButton::Color,
+    ToolPanelButton::Thickness,
+    ToolPanelButton::Undo,
+    ToolPanelButton::Redo,
+];
+
+/// Action-panel buttons (horizontal row under the selection). Returning
+/// outcomes routed through `tray_loop`. `Close` mirrors C# OverlayForm
+/// "Close (Esc)" — closes the overlay without saving.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ActionButton { Pin, Copy, Save, Close }
+
+const ACTION_BUTTONS: [ActionButton; 4] = [
+    ActionButton::Pin, ActionButton::Copy, ActionButton::Save, ActionButton::Close,
+];
 
 /// Magnifier — small zoomed lens shown near the cursor in Idle / Selecting,
 /// so the user can position the selection edge by individual pixels.
@@ -137,6 +171,10 @@ pub struct Overlay {
     mods:        ModifiersState,
     /// Which edge / corner is being dragged while `state == Resizing`.
     resize_edge: Edge,
+    /// True while the color palette popup is showing. Toggled by clicking
+    /// the Color button in the tool panel; closes when the user picks a
+    /// swatch or clicks anywhere outside the popup.
+    palette_open: bool,
 }
 
 impl Overlay {
@@ -181,6 +219,7 @@ impl Overlay {
             step_count:  1,
             mods:        ModifiersState::empty(),
             resize_edge: Edge::None,
+            palette_open: false,
         })
     }
 
@@ -421,25 +460,66 @@ impl Overlay {
             // Fall through so the click can still pick a swatch / start a
             // new text input / drag a region etc.
         }
-        // Toolbar takes priority — clicking a tool button never starts a draw.
+        // Tool/action panel + popup hit-testing happens BEFORE the
+        // edge-resize / draw-start path, so a click on a button always
+        // wins over a draw inside the selection. Mirrors the order in
+        // C# OverlayForm.OnMouseDown.
         if self.state == State::Selected {
-            if let Some(t) = self.toolbar_hit(self.cursor) {
-                self.tool = t;
-                self.window.request_redraw();
-                return OverlayOutcome::Continue;
-            }
-            // Thickness picker — 3 small dots to the right of the tool row.
-            let win_w = self.window.inner_size().width as usize;
-            if let Some(t) = thickness_hit(win_w, self.cursor) {
-                self.stroke.thickness = t;
-                self.window.request_redraw();
-                return OverlayOutcome::Continue;
-            }
-            // Color-palette swatch under the toolbar — click to switch.
-            if let Some(c) = palette_hit(win_w, self.cursor) {
-                self.stroke.color = c;
-                self.window.request_redraw();
-                return OverlayOutcome::Continue;
+            if let Some(sel) = self.selection {
+                let win_w = self.window.inner_size().width  as usize;
+                let win_h = self.window.inner_size().height as usize;
+                let tp_origin = tool_panel_origin(win_w, win_h, sel);
+
+                // Color popup — must be tested before the tool panel itself
+                // so a click that falls on the popup doesn't get eaten by
+                // the panel underneath.
+                if self.palette_open {
+                    let pp_origin = palette_popup_origin(win_w, tp_origin);
+                    if let Some(idx) = palette_popup_hit(pp_origin, self.cursor) {
+                        let pal = kashot_core::annotation::Palettes::get(0);
+                        self.stroke.color = pal.colors[idx];
+                        self.palette_open = false;
+                        self.window.request_redraw();
+                        return OverlayOutcome::Continue;
+                    }
+                    if !palette_popup_in(pp_origin, self.cursor) {
+                        // Click outside the popup → close it; let the click
+                        // continue dispatching (so e.g. clicking another
+                        // button still works).
+                        self.palette_open = false;
+                    } else {
+                        return OverlayOutcome::Continue;
+                    }
+                }
+
+                // Tool panel.
+                if let Some((_, btn)) = tool_panel_hit(tp_origin, self.cursor) {
+                    match btn {
+                        ToolPanelButton::Tool(t) => { self.tool = t; }
+                        ToolPanelButton::Color   => { self.palette_open = !self.palette_open; }
+                        ToolPanelButton::Thickness => {
+                            // Cycle through the configured stroke widths,
+                            // matching C# OverlayForm.CycleThickness.
+                            let cur = THICKNESSES.iter().position(|t| (t - self.stroke.thickness).abs() < 0.01).unwrap_or(1);
+                            self.stroke.thickness = THICKNESSES[(cur + 1) % THICKNESSES.len()];
+                        }
+                        ToolPanelButton::Undo => self.undo(),
+                        ToolPanelButton::Redo => self.redo(),
+                    }
+                    self.window.request_redraw();
+                    return OverlayOutcome::Continue;
+                }
+
+                // Action panel.
+                let ap_origin = action_panel_origin(win_w, win_h, sel);
+                if let Some(action) = action_panel_hit(ap_origin, self.cursor) {
+                    return match action {
+                        ActionButton::Pin   => self.commit_as_pin(),
+                        ActionButton::Copy  => self.commit_as_copy(),
+                        ActionButton::Save  => self.commit(),
+                        ActionButton::Close => OverlayOutcome::Cancelled,
+                    };
+                }
             }
         }
 
@@ -733,9 +813,18 @@ impl Overlay {
             }
         }
 
-        // Pass 5: toolbar (only while a region is locked in).
+        // Pass 5: tool panel + action panel + (optional) color popup —
+        // floating around the selection, never spanning the screen.
         if matches!(self.state, State::Selected | State::Drawing | State::Resizing | State::TextInput) {
-            draw_toolbar(&mut buf, win_w, win_h, self.tool, self.stroke.color, self.stroke.thickness);
+            if let Some(sel) = self.selection {
+                draw_tool_panel(&mut buf, win_w, win_h, sel,
+                                self.tool, self.stroke.color, self.stroke.thickness);
+                draw_action_panel(&mut buf, win_w, win_h, sel);
+                if self.palette_open {
+                    let tp_origin = tool_panel_origin(win_w, win_h, sel);
+                    draw_palette_popup(&mut buf, win_w, win_h, tp_origin, self.stroke.color);
+                }
+            }
         }
 
         // Pass 6: magnifier — only useful when the user is positioning the
@@ -750,133 +839,356 @@ impl Overlay {
         }
     }
 
-    fn toolbar_hit(&self, (cx, cy): (i32, i32)) -> Option<Tool> {
-        let win_w = self.window.inner_size().width as usize;
-        for (i, t) in Tool::ALL.iter().enumerate() {
-            let (x0, y0, x1, y1) = toolbar_button_rect(win_w, i as i32);
-            if cx >= x0 && cx < x1 && cy >= y0 && cy < y1 {
-                return Some(*t);
-            }
-        }
-        None
-    }
 }
 
-// ── toolbar (free fns; can't be methods because they share the softbuffer
-//    `buf` borrow with `self.surface`) ──────────────────────────────────────
+// ── tool/action panel layout (mirrors C# OverlayForm.PositionToolbars) ─────
 
-fn toolbar_total_w() -> i32 {
-    let n_tools = Tool::ALL.len() as i32;
-    let n_thick = THICKNESSES.len() as i32;
-    let tools_w = n_tools * TOOLBAR_BTN + (n_tools - 1) * TOOLBAR_GAP;
-    let thick_w = n_thick * TOOLBAR_BTN + (n_thick - 1) * TOOLBAR_GAP;
-    tools_w + TOOLBAR_GROUP_GAP + thick_w + TOOLBAR_PAD * 2
+/// Outer width × height of the vertical tool panel (13 buttons + 1 divider).
+fn tool_panel_dims() -> (i32, i32) {
+    let n   = TOOL_PANEL_BUTTONS.len() as i32;
+    let h_buttons = n * PANEL_BTN + (n - 1) * PANEL_GAP;
+    // A 1-px divider sits between the 9 tool buttons and the 4 utility
+    // buttons (color / thickness / undo / redo). Two extra group-gaps add
+    // breathing room above and below the divider line.
+    let extra = PANEL_GROUP_GAP * 2 + 1;
+    let w = PANEL_BTN + PANEL_PAD * 2;
+    let h = h_buttons + extra + PANEL_PAD * 2;
+    (w, h)
 }
 
-fn toolbar_origin(win_w: usize) -> (i32, i32) {
-    let total = toolbar_total_w();
-    let x = ((win_w as i32) - total) / 2;
-    (x.max(0), TOOLBAR_TOP)
+fn action_panel_dims() -> (i32, i32) {
+    let n = ACTION_BUTTONS.len() as i32;
+    let w = n * PANEL_BTN + (n - 1) * PANEL_GAP + PANEL_PAD * 2;
+    let h = PANEL_BTN + PANEL_PAD * 2;
+    (w, h)
 }
 
-fn toolbar_button_rect(win_w: usize, idx: i32) -> (i32, i32, i32, i32) {
-    let (ox, oy) = toolbar_origin(win_w);
-    let x = ox + TOOLBAR_PAD + idx * (TOOLBAR_BTN + TOOLBAR_GAP);
-    let y = oy + TOOLBAR_PAD;
-    (x, y, x + TOOLBAR_BTN, y + TOOLBAR_BTN)
+/// Screen-space origin of the tool panel. Right of selection by default;
+/// flips to the left if the right edge would clip; rounds inward to keep
+/// the panel fully on screen. Returns `None` if no selection is locked in.
+fn tool_panel_origin(win_w: usize, win_h: usize, sel: (i32, i32, i32, i32)) -> (i32, i32) {
+    let (sx, sy, sw, sh) = sel;
+    let (pw, ph) = tool_panel_dims();
+    let mut tx = sx + sw + 5;
+    let mut ty = sy;
+    if tx + pw > win_w as i32 { tx = sx - pw - 5; }
+    if ty + ph > win_h as i32 { ty = (win_h as i32) - ph; }
+    let _ = sh;
+    (tx.max(0), ty.max(0))
 }
 
-fn thickness_button_rect(win_w: usize, idx: i32) -> (i32, i32, i32, i32) {
-    let (ox, oy) = toolbar_origin(win_w);
-    let n_tools  = Tool::ALL.len() as i32;
-    let tools_w  = n_tools * TOOLBAR_BTN + (n_tools - 1) * TOOLBAR_GAP;
-    let x = ox + TOOLBAR_PAD + tools_w + TOOLBAR_GROUP_GAP + idx * (TOOLBAR_BTN + TOOLBAR_GAP);
-    let y = oy + TOOLBAR_PAD;
-    (x, y, x + TOOLBAR_BTN, y + TOOLBAR_BTN)
+fn action_panel_origin(win_w: usize, win_h: usize, sel: (i32, i32, i32, i32)) -> (i32, i32) {
+    let (sx, sy, sw, sh) = sel;
+    let (pw, ph) = action_panel_dims();
+    let mut ax = sx + sw - pw;
+    let mut ay = sy + sh + 5;
+    if ay + ph > win_h as i32 { ay = sy - ph - 5; }
+    if ax < 0 { ax = sx; }
+    let _ = win_w;
+    (ax.max(0), ay.max(0))
 }
 
-fn thickness_hit(win_w: usize, (cx, cy): (i32, i32)) -> Option<f32> {
-    for (i, t) in THICKNESSES.iter().enumerate() {
-        let (x0, y0, x1, y1) = thickness_button_rect(win_w, i as i32);
+/// Rectangle for the i-th tool-panel button. Index above the divider
+/// position skips one slot to leave room for the line.
+fn tool_panel_button_rect(panel_origin: (i32, i32), idx: i32) -> (i32, i32, i32, i32) {
+    let (ox, oy) = panel_origin;
+    let x = ox + PANEL_PAD;
+    // Indices 0..9 are the 9 tools. Index 9..13 are utility buttons that
+    // sit *below* the divider (extra group gap + 1px line + group gap).
+    let above_divider = idx < 9;
+    let extra = if above_divider { 0 } else { PANEL_GROUP_GAP * 2 + 1 };
+    let y = oy + PANEL_PAD + idx * (PANEL_BTN + PANEL_GAP) + extra;
+    (x, y, x + PANEL_BTN, y + PANEL_BTN)
+}
+
+fn action_panel_button_rect(panel_origin: (i32, i32), idx: i32) -> (i32, i32, i32, i32) {
+    let (ox, oy) = panel_origin;
+    let x = ox + PANEL_PAD + idx * (PANEL_BTN + PANEL_GAP);
+    let y = oy + PANEL_PAD;
+    (x, y, x + PANEL_BTN, y + PANEL_BTN)
+}
+
+fn tool_panel_hit(panel_origin: (i32, i32), (cx, cy): (i32, i32)) -> Option<(usize, ToolPanelButton)> {
+    for (i, b) in TOOL_PANEL_BUTTONS.iter().enumerate() {
+        let (x0, y0, x1, y1) = tool_panel_button_rect(panel_origin, i as i32);
         if cx >= x0 && cx < x1 && cy >= y0 && cy < y1 {
-            return Some(*t);
+            return Some((i, *b));
         }
     }
     None
 }
 
-fn draw_toolbar(
-    buf:       &mut [u32],
-    win_w:     usize,
-    win_h:     usize,
-    active:    Tool,
-    swatch:    kashot_core::color::Rgba,
-    thickness: f32,
+fn action_panel_hit(panel_origin: (i32, i32), (cx, cy): (i32, i32)) -> Option<ActionButton> {
+    for (i, b) in ACTION_BUTTONS.iter().enumerate() {
+        let (x0, y0, x1, y1) = action_panel_button_rect(panel_origin, i as i32);
+        if cx >= x0 && cx < x1 && cy >= y0 && cy < y1 {
+            return Some(*b);
+        }
+    }
+    None
+}
+
+// ── color popup (16 swatches in 4×4 grid) ──────────────────────────────────
+
+const PALETTE_SWATCH: i32 = 22;
+const PALETTE_COLS:   i32 = 4;
+const PALETTE_ROWS:   i32 = 4;
+const PALETTE_PAD:    i32 = 5;
+
+fn palette_popup_dims() -> (i32, i32) {
+    let w = PALETTE_COLS * PALETTE_SWATCH + (PALETTE_COLS - 1) * PANEL_GAP + PALETTE_PAD * 2;
+    let h = PALETTE_ROWS * PALETTE_SWATCH + (PALETTE_ROWS - 1) * PANEL_GAP + PALETTE_PAD * 2;
+    (w, h)
+}
+
+/// Where the color popup opens — to the LEFT of the tool panel, top-aligned
+/// with the Color button, falling back to the right side if the left clips.
+fn palette_popup_origin(win_w: usize, panel_origin: (i32, i32)) -> (i32, i32) {
+    let (pw, _ph) = palette_popup_dims();
+    let mut x = panel_origin.0 - pw - 5;
+    let y     = panel_origin.1;
+    if x < 0 {
+        let (tw, _) = tool_panel_dims();
+        x = panel_origin.0 + tw + 5;
+        if x + pw > win_w as i32 { x = (win_w as i32) - pw - 5; }
+    }
+    (x.max(0), y.max(0))
+}
+
+fn palette_popup_swatch_rect(origin: (i32, i32), idx: i32) -> (i32, i32, i32, i32) {
+    let row = idx / PALETTE_COLS;
+    let col = idx % PALETTE_COLS;
+    let x = origin.0 + PALETTE_PAD + col * (PALETTE_SWATCH + PANEL_GAP);
+    let y = origin.1 + PALETTE_PAD + row * (PALETTE_SWATCH + PANEL_GAP);
+    (x, y, x + PALETTE_SWATCH, y + PALETTE_SWATCH)
+}
+
+fn palette_popup_hit(origin: (i32, i32), (cx, cy): (i32, i32)) -> Option<usize> {
+    for i in 0..16 {
+        let (x0, y0, x1, y1) = palette_popup_swatch_rect(origin, i as i32);
+        if cx >= x0 && cx < x1 && cy >= y0 && cy < y1 { return Some(i); }
+    }
+    None
+}
+
+fn palette_popup_in(origin: (i32, i32), (cx, cy): (i32, i32)) -> bool {
+    let (pw, ph) = palette_popup_dims();
+    cx >= origin.0 && cx < origin.0 + pw && cy >= origin.1 && cy < origin.1 + ph
+}
+
+// ── drawing ─────────────────────────────────────────────────────────────────
+
+fn draw_tool_panel(
+    buf:        &mut [u32],
+    win_w:      usize,
+    win_h:      usize,
+    sel:        (i32, i32, i32, i32),
+    active:     Tool,
+    swatch:     kashot_core::color::Rgba,
+    thickness:  f32,
 ) {
     const BG:         u32 = 0x00_22_22_24;
     const BTN:        u32 = 0x00_2E_2E_32;
     const BTN_ACTIVE: u32 = 0x00_64_95_ED;
     const TEXT:       u32 = 0x00_E8_E8_EC;
+    const DIVIDER:    u32 = 0x00_44_44_48;
 
-    let (ox, oy) = toolbar_origin(win_w);
-    let h_total  = TOOLBAR_BTN + TOOLBAR_PAD * 2;
-    let total    = toolbar_total_w();
+    let (ox, oy) = tool_panel_origin(win_w, win_h, sel);
+    let (pw, ph) = tool_panel_dims();
+    draw_rounded_rect(buf, win_w, win_h, ox, oy, ox + pw, oy + ph, PANEL_RADIUS, BG);
 
-    draw_rounded_rect(buf, win_w, win_h, ox, oy, ox + total, oy + h_total, TOOLBAR_RADIUS, BG);
+    // Divider sits between buttons 8 (Pixelate) and 9 (Color).
+    let div_y = oy + PANEL_PAD + 9 * (PANEL_BTN + PANEL_GAP) + PANEL_GROUP_GAP;
+    draw_filled_rect(buf, win_w, win_h, ox + 6, div_y, ox + pw - 6, div_y + 1, DIVIDER);
 
-    for (i, t) in Tool::ALL.iter().enumerate() {
-        let (x0, y0, x1, y1) = toolbar_button_rect(win_w, i as i32);
-        let bg = if *t == active { BTN_ACTIVE } else { BTN };
+    for (i, b) in TOOL_PANEL_BUTTONS.iter().enumerate() {
+        let (x0, y0, x1, y1) = tool_panel_button_rect((ox, oy), i as i32);
+        let highlight = match b {
+            ToolPanelButton::Tool(t) => *t == active,
+            _ => false,
+        };
+        let bg = if highlight { BTN_ACTIVE } else { BTN };
         draw_rounded_rect(buf, win_w, win_h, x0, y0, x1, y1, 6, bg);
-        draw_tool_glyph(buf, win_w, win_h, x0, y0, x1, y1, *t, TEXT);
-    }
-
-    if let Some(active_idx) = Tool::ALL.iter().position(|t| *t == active) {
-        let (x0, _y0, x1, y1) = toolbar_button_rect(win_w, active_idx as i32);
-        let rgb = ((swatch.r as u32) << 16) | ((swatch.g as u32) << 8) | swatch.b as u32;
-        draw_filled_rect(buf, win_w, win_h, x0 + 4, y1 + 2, x1 - 4, y1 + 5, rgb);
-    }
-
-    // Thickness picker — 3 buttons to the right of the tool row, separated
-    // by `TOOLBAR_GROUP_GAP`. Each button shows a filled disc whose diameter
-    // matches the corresponding stroke width.
-    for i in 0..THICKNESSES.len() {
-        let (x0, y0, x1, y1) = thickness_button_rect(win_w, i as i32);
-        let is_active = (THICKNESSES[i] - thickness).abs() < 0.01;
-        let bg = if is_active { BTN_ACTIVE } else { BTN };
-        draw_rounded_rect(buf, win_w, win_h, x0, y0, x1, y1, 6, bg);
-        let cx = (x0 + x1) / 2;
-        let cy = (y0 + y1) / 2;
-        let r  = (THICKNESSES[i] as i32).max(1) + 2;
-        let mut surf = crate::painter::U32Surface { buf, stride: win_w as i32, height: win_h as i32 };
-        crate::painter::fill_disc(&mut surf, cx, cy, r, kashot_core::color::Rgba::WHITE);
-    }
-
-    // Color palette strip below the toolbar — 16 vivid swatches in a single
-    // row, click to switch the active stroke color. Centered under the
-    // toolbar background pill.
-    let pal = kashot_core::annotation::Palettes::get(0); // "Vivid"
-    let (px, py) = palette_strip_origin(win_w);
-    draw_rounded_rect(buf, win_w, win_h, px - 4, py - 4,
-                      px + PALETTE_SWATCH_W * 16 + 4, py + PALETTE_SWATCH_H + 4, 6, BG);
-    for i in 0..16 {
-        let c = pal.colors[i];
-        let rgb = ((c.r as u32) << 16) | ((c.g as u32) << 8) | c.b as u32;
-        let sx0 = px + (i as i32) * PALETTE_SWATCH_W;
-        let sx1 = sx0 + PALETTE_SWATCH_W - 1;
-        let sy0 = py;
-        let sy1 = py + PALETTE_SWATCH_H;
-        draw_filled_rect(buf, win_w, win_h, sx0, sy0, sx1, sy1, rgb);
-        // Highlight the currently active swatch with a 1-px white border.
-        if c.r == swatch.r && c.g == swatch.g && c.b == swatch.b {
-            draw_rect_border(buf, win_w, win_h, sx0, sy0, sx1, sy1, 0x00_FF_FF_FF);
+        match b {
+            ToolPanelButton::Tool(t)    => draw_tool_glyph(buf, win_w, win_h, x0, y0, x1, y1, *t, TEXT),
+            ToolPanelButton::Color      => draw_color_glyph(buf, win_w, win_h, x0, y0, x1, y1, swatch),
+            ToolPanelButton::Thickness  => draw_thickness_glyph(buf, win_w, win_h, x0, y0, x1, y1, thickness, TEXT),
+            ToolPanelButton::Undo       => draw_undo_glyph(buf, win_w, win_h, x0, y0, x1, y1, TEXT),
+            ToolPanelButton::Redo       => draw_redo_glyph(buf, win_w, win_h, x0, y0, x1, y1, TEXT),
         }
     }
 }
 
-const PALETTE_SWATCH_W: i32 = 22;
-const PALETTE_SWATCH_H: i32 = 14;
-const PALETTE_GAP_TOP:  i32 = 8;
+fn draw_action_panel(
+    buf:   &mut [u32],
+    win_w: usize,
+    win_h: usize,
+    sel:   (i32, i32, i32, i32),
+) {
+    const BG:   u32 = 0x00_22_22_24;
+    const BTN:  u32 = 0x00_2E_2E_32;
+    const TEXT: u32 = 0x00_E8_E8_EC;
+
+    let origin = action_panel_origin(win_w, win_h, sel);
+    let (pw, ph) = action_panel_dims();
+    draw_rounded_rect(buf, win_w, win_h, origin.0, origin.1, origin.0 + pw, origin.1 + ph, PANEL_RADIUS, BG);
+
+    for (i, b) in ACTION_BUTTONS.iter().enumerate() {
+        let (x0, y0, x1, y1) = action_panel_button_rect(origin, i as i32);
+        draw_rounded_rect(buf, win_w, win_h, x0, y0, x1, y1, 6, BTN);
+        match b {
+            ActionButton::Pin   => draw_pin_glyph(buf, win_w, win_h, x0, y0, x1, y1, TEXT),
+            ActionButton::Copy  => draw_copy_glyph(buf, win_w, win_h, x0, y0, x1, y1, TEXT),
+            ActionButton::Save  => draw_save_glyph(buf, win_w, win_h, x0, y0, x1, y1, TEXT),
+            ActionButton::Close => draw_close_glyph(buf, win_w, win_h, x0, y0, x1, y1, TEXT),
+        }
+    }
+}
+
+fn draw_palette_popup(
+    buf:    &mut [u32],
+    win_w:  usize,
+    win_h:  usize,
+    panel_origin: (i32, i32),
+    active_color: kashot_core::color::Rgba,
+) {
+    const BG: u32 = 0x00_22_22_24;
+    let origin = palette_popup_origin(win_w, panel_origin);
+    let (pw, ph) = palette_popup_dims();
+    draw_rounded_rect(buf, win_w, win_h, origin.0, origin.1, origin.0 + pw, origin.1 + ph, PANEL_RADIUS, BG);
+    let pal = kashot_core::annotation::Palettes::get(0);
+    for i in 0..16usize {
+        let c = pal.colors[i];
+        let (x0, y0, x1, y1) = palette_popup_swatch_rect(origin, i as i32);
+        let rgb = ((c.r as u32) << 16) | ((c.g as u32) << 8) | c.b as u32;
+        draw_filled_rect(buf, win_w, win_h, x0, y0, x1, y1, rgb);
+        if c.r == active_color.r && c.g == active_color.g && c.b == active_color.b {
+            draw_rect_border(buf, win_w, win_h, x0, y0, x1, y1, 0x00_FF_FF_FF);
+        }
+    }
+}
+
+// ── glyph helpers used only by the new layout ──────────────────────────────
+
+fn draw_color_glyph(buf: &mut [u32], stride: usize, height: usize,
+                    x0: i32, y0: i32, x1: i32, y1: i32, c: kashot_core::color::Rgba) {
+    let cx = (x0 + x1) / 2;
+    let cy = (y0 + y1) / 2;
+    let r  = ((x1 - x0) / 2) - 5;
+    let mut surf = crate::painter::U32Surface { buf, stride: stride as i32, height: height as i32 };
+    crate::painter::fill_disc(&mut surf, cx, cy, r, c);
+}
+
+fn draw_thickness_glyph(buf: &mut [u32], stride: usize, height: usize,
+                        x0: i32, y0: i32, x1: i32, y1: i32, thickness: f32, _color: u32) {
+    // Horizontal stroke of the active thickness, centered. Visual hint of
+    // what a click-cycle will produce next.
+    let cy = (y0 + y1) / 2;
+    let r  = (thickness / 2.0).max(1.0) as i32;
+    for dy in -r..=r {
+        for x in (x0 + 6)..(x1 - 6) {
+            let yy = cy + dy;
+            if yy >= 0 && (yy as usize) < height && x >= 0 && (x as usize) < stride {
+                buf[yy as usize * stride + x as usize] = 0x00_E8_E8_EC;
+            }
+        }
+    }
+}
+
+fn draw_undo_glyph(buf: &mut [u32], stride: usize, height: usize,
+                   x0: i32, y0: i32, x1: i32, y1: i32, color: u32) {
+    let cx = (x0 + x1) / 2;
+    let cy = (y0 + y1) / 2;
+    // Curved-arrow approximation: short stroke + arrowhead pointing left.
+    panel_line(buf, stride, height, cx + 6, cy - 4, cx - 6, cy - 4, color);
+    panel_line(buf, stride, height, cx - 6, cy - 4, cx - 6, cy + 4, color);
+    panel_line(buf, stride, height, cx - 6, cy - 4, cx - 2, cy - 7, color);
+    panel_line(buf, stride, height, cx - 6, cy - 4, cx - 2, cy - 1, color);
+}
+
+fn draw_redo_glyph(buf: &mut [u32], stride: usize, height: usize,
+                   x0: i32, y0: i32, x1: i32, y1: i32, color: u32) {
+    let cx = (x0 + x1) / 2;
+    let cy = (y0 + y1) / 2;
+    panel_line(buf, stride, height, cx - 6, cy - 4, cx + 6, cy - 4, color);
+    panel_line(buf, stride, height, cx + 6, cy - 4, cx + 6, cy + 4, color);
+    panel_line(buf, stride, height, cx + 6, cy - 4, cx + 2, cy - 7, color);
+    panel_line(buf, stride, height, cx + 6, cy - 4, cx + 2, cy - 1, color);
+}
+
+fn draw_pin_glyph(buf: &mut [u32], stride: usize, height: usize,
+                  x0: i32, y0: i32, x1: i32, y1: i32, color: u32) {
+    let cx = (x0 + x1) / 2;
+    // Pin head (filled circle) + body line + base.
+    for dy in -8..=-2 {
+        for dx in -3..=3 {
+            if dx * dx + (dy + 5) * (dy + 5) <= 9 {
+                let yy = (y0 + (y1 - y0) / 2 + dy).max(0) as usize;
+                let xx = (cx + dx).max(0) as usize;
+                if yy < height && xx < stride { buf[yy * stride + xx] = color; }
+            }
+        }
+    }
+    panel_line(buf, stride, height, cx, (y0 + y1) / 2 - 2, cx, y1 - 6, color);
+    panel_line(buf, stride, height, cx - 4, y1 - 6, cx + 4, y1 - 6, color);
+}
+
+fn draw_copy_glyph(buf: &mut [u32], stride: usize, height: usize,
+                   x0: i32, y0: i32, x1: i32, y1: i32, color: u32) {
+    // Two overlapping rounded rectangles.
+    let pad = 8;
+    let r0 = (x0 + pad - 2, y0 + pad - 2, x1 - pad - 2, y1 - pad - 2);
+    let r1 = (x0 + pad + 2, y0 + pad + 2, x1 - pad + 2, y1 - pad + 2);
+    panel_rect(buf, stride, height, r0.0, r0.1, r0.2, r0.3, color);
+    panel_rect(buf, stride, height, r1.0, r1.1, r1.2, r1.3, color);
+}
+
+fn draw_save_glyph(buf: &mut [u32], stride: usize, height: usize,
+                   x0: i32, y0: i32, x1: i32, y1: i32, color: u32) {
+    // Floppy: outer box + inner notch on top.
+    let pad = 7;
+    panel_rect(buf, stride, height, x0 + pad, y0 + pad, x1 - pad, y1 - pad, color);
+    let nx0 = x0 + pad + 4;
+    let nx1 = x1 - pad - 4;
+    panel_rect(buf, stride, height, nx0, y0 + pad, nx1, y0 + pad + 6, color);
+    // Label rectangle inside.
+    panel_rect(buf, stride, height, x0 + pad + 3, y1 - pad - 8, x1 - pad - 3, y1 - pad - 2, color);
+}
+
+fn draw_close_glyph(buf: &mut [u32], stride: usize, height: usize,
+                    x0: i32, y0: i32, x1: i32, y1: i32, color: u32) {
+    let pad = 10;
+    panel_line(buf, stride, height, x0 + pad, y0 + pad, x1 - pad, y1 - pad, color);
+    panel_line(buf, stride, height, x1 - pad, y0 + pad, x0 + pad, y1 - pad, color);
+}
+
+/// Thin-line Bresenham helper kept local so the icon glyphs don't depend
+/// on `painter::line` (which also stamps a brush disc per step).
+fn panel_line(buf: &mut [u32], stride: usize, height: usize,
+              mut x0: i32, mut y0: i32, x1: i32, y1: i32, color: u32) {
+    let dx =  (x1 - x0).abs();
+    let dy = -(y1 - y0).abs();
+    let sx = if x0 < x1 { 1 } else { -1 };
+    let sy = if y0 < y1 { 1 } else { -1 };
+    let mut err = dx + dy;
+    loop {
+        if x0 >= 0 && (x0 as usize) < stride && y0 >= 0 && (y0 as usize) < height {
+            buf[y0 as usize * stride + x0 as usize] = color;
+        }
+        if x0 == x1 && y0 == y1 { break; }
+        let e2 = 2 * err;
+        if e2 >= dy { err += dy; x0 += sx; }
+        if e2 <= dx { err += dx; y0 += sy; }
+    }
+}
+
+fn panel_rect(buf: &mut [u32], stride: usize, height: usize,
+              x0: i32, y0: i32, x1: i32, y1: i32, color: u32) {
+    panel_line(buf, stride, height, x0, y0, x1, y0, color);
+    panel_line(buf, stride, height, x1, y0, x1, y1, color);
+    panel_line(buf, stride, height, x1, y1, x0, y1, color);
+    panel_line(buf, stride, height, x0, y1, x0, y0, color);
+}
 
 /// Magnifier lens. Samples the original screenshot in a (2·R+1)² window
 /// around the cursor and draws each source pixel as a `MAG_ZOOM`-sized
