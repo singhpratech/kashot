@@ -938,6 +938,33 @@ impl Overlay {
             painter::render_annotation(&mut surf, a, Some(&self.screenshot));
         }
 
+        // While typing — show a subtle dashed rectangle around the text
+        // bounds so the user can see where text will appear. Drawn only
+        // in the live preview; `compose_final` never renders it, so the
+        // saved/copied bitmap shows just the text without any frame.
+        if self.state == State::TextInput {
+            if let Some(a) = self.current.as_ref() {
+                if let kashot_core::annotation::AnnotationKind::Text { position, text, font_size, .. } = &a.kind {
+                    let scale = ((*font_size / 7.0).round() as i32).max(1);
+                    let text_w = crate::bitmap_font::measure(text, scale).max(scale * 5);
+                    let text_h = crate::bitmap_font::GLYPH_H * scale;
+                    let pad = 4;
+                    let x0 = position.x as i32 - pad;
+                    let y0 = position.y as i32 - pad;
+                    let x1 = position.x as i32 + text_w + pad;
+                    let y1 = position.y as i32 + text_h + pad;
+                    draw_dashed_border(&mut buf, win_w, win_h, x0, y0, x1, y1, 0x00_88_88_8C);
+                    // Solid 1-px caret at the trailing edge of the text.
+                    let caret_x = position.x as i32 + text_w + 1;
+                    for cy in (y0 + 2)..(y1 - 2) {
+                        if caret_x >= 0 && (caret_x as usize) < win_w && cy >= 0 && (cy as usize) < win_h {
+                            buf[cy as usize * win_w + caret_x as usize] = 0x00_E8_E8_EC;
+                        }
+                    }
+                }
+            }
+        }
+
         // Pass 3: selection border + 8 handles.
         if let Some((x0, y0, x1, y1)) = sel_rect {
             const BLUE:  u32 = 0x00_64_95_ED;
@@ -1575,6 +1602,37 @@ fn draw_x_glyph(surf: &mut crate::painter::U32Surface, x: i32, y: i32, scale: i3
     let h = 7 * scale;
     crate::painter::line(surf, x, y + scale, x + w - 1, y + h - scale - 1, scale as f32, Rgba::WHITE);
     crate::painter::line(surf, x + w - 1, y + scale, x, y + h - scale - 1, scale as f32, Rgba::WHITE);
+}
+
+/// 1-px dashed rectangle border. Used as a subtle text-area indicator
+/// while the Text tool is in TextInput state — vanishes the moment the
+/// user commits because compose_final / save / copy / pin all snapshot
+/// the bitmap without re-running this render pass.
+fn draw_dashed_border(
+    buf: &mut [u32], stride: usize, height: usize,
+    x0: i32, y0: i32, x1: i32, y1: i32, rgb: u32,
+) {
+    let xa = x0.max(0) as usize;
+    let xb = (x1.min(stride as i32) as usize).max(xa);
+    let ya = y0.max(0) as usize;
+    let yb = (y1.min(height as i32) as usize).max(ya);
+    if xa >= stride || ya >= height || xa == xb || ya == yb { return; }
+    // 3-on-3-off dash pattern.
+    let dash = |i: usize| (i / 3) & 1 == 0;
+    for x in xa..xb.min(stride) {
+        if dash(x) {
+            buf[ya * stride + x] = rgb;
+            let by = (yb - 1).min(height - 1);
+            buf[by * stride + x] = rgb;
+        }
+    }
+    for y in ya..yb.min(height) {
+        if dash(y) {
+            buf[y * stride + xa] = rgb;
+            let bx = (xb - 1).min(stride - 1);
+            buf[y * stride + bx] = rgb;
+        }
+    }
 }
 
 fn draw_rect_border(
