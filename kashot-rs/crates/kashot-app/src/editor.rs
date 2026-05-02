@@ -845,9 +845,12 @@ impl Overlay {
         Some(img)
     }
 
-    /// Force keyboard focus + grab to our window via raw X11 calls. Called
-    /// once, lazily on the first redraw — by which point the window is
-    /// definitely mapped and X is willing to accept SetInputFocus on it.
+    /// Force keyboard focus + grab to our window via raw X11 calls. Retries
+    /// on every redraw until SetInputFocus stops returning BadMatch — the
+    /// window may still be in `IsUnviewable` state on the first frame and
+    /// X11 rejects focus changes against unviewable windows. Cinnamon
+    /// usually maps the window within ~2-3 redraw cycles after which the
+    /// focus push succeeds.
     #[cfg(target_os = "linux")]
     fn push_x11_focus(&mut self) {
         if self.focus_pushed { return; }
@@ -860,15 +863,27 @@ impl Overlay {
             Err(_) => return,
         };
         match force_x11_focus(xid) {
-            Ok(()) => eprintln!("kashot: x11 focus + grab pushed for window 0x{xid:x}"),
-            Err(e) => eprintln!("kashot: x11 focus push failed: {e}"),
+            Ok(()) => {
+                eprintln!("kashot: x11 focus + grab pushed for window 0x{xid:x}");
+                self.focus_pushed = true;
+            }
+            Err(e) => {
+                // Retry next redraw — leave `focus_pushed = false`.
+                eprintln!("kashot: x11 focus retry pending ({e})");
+            }
         }
-        self.focus_pushed = true;
     }
 
     fn redraw(&mut self) {
         #[cfg(target_os = "linux")]
-        self.push_x11_focus();
+        {
+            self.push_x11_focus();
+            // Keep cycling redraws until focus is grabbed. After that it
+            // settles and we redraw only on actual events.
+            if !self.focus_pushed {
+                self.window.request_redraw();
+            }
+        }
         let phys = self.window.inner_size();
         let (Some(w), Some(h)) = (NonZeroU32::new(phys.width), NonZeroU32::new(phys.height)) else { return; };
         if let Err(e) = self.surface.resize(w, h) {
