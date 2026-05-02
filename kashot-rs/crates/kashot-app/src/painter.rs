@@ -205,9 +205,154 @@ pub fn arrow<S: Surface>(s: &mut S, a: Point2, b: Point2, thickness: f32, color:
     fill_triangle(s, p0, p1, p2, color);
 }
 
+// ── step number rendering (5×7 bitmap font, 0–9 only) ──────────────────────
+
+/// Each row is 5 bits, bit 4 = leftmost. 7 rows.
+const DIGITS: [[u8; 7]; 10] = [
+    // 0
+    [0b01110, 0b10001, 0b10011, 0b10101, 0b11001, 0b10001, 0b01110],
+    // 1
+    [0b00100, 0b01100, 0b00100, 0b00100, 0b00100, 0b00100, 0b01110],
+    // 2
+    [0b01110, 0b10001, 0b00001, 0b00010, 0b00100, 0b01000, 0b11111],
+    // 3
+    [0b11110, 0b00001, 0b00001, 0b01110, 0b00001, 0b00001, 0b11110],
+    // 4
+    [0b00010, 0b00110, 0b01010, 0b10010, 0b11111, 0b00010, 0b00010],
+    // 5
+    [0b11111, 0b10000, 0b11110, 0b00001, 0b00001, 0b10001, 0b01110],
+    // 6
+    [0b00110, 0b01000, 0b10000, 0b11110, 0b10001, 0b10001, 0b01110],
+    // 7
+    [0b11111, 0b00001, 0b00010, 0b00100, 0b01000, 0b01000, 0b01000],
+    // 8
+    [0b01110, 0b10001, 0b10001, 0b01110, 0b10001, 0b10001, 0b01110],
+    // 9
+    [0b01110, 0b10001, 0b10001, 0b01111, 0b00001, 0b00010, 0b01100],
+];
+
+/// Render `n` (0–999) at the given top-left position, scaled by `scale`.
+pub fn draw_number<S: Surface>(s: &mut S, x: i32, y: i32, scale: i32, n: u32, color: KashotRgba) {
+    let mut digits = Vec::new();
+    let mut v = n.min(999);
+    if v == 0 { digits.push(0); } else {
+        while v > 0 { digits.push((v % 10) as usize); v /= 10; }
+    }
+    digits.reverse();
+    let glyph_w = 5 * scale;
+    let gap     = scale;
+    let mut cx  = x;
+    for d in digits {
+        let glyph = &DIGITS[d];
+        for (row, bits) in glyph.iter().enumerate() {
+            for col in 0..5 {
+                let on = (bits >> (4 - col)) & 1 == 1;
+                if on {
+                    for sy in 0..scale {
+                        for sx in 0..scale {
+                            blend(s, cx + col * scale + sx, y + row as i32 * scale + sy, rgba_arr(color));
+                        }
+                    }
+                }
+            }
+        }
+        cx += glyph_w + gap;
+    }
+}
+
+/// Filled disc in alpha-blended source-over.
+pub fn fill_disc<S: Surface>(s: &mut S, cx: i32, cy: i32, r: i32, color: KashotRgba) {
+    if r <= 0 { return; }
+    let r2 = r * r;
+    let c = rgba_arr(color);
+    for dy in -r..=r {
+        for dx in -r..=r {
+            if dx * dx + dy * dy <= r2 {
+                blend(s, cx + dx, cy + dy, c);
+            }
+        }
+    }
+}
+
+/// Numbered step circle: filled disc of `color`, white digits centered inside.
+pub fn step_marker<S: Surface>(s: &mut S, center: Point2, number: u32, color: KashotRgba) {
+    const RADIUS: i32 = 14;
+    fill_disc(s, center.x as i32, center.y as i32, RADIUS, color);
+    // 5×7 font scaled 2× → 10×14 per digit, with 2px gap.
+    let scale = 2;
+    let n = number.min(999);
+    let digits = if n == 0 { 1 } else { (n.ilog10() + 1) as i32 };
+    let total_w = digits * 5 * scale + (digits - 1) * scale;
+    let total_h = 7 * scale;
+    let x = center.x as i32 - total_w / 2;
+    let y = center.y as i32 - total_h / 2;
+    draw_number(s, x, y, scale, number, KashotRgba::WHITE);
+}
+
+// ── pixelate ────────────────────────────────────────────────────────────────
+
+/// Average-then-fill: replace every `block_size×block_size` block in the dest
+/// rect with the average color of the corresponding block in `src`. The source
+/// is expected to be the *original* screenshot (in the same coordinate space
+/// as the destination surface) — never a downstream surface that may already
+/// have annotations baked in. That keeps pixelate idempotent under draw-order
+/// changes, matching `Kashot/Annotations.cs::PixelateAnnotation`.
+pub fn pixelate_rect<S: Surface>(
+    s:          &mut S,
+    src:        &ImageBuffer<Rgba<u8>, Vec<u8>>,
+    a:          Point2,
+    b:          Point2,
+    block_size: u32,
+) {
+    let block = block_size.max(2) as i32;
+    let x0 = a.x.min(b.x) as i32;
+    let y0 = a.y.min(b.y) as i32;
+    let x1 = a.x.max(b.x) as i32;
+    let y1 = a.y.max(b.y) as i32;
+    let src_w = src.width()  as i32;
+    let src_h = src.height() as i32;
+
+    let mut by = y0;
+    while by < y1 {
+        let mut bx = x0;
+        while bx < x1 {
+            // Average source pixels inside this block.
+            let bx2 = (bx + block).min(x1);
+            let by2 = (by + block).min(y1);
+            let (mut rs, mut gs, mut bs, mut count) = (0u32, 0u32, 0u32, 0u32);
+            for sy in by..by2 {
+                for sx in bx..bx2 {
+                    if sx >= 0 && sx < src_w && sy >= 0 && sy < src_h {
+                        let p = src.get_pixel(sx as u32, sy as u32).0;
+                        rs += p[0] as u32; gs += p[1] as u32; bs += p[2] as u32; count += 1;
+                    }
+                }
+            }
+            if count > 0 {
+                let avg = [
+                    (rs / count) as u8, (gs / count) as u8, (bs / count) as u8, 255,
+                ];
+                for sy in by..by2 {
+                    for sx in bx..bx2 {
+                        if in_bounds(s, sx, sy) {
+                            s.write(sx, sy, avg);
+                        }
+                    }
+                }
+            }
+            bx += block;
+        }
+        by += block;
+    }
+}
+
 // ── annotation dispatch ─────────────────────────────────────────────────────
 
-pub fn render_annotation<S: Surface>(s: &mut S, a: &Annotation) {
+pub fn render_annotation<S: Surface>(
+    s:      &mut S,
+    a:      &Annotation,
+    source: Option<&ImageBuffer<Rgba<u8>, Vec<u8>>>,
+) {
     match &a.kind {
         AnnotationKind::Pen      { stroke: Stroke { color, thickness }, points } |
         AnnotationKind::Marker   { stroke: Stroke { color, thickness }, points } => {
@@ -225,10 +370,16 @@ pub fn render_annotation<S: Surface>(s: &mut S, a: &Annotation) {
         AnnotationKind::Ellipse  { stroke: Stroke { color, thickness }, start, end } => {
             stroke_ellipse(s, *start, *end, *thickness, *color);
         }
-        // Text / Step / Pixelate land in the next slice.
+        AnnotationKind::Step     { color, center, number } => {
+            step_marker(s, *center, *number, *color);
+        }
+        AnnotationKind::Pixelate { start, end, block_size } => {
+            if let Some(src) = source {
+                pixelate_rect(s, src, *start, *end, *block_size);
+            }
+        }
+        // Text lands in the next slice (needs a font rasterizer).
         AnnotationKind::Text     { .. } => {}
-        AnnotationKind::Step     { .. } => {}
-        AnnotationKind::Pixelate { .. } => {}
     }
 }
 
