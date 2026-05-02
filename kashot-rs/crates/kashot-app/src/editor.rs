@@ -189,6 +189,10 @@ pub struct Overlay {
     /// palettes doesn't change the live stroke color until the user picks
     /// a new swatch. Mirrors C# `_paletteIndex`.
     palette_index: usize,
+    /// Hovered tool/action/utility button → tooltip label + anchor pixel.
+    /// Recomputed on every CursorMoved while in `Selected`. Mirrors the
+    /// `tip` arg in C# OverlayForm `MakeButton(tip, …)`.
+    hover_tip:     Option<(&'static str, i32, i32)>,
 }
 
 impl Overlay {
@@ -247,6 +251,22 @@ impl Overlay {
         window.set_cursor(CursorIcon::Crosshair);
         window.focus_window();
 
+        // On X11 with `override_redirect=true` the window manager skips the
+        // window — that's how we layer above DOCK panels — but it also means
+        // keyboard focus isn't routed automatically. We open a side x11rb
+        // connection and call `set_input_focus` against the overlay's XID
+        // so the Text tool actually receives KeyEvent.text. Same channel we
+        // need for Ctrl+Z / Ctrl+S etc. while drawing.
+        #[cfg(target_os = "linux")]
+        {
+            use winit::platform::x11::WindowExtX11;
+            if let Some(xid) = window.xlib_window() {
+                if let Err(e) = grab_x11_focus(xid as u32) {
+                    eprintln!("overlay: x11 set_input_focus skipped: {e}");
+                }
+            }
+        }
+
         let ctx = Context::new(window.clone())
             .map_err(|e| anyhow!("softbuffer Context::new: {e}"))?;
         let surface = Surface::new(&ctx, window.clone())
@@ -271,6 +291,7 @@ impl Overlay {
             resize_edge: Edge::None,
             palette_open: false,
             palette_index: 0,
+            hover_tip:     None,
         })
     }
 
@@ -310,6 +331,12 @@ impl Overlay {
                         // Update the cursor icon based on which edge we're
                         // hovering, matching the C# OverlayForm convention.
                         self.update_resize_cursor();
+                        // And recompute the hover tooltip so the user can
+                        // tell Pen / Line / Marker apart instantly. Mirrors
+                        // C# MakeButton(tip, …) tooltip text.
+                        let prev = self.hover_tip;
+                        self.hover_tip = self.compute_hover_tip();
+                        if prev != self.hover_tip { self.window.request_redraw(); }
                     }
                     State::Idle => {
                         // Magnifier follows the cursor in Idle so the user
@@ -704,6 +731,45 @@ impl Overlay {
         self.selection = Some((x, y, w, h));
     }
 
+    fn compute_hover_tip(&self) -> Option<(&'static str, i32, i32)> {
+        let sel = self.selection?;
+        let win_w = self.window.inner_size().width  as usize;
+        let win_h = self.window.inner_size().height as usize;
+        // Tool panel.
+        let tp = tool_panel_origin(win_w, win_h, sel);
+        if let Some((idx, btn)) = tool_panel_hit(tp, self.cursor) {
+            let (_, _, x1, y1) = tool_panel_button_rect(tp, idx as i32);
+            let label = match btn {
+                ToolPanelButton::Tool(Tool::Pen)        => "Pen (P)",
+                ToolPanelButton::Tool(Tool::Line)       => "Line (L)",
+                ToolPanelButton::Tool(Tool::Arrow)      => "Arrow (A)",
+                ToolPanelButton::Tool(Tool::Rectangle)  => "Rectangle (R)",
+                ToolPanelButton::Tool(Tool::Ellipse)    => "Ellipse (E)",
+                ToolPanelButton::Tool(Tool::Marker)     => "Marker (M)",
+                ToolPanelButton::Tool(Tool::Text)       => "Text (T)",
+                ToolPanelButton::Tool(Tool::Step)       => "Step (N)",
+                ToolPanelButton::Tool(Tool::Pixelate)   => "Pixelate (B)",
+                ToolPanelButton::Color                  => "Color",
+                ToolPanelButton::Thickness              => "Thickness",
+                ToolPanelButton::Undo                   => "Undo (Ctrl+Z)",
+                ToolPanelButton::Redo                   => "Redo (Ctrl+Y)",
+            };
+            return Some((label, x1 + 6, y1 - 14));
+        }
+        // Action panel.
+        let ap = action_panel_origin(win_w, win_h, sel);
+        if let Some(btn) = action_panel_hit(ap, self.cursor) {
+            let label = match btn {
+                ActionButton::Pin   => "Pin to screen",
+                ActionButton::Copy  => "Copy (Ctrl+C)",
+                ActionButton::Save  => "Save (Ctrl+S)",
+                ActionButton::Close => "Close (Esc)",
+            };
+            return Some((label, self.cursor.0 + 14, self.cursor.1 + 14));
+        }
+        None
+    }
+
     fn update_resize_cursor(&self) {
         let Some(sel) = self.selection else { return; };
         let hit = hit_test_edge(
@@ -893,6 +959,14 @@ impl Overlay {
         // the toolbar+palette take over and the lens just gets in the way.
         if matches!(self.state, State::Idle | State::Selecting) {
             draw_magnifier(&mut buf, win_w, win_h, &self.screenshot, self.cursor);
+        }
+
+        // Pass 7: tooltip chip — only when the user is hovering a button
+        // in `Selected`. Mirrors C# `MakeButton(tip, ...)` behaviour.
+        if let Some((label, x, y)) = self.hover_tip {
+            if matches!(self.state, State::Selected) {
+                draw_tooltip(&mut buf, win_w, win_h, label, x, y);
+            }
         }
 
         if let Err(e) = buf.present() {
@@ -1340,6 +1414,39 @@ fn panel_rect(buf: &mut [u32], stride: usize, height: usize,
     panel_line(buf, stride, height, x0, y1, x0, y0, color);
 }
 
+/// Small dark pill carrying a button label, drawn near where the user's
+/// cursor is hovering. Uses the in-tree 5×7 bitmap font at scale 2 so it
+/// stays consistent with the dimension chip and palette header.
+fn draw_tooltip(
+    buf:   &mut [u32],
+    win_w: usize,
+    win_h: usize,
+    label: &str,
+    x:     i32,
+    y:     i32,
+) {
+    let scale = 2;
+    let text_w = crate::bitmap_font::measure(label, scale);
+    let text_h = crate::bitmap_font::GLYPH_H * scale;
+    let pad_x  = 6;
+    let pad_y  = 4;
+    let chip_w = text_w + pad_x * 2;
+    let chip_h = text_h + pad_y * 2;
+    // Auto-flip so the chip stays on screen.
+    let mut x0 = x;
+    let mut y0 = y;
+    if x0 + chip_w > win_w as i32 { x0 = (win_w as i32) - chip_w - 4; }
+    if y0 + chip_h > win_h as i32 { y0 = (win_h as i32) - chip_h - 4; }
+    if x0 < 0 { x0 = 4; }
+    if y0 < 0 { y0 = 4; }
+    let x1 = x0 + chip_w;
+    let y1 = y0 + chip_h;
+    draw_filled_rect(buf, win_w, win_h, x0, y0, x1, y1, 0x00_10_10_14);
+    draw_rect_border(buf, win_w, win_h, x0, y0, x1, y1, 0x00_4A_4A_50);
+    let mut surf = crate::painter::U32Surface { buf, stride: win_w as i32, height: win_h as i32 };
+    crate::painter::draw_text(&mut surf, x0 + pad_x, y0 + pad_y, scale, label, kashot_core::color::Rgba::WHITE);
+}
+
 /// Magnifier lens. Samples the original screenshot in a (2·R+1)² window
 /// around the cursor and draws each source pixel as a `MAG_ZOOM`-sized
 /// square. Adds a 1-px border + crosshair through the center pixel.
@@ -1392,6 +1499,26 @@ fn draw_magnifier(
 }
 
 // ── helpers ──────────────────────────────────────────────────────────────
+
+/// Side-channel X11 connection that pushes input focus to the overlay's
+/// override-redirect window. Without this the window manager — which we
+/// asked to skip the window — never tells the X server "this window owns
+/// the keyboard," and the Text tool sees no characters. `RevertTo::PARENT`
+/// makes focus return to whatever held it before us when the overlay
+/// closes, so the user's terminal / editor / browser keeps typing.
+#[cfg(target_os = "linux")]
+fn grab_x11_focus(xid: u32) -> anyhow::Result<()> {
+    use x11rb::connection::Connection;
+    use x11rb::protocol::xproto::{ConnectionExt, InputFocus};
+    let (conn, _screen) = x11rb::connect(None)
+        .map_err(|e| anyhow!("x11rb::connect: {e}"))?;
+    conn.set_input_focus(InputFocus::PARENT, xid, x11rb::CURRENT_TIME)
+        .map_err(|e| anyhow!("set_input_focus request: {e}"))?
+        .check()
+        .map_err(|e| anyhow!("set_input_focus reply: {e}"))?;
+    conn.flush().map_err(|e| anyhow!("flush: {e}"))?;
+    Ok(())
+}
 
 fn rect_from(a: (i32, i32), b: (i32, i32)) -> (i32, i32, i32, i32) {
     let x = a.0.min(b.0);
@@ -1620,67 +1747,113 @@ fn draw_tool_glyph(
             if e2 <= dx { err += dx; y0 += sy; }
         }
     };
+    let fill = |buf: &mut [u32], x0: i32, y0: i32, x1: i32, y1: i32| {
+        for yy in y0..y1 {
+            for xx in x0..x1 {
+                stamp(buf, xx, yy);
+            }
+        }
+    };
     match tool {
-        Tool::Pen       => line2(buf, (ix0, iy1), (ix1, iy0)),
-        Tool::Line      => line2(buf, (ix0, iy1), (ix1, iy0)),
-        Tool::Arrow     => {
+        Tool::Pen => {
+            // Diagonal stroke ending in a triangular pen tip at the bottom-
+            // left — distinguishes it from the bare Line glyph.
+            line2(buf, (ix0 + 2, iy1 - 2), (ix1 - 2, iy0 + 2));
+            line2(buf, (ix0 + 1, iy1 - 1), (ix0 + 5, iy1 - 5));
+            line2(buf, (ix0 + 5, iy1 - 5), (ix0 + 5, iy1 - 1));
+            line2(buf, (ix0 + 1, iy1 - 5), (ix0 + 5, iy1 - 5));
+            line2(buf, (ix0 + 1, iy1 - 1), (ix0 + 5, iy1 - 1));
+        }
+        Tool::Line => {
+            // Bare diagonal — no embellishment.
+            line2(buf, (ix0, iy1), (ix1, iy0));
+        }
+        Tool::Arrow => {
+            // Diagonal + arrowhead at top-right.
             line2(buf, (ix0, iy1), (ix1, iy0));
             line2(buf, (ix1, iy0), (ix1 - 6, iy0));
             line2(buf, (ix1, iy0), (ix1, iy0 + 6));
+            line2(buf, (ix1 - 1, iy0), (ix1 - 6, iy0 + 1));
+            line2(buf, (ix1, iy0 + 1), (ix1 - 1, iy0 + 6));
         }
         Tool::Rectangle => {
-            line2(buf, (ix0, iy0), (ix1, iy0));
-            line2(buf, (ix1, iy0), (ix1, iy1));
-            line2(buf, (ix1, iy1), (ix0, iy1));
-            line2(buf, (ix0, iy1), (ix0, iy0));
-        }
-        Tool::Ellipse   => {
-            // 64-step parametric circle.
-            let rx = (ix1 - ix0) / 2;
-            let ry = (iy1 - iy0) / 2;
-            let mut prev = (cx + rx, cy);
-            for k in 1..=64 {
-                let t = (k as f32) / 64.0 * std::f32::consts::TAU;
-                let p = (cx + ((rx as f32) * t.cos()) as i32, cy + ((ry as f32) * t.sin()) as i32);
-                line2(buf, prev, p);
-                prev = p;
+            // 2-px outline so it doesn't read as just a thin square.
+            for d in 0..2 {
+                line2(buf, (ix0 + d, iy0 + d), (ix1 - d, iy0 + d));
+                line2(buf, (ix1 - d, iy0 + d), (ix1 - d, iy1 - d));
+                line2(buf, (ix1 - d, iy1 - d), (ix0 + d, iy1 - d));
+                line2(buf, (ix0 + d, iy1 - d), (ix0 + d, iy0 + d));
             }
         }
-        Tool::Marker    => {
-            line2(buf, (ix0, iy1), (ix1, iy0));
-            line2(buf, (ix0, iy1 - 1), (ix1, iy0 - 1));
-            line2(buf, (ix0, iy1 - 2), (ix1, iy0 - 2));
-        }
-        Tool::Text      => {
-            line2(buf, (ix0, iy0), (ix1, iy0));
-            line2(buf, (cx,  iy0), (cx,  iy1));
-        }
-        Tool::Step      => {
+        Tool::Ellipse => {
             let rx = (ix1 - ix0) / 2;
             let ry = (iy1 - iy0) / 2;
-            let mut prev = (cx + rx, cy);
-            for k in 1..=48 {
-                let t = (k as f32) / 48.0 * std::f32::consts::TAU;
-                let p = (cx + ((rx as f32) * t.cos()) as i32, cy + ((ry as f32) * t.sin()) as i32);
-                line2(buf, prev, p);
-                prev = p;
+            for inset in 0..2 {
+                let mut prev = (cx + rx - inset, cy);
+                for k in 1..=64 {
+                    let t = (k as f32) / 64.0 * std::f32::consts::TAU;
+                    let p = (
+                        cx + (((rx - inset) as f32) * t.cos()) as i32,
+                        cy + (((ry - inset) as f32) * t.sin()) as i32,
+                    );
+                    line2(buf, prev, p);
+                    prev = p;
+                }
             }
-            line2(buf, (cx - 1, cy + 3), (cx + 1, cy + 3));
-            line2(buf, (cx - 2, cy - 3), (cx + 2, cy - 3));
         }
-        Tool::Pixelate  => {
-            for gy in 0..3 {
-                for gx in 0..3 {
-                    let bx = ix0 + gx * (ix1 - ix0) / 3;
-                    let by = iy0 + gy * (iy1 - iy0) / 3;
-                    let bw = (ix1 - ix0) / 3;
-                    let bh = (iy1 - iy0) / 3;
+        Tool::Marker => {
+            // Highlighter body: wide rounded rect + a slanted tip on top, so
+            // it visually reads as a marker pen, not just "thick line".
+            fill(buf, ix0 + 2, iy0 + 5, ix1 - 2, iy1 - 1);
+            // Tip — short slanted bar above the body.
+            fill(buf, ix0 + 4, iy0 + 2, ix1 - 4, iy0 + 5);
+            // Cap line at the very top.
+            fill(buf, ix0 + 5, iy0 + 0, ix1 - 5, iy0 + 2);
+        }
+        Tool::Text => {
+            // Bold serif-ish "T". Two-pixel-thick horizontal bar + thick
+            // vertical stem so it reads instantly as text.
+            fill(buf, ix0 + 1, iy0 + 1, ix1 - 1, iy0 + 4);
+            fill(buf, cx - 2, iy0 + 1, cx + 2, iy1 - 1);
+        }
+        Tool::Step => {
+            // Filled disc with a centered "1" — this is the actual numbered-
+            // step look, not the previous wireframe circle.
+            let r = ((ix1 - ix0) / 2).min((iy1 - iy0) / 2) - 1;
+            for dy in -r..=r {
+                for dx in -r..=r {
+                    if dx * dx + dy * dy <= r * r {
+                        stamp(buf, cx + dx, cy + dy);
+                    }
+                }
+            }
+            // Negative-space "1" cut by inverting (we don't have alpha-bits
+            // here, so just stamp a contrasting digit using the panel BG.
+            // Cheaper: draw a thin 1 with the bg color via a second stamp).
+            let bg_stamp = |buf: &mut [u32], x: i32, y: i32| {
+                if x >= 0 && (x as usize) < stride && y >= 0 && (y as usize) < height {
+                    buf[y as usize * stride + x as usize] = 0x00_2E_2E_32;
+                }
+            };
+            for yy in (cy - 4)..=(cy + 4) {
+                bg_stamp(buf, cx,     yy);
+                bg_stamp(buf, cx + 1, yy);
+            }
+            // Tiny serif top.
+            bg_stamp(buf, cx - 2, cy - 3);
+            bg_stamp(buf, cx - 1, cy - 4);
+        }
+        Tool::Pixelate => {
+            // 4×4 mosaic — denser than the previous 3×3 so it reads as
+            // "pixelation" instead of "checkerboard".
+            for gy in 0..4 {
+                for gx in 0..4 {
+                    let bx = ix0 + gx * (ix1 - ix0) / 4;
+                    let by = iy0 + gy * (iy1 - iy0) / 4;
+                    let bw = (ix1 - ix0) / 4;
+                    let bh = (iy1 - iy0) / 4;
                     if (gx + gy) & 1 == 0 {
-                        for yy in by..by + bh {
-                            for xx in bx..bx + bw {
-                                stamp(buf, xx, yy);
-                            }
-                        }
+                        fill(buf, bx, by, bx + bw, by + bh);
                     }
                 }
             }
