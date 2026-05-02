@@ -33,7 +33,6 @@ use std::rc::Rc;
 use anyhow::{anyhow, Result};
 use image::{ImageBuffer, Rgba};
 use kashot_core::annotation::{Annotation, Point2, Stroke};
-use kashot_core::color::Rgba as KashotRgba;
 use kashot_core::tool::Tool;
 use softbuffer::{Context, Surface};
 use winit::dpi::PhysicalPosition;
@@ -413,7 +412,7 @@ impl Overlay {
 
         // Pass 4: toolbar (only while a region is locked in).
         if matches!(self.state, State::Selected | State::Drawing) {
-            self.draw_toolbar(&mut buf, win_w, win_h);
+            draw_toolbar(&mut buf, win_w, win_h, self.tool, self.stroke.color);
         }
 
         if let Err(e) = buf.present() {
@@ -421,71 +420,74 @@ impl Overlay {
         }
     }
 
-    // ── toolbar ─────────────────────────────────────────────────────────────
-
-    fn toolbar_origin(&self, win_w: usize) -> (i32, i32) {
-        let n = Tool::ALL.len() as i32;
-        let inner = n * TOOLBAR_BTN + (n - 1) * TOOLBAR_GAP;
-        let total = inner + TOOLBAR_PAD * 2;
-        let x = ((win_w as i32) - total) / 2;
-        (x.max(0), TOOLBAR_TOP)
-    }
-
-    fn toolbar_button_rect(&self, win_w: usize, idx: i32) -> (i32, i32, i32, i32) {
-        let (ox, oy) = self.toolbar_origin(win_w);
-        let x = ox + TOOLBAR_PAD + idx * (TOOLBAR_BTN + TOOLBAR_GAP);
-        let y = oy + TOOLBAR_PAD;
-        (x, y, x + TOOLBAR_BTN, y + TOOLBAR_BTN)
-    }
-
     fn toolbar_hit(&self, (cx, cy): (i32, i32)) -> Option<Tool> {
         let win_w = self.window.inner_size().width as usize;
         for (i, t) in Tool::ALL.iter().enumerate() {
-            let (x0, y0, x1, y1) = self.toolbar_button_rect(win_w, i as i32);
+            let (x0, y0, x1, y1) = toolbar_button_rect(win_w, i as i32);
             if cx >= x0 && cx < x1 && cy >= y0 && cy < y1 {
                 return Some(*t);
             }
         }
         None
     }
+}
 
-    fn draw_toolbar(&self, buf: &mut [u32], win_w: usize, win_h: usize) {
-        const BG:           u32 = 0x00_22_22_24;
-        const BTN:          u32 = 0x00_2E_2E_32;
-        const BTN_ACTIVE:   u32 = 0x00_64_95_ED;
-        const BTN_DISABLED: u32 = 0x00_3A_3A_3E;
-        const STRIPE:       u32 = 0x00_DC_26_26;
-        const TEXT:         u32 = 0x00_E8_E8_EC;
+// ── toolbar (free fns; can't be methods because they share the softbuffer
+//    `buf` borrow with `self.surface`) ──────────────────────────────────────
 
-        let n = Tool::ALL.len() as i32;
-        let inner = n * TOOLBAR_BTN + (n - 1) * TOOLBAR_GAP;
-        let total = inner + TOOLBAR_PAD * 2;
-        let (ox, oy) = self.toolbar_origin(win_w);
-        let h_total  = TOOLBAR_BTN + TOOLBAR_PAD * 2;
+fn toolbar_origin(win_w: usize) -> (i32, i32) {
+    let n = Tool::ALL.len() as i32;
+    let inner = n * TOOLBAR_BTN + (n - 1) * TOOLBAR_GAP;
+    let total = inner + TOOLBAR_PAD * 2;
+    let x = ((win_w as i32) - total) / 2;
+    (x.max(0), TOOLBAR_TOP)
+}
 
-        draw_rounded_rect(buf, win_w, win_h, ox, oy, ox + total, oy + h_total, TOOLBAR_RADIUS, BG);
+fn toolbar_button_rect(win_w: usize, idx: i32) -> (i32, i32, i32, i32) {
+    let (ox, oy) = toolbar_origin(win_w);
+    let x = ox + TOOLBAR_PAD + idx * (TOOLBAR_BTN + TOOLBAR_GAP);
+    let y = oy + TOOLBAR_PAD;
+    (x, y, x + TOOLBAR_BTN, y + TOOLBAR_BTN)
+}
 
-        for (i, t) in Tool::ALL.iter().enumerate() {
-            let (x0, y0, x1, y1) = self.toolbar_button_rect(win_w, i as i32);
-            let active   = *t == self.tool;
-            let working  = matches!(t, Tool::Pen | Tool::Arrow | Tool::Rectangle | Tool::Ellipse);
-            let bg = if active { BTN_ACTIVE } else if working { BTN } else { BTN_DISABLED };
-            draw_rounded_rect(buf, win_w, win_h, x0, y0, x1, y1, 6, bg);
-            draw_tool_glyph(buf, win_w, win_h, x0, y0, x1, y1, *t, TEXT);
-            if !working {
-                // Diagonal stripe across disabled buttons so you can see what's
-                // shipped vs what's still queued.
-                draw_diagonal_stripe(buf, win_w, win_h, x0, y0, x1, y1, STRIPE);
-            }
+fn draw_toolbar(
+    buf:    &mut [u32],
+    win_w:  usize,
+    win_h:  usize,
+    active: Tool,
+    swatch: kashot_core::color::Rgba,
+) {
+    const BG:           u32 = 0x00_22_22_24;
+    const BTN:          u32 = 0x00_2E_2E_32;
+    const BTN_ACTIVE:   u32 = 0x00_64_95_ED;
+    const BTN_DISABLED: u32 = 0x00_3A_3A_3E;
+    const STRIPE:       u32 = 0x00_DC_26_26;
+    const TEXT:         u32 = 0x00_E8_E8_EC;
+
+    let n = Tool::ALL.len() as i32;
+    let inner = n * TOOLBAR_BTN + (n - 1) * TOOLBAR_GAP;
+    let total = inner + TOOLBAR_PAD * 2;
+    let (ox, oy) = toolbar_origin(win_w);
+    let h_total  = TOOLBAR_BTN + TOOLBAR_PAD * 2;
+
+    draw_rounded_rect(buf, win_w, win_h, ox, oy, ox + total, oy + h_total, TOOLBAR_RADIUS, BG);
+
+    for (i, t) in Tool::ALL.iter().enumerate() {
+        let (x0, y0, x1, y1) = toolbar_button_rect(win_w, i as i32);
+        let is_active = *t == active;
+        let working   = matches!(t, Tool::Pen | Tool::Arrow | Tool::Rectangle | Tool::Ellipse);
+        let bg = if is_active { BTN_ACTIVE } else if working { BTN } else { BTN_DISABLED };
+        draw_rounded_rect(buf, win_w, win_h, x0, y0, x1, y1, 6, bg);
+        draw_tool_glyph(buf, win_w, win_h, x0, y0, x1, y1, *t, TEXT);
+        if !working {
+            draw_diagonal_stripe(buf, win_w, win_h, x0, y0, x1, y1, STRIPE);
         }
+    }
 
-        // 4-px swatch under the active tool showing the current stroke color.
-        if let Some(active_idx) = Tool::ALL.iter().position(|t| *t == self.tool) {
-            let (x0, _y0, x1, y1) = self.toolbar_button_rect(win_w, active_idx as i32);
-            let swatch = self.stroke.color;
-            let rgb = ((swatch.r as u32) << 16) | ((swatch.g as u32) << 8) | swatch.b as u32;
-            draw_filled_rect(buf, win_w, win_h, x0 + 4, y1 + 2, x1 - 4, y1 + 5, rgb);
-        }
+    if let Some(active_idx) = Tool::ALL.iter().position(|t| *t == active) {
+        let (x0, _y0, x1, y1) = toolbar_button_rect(win_w, active_idx as i32);
+        let rgb = ((swatch.r as u32) << 16) | ((swatch.g as u32) << 8) | swatch.b as u32;
+        draw_filled_rect(buf, win_w, win_h, x0 + 4, y1 + 2, x1 - 4, y1 + 5, rgb);
     }
 }
 
