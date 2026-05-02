@@ -81,6 +81,10 @@ enum State {
     /// move adjusts the corresponding side of the rect, mouse-up returns
     /// to `Selected`. The grabbed edge lives in `resize_edge`.
     Resizing,
+    /// User clicked with `Tool::Text` active and is now typing into a
+    /// pending Text annotation. Typed characters extend the buffer in
+    /// `current`; Backspace deletes; Enter commits; Esc cancels.
+    TextInput,
 }
 
 /// Toolbar geometry — kept simple and centered horizontally near the top
@@ -245,6 +249,12 @@ impl Overlay {
     }
 
     fn handle_key(&mut self, key: Key) -> OverlayOutcome {
+        // Text-input state owns the keyboard while it's active — typed
+        // characters extend the pending annotation; Enter commits, Esc
+        // cancels, Backspace pops the last char.
+        if self.state == State::TextInput {
+            return self.handle_text_key(key);
+        }
         match key {
             Key::Named(NamedKey::Escape) => {
                 if self.state == State::Drawing {
@@ -297,6 +307,62 @@ impl Overlay {
         }
     }
 
+    fn handle_text_key(&mut self, key: Key) -> OverlayOutcome {
+        use kashot_core::annotation::AnnotationKind;
+        match key {
+            Key::Named(NamedKey::Escape) => {
+                self.current = None;
+                self.state   = State::Selected;
+                self.window.request_redraw();
+            }
+            Key::Named(NamedKey::Enter) => {
+                // Commit only if the user actually typed something.
+                if let Some(a) = self.current.take() {
+                    if let AnnotationKind::Text { ref text, .. } = a.kind {
+                        if !text.is_empty() {
+                            self.add_annotation(a);
+                        }
+                    }
+                }
+                self.state = State::Selected;
+                self.window.request_redraw();
+            }
+            Key::Named(NamedKey::Backspace) => {
+                if let Some(a) = self.current.as_mut() {
+                    if let AnnotationKind::Text { ref mut text, .. } = a.kind {
+                        text.pop();
+                        self.window.request_redraw();
+                    }
+                }
+            }
+            Key::Named(NamedKey::Space) => {
+                if let Some(a) = self.current.as_mut() {
+                    if let AnnotationKind::Text { ref mut text, .. } = a.kind {
+                        text.push(' ');
+                        self.window.request_redraw();
+                    }
+                }
+            }
+            Key::Character(s) => {
+                // Skip Ctrl-modified characters so Ctrl+Z / Ctrl+S etc. don't
+                // get swallowed as plain text input.
+                if self.mods.control_key() { return OverlayOutcome::Continue; }
+                if let Some(a) = self.current.as_mut() {
+                    if let AnnotationKind::Text { ref mut text, .. } = a.kind {
+                        for c in s.chars() {
+                            if !c.is_control() {
+                                text.push(c);
+                            }
+                        }
+                        self.window.request_redraw();
+                    }
+                }
+            }
+            _ => {}
+        }
+        OverlayOutcome::Continue
+    }
+
     fn undo(&mut self) {
         if let Some(a) = self.annotations.pop() {
             // Step counter follows the visible numbers — popping a Step
@@ -320,6 +386,22 @@ impl Overlay {
     }
 
     fn handle_left_press(&mut self) -> OverlayOutcome {
+        // Click anywhere while typing → commit the pending text and keep
+        // going. Mirrors the C# TextBox-loses-focus behaviour.
+        if self.state == State::TextInput {
+            use kashot_core::annotation::AnnotationKind;
+            if let Some(a) = self.current.take() {
+                if let AnnotationKind::Text { ref text, .. } = a.kind {
+                    if !text.is_empty() {
+                        self.add_annotation(a);
+                    }
+                }
+            }
+            self.state = State::Selected;
+            self.window.request_redraw();
+            // Fall through so the click can still pick a swatch / start a
+            // new text input / drag a region etc.
+        }
         // Toolbar takes priority — clicking a tool button never starts a draw.
         if self.state == State::Selected {
             if let Some(t) = self.toolbar_hit(self.cursor) {
@@ -367,6 +449,13 @@ impl Overlay {
                         let p = Point2::new(self.cursor.0 as f32, self.cursor.1 as f32);
                         self.add_annotation(Annotation::step(self.stroke.color, p, self.step_count));
                         self.step_count = self.step_count.saturating_add(1);
+                        self.window.request_redraw();
+                    } else if self.tool == Tool::Text {
+                        // Click-to-place a text caret. Typed characters
+                        // extend the annotation; Enter commits, Esc cancels.
+                        let p = Point2::new(self.cursor.0 as f32, self.cursor.1 as f32);
+                        self.current = Some(Annotation::text(self.stroke.color, p, ""));
+                        self.state   = State::TextInput;
                         self.window.request_redraw();
                     } else if let Some(a) = self.start_annotation() {
                         self.current = Some(a);
@@ -484,7 +573,8 @@ impl Overlay {
             Tool::Pixelate  => Annotation::pixelate(p),
             // Step is handled inline at click site (no `Drawing` state).
             Tool::Step      => return None,
-            // Text needs a font rasterizer + TextInput substate (slice 4).
+            // Text enters its own `TextInput` state instead of `Drawing` —
+            // also handled inline.
             Tool::Text      => return None,
         })
     }
@@ -683,15 +773,12 @@ fn draw_toolbar(
     for (i, t) in Tool::ALL.iter().enumerate() {
         let (x0, y0, x1, y1) = toolbar_button_rect(win_w, i as i32);
         let is_active = *t == active;
-        // Text needs a font rasterizer + TextInput substate (slice 4); every
-        // other tool ships in this PR.
-        let working   = !matches!(t, Tool::Text);
-        let bg = if is_active { BTN_ACTIVE } else if working { BTN } else { BTN_DISABLED };
+        // Every tool now ships — no `working` mask needed. Kept the constant
+        // around in case future betas want to gate something behind a flag.
+        let _ = (BTN_DISABLED, STRIPE);
+        let bg = if is_active { BTN_ACTIVE } else { BTN };
         draw_rounded_rect(buf, win_w, win_h, x0, y0, x1, y1, 6, bg);
         draw_tool_glyph(buf, win_w, win_h, x0, y0, x1, y1, *t, TEXT);
-        if !working {
-            draw_diagonal_stripe(buf, win_w, win_h, x0, y0, x1, y1, STRIPE);
-        }
     }
 
     if let Some(active_idx) = Tool::ALL.iter().position(|t| *t == active) {

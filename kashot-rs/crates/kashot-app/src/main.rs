@@ -13,6 +13,7 @@
 
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
+mod bitmap_font;
 mod editor;
 mod painter;
 mod pin;
