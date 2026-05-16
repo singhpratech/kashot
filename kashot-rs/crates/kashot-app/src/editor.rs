@@ -190,6 +190,22 @@ pub struct Overlay {
     /// Without this Cinnamon never delivers KeyPress to the overlay and
     /// the Text tool sees no characters.
     focus_pushed:  bool,
+    /// How many times we've tried to push X11 focus. Capped — see
+    /// `push_x11_focus`. Without a cap, WMs that refuse focus entirely
+    /// (GNOME focus-stealing prevention; some tiling WMs) make us spin
+    /// requesting redraws forever and pin a CPU core.
+    focus_attempts: u32,
+    /// When the action panel was first shown (transition into `Selected`).
+    /// Drives the laser-green attention pulse that fades over 3 s so users
+    /// find the panel after it auto-positions for any screen size.
+    panel_pulse_started: Option<std::time::Instant>,
+    /// Was the previous redraw in `Selected` state? Used to detect the
+    /// transition that triggers `panel_pulse_started`.
+    last_was_selected: bool,
+    /// Wall-clock when the overlay window opened. Drives the slow
+    /// sequential orange-neon glow that cycles through every tool-panel
+    /// button top-to-bottom (mirrors the website's tool-palette demo).
+    opened_at: std::time::Instant,
 }
 
 impl Drop for Overlay {
@@ -234,6 +250,7 @@ impl Overlay {
             .with_inner_size(monitor_size)
             .with_position(PhysicalPosition::new(0i32, 0i32))
             .with_window_level(WindowLevel::AlwaysOnTop)
+            .with_window_icon(crate::brand_icon::shared())
             .with_fullscreen(Some(Fullscreen::Borderless(primary)));
 
         let window = loop_target
@@ -244,11 +261,10 @@ impl Overlay {
         window.set_cursor(CursorIcon::Crosshair);
         window.focus_window();
 
-        // No manual X11 focus grab — with the regular WM-managed fullscreen
-        // window, Cinnamon / Plasma / GNOME Shell hand the keyboard to us
-        // when we map. `Window::focus_window()` above sends the
-        // _NET_ACTIVE_WINDOW client message which is the spec-correct way
-        // to ask for focus.
+        // `focus_window()` above is the spec-correct ask via _NET_ACTIVE_WINDOW.
+        // Cinnamon ignores it fast enough that the overlay never gets KeyPress,
+        // so we follow up with a manual XSetInputFocus + XGrabKeyboard from
+        // `push_x11_focus` once the window is viewable.
 
         let ctx = Context::new(window.clone())
             .map_err(|e| anyhow!("softbuffer Context::new: {e}"))?;
@@ -276,6 +292,10 @@ impl Overlay {
             palette_index: 0,
             hover_tip:     None,
             focus_pushed:  false,
+            focus_attempts: 0,
+            panel_pulse_started: None,
+            last_was_selected:   false,
+            opened_at:           std::time::Instant::now(),
         })
     }
 
@@ -854,13 +874,15 @@ impl Overlay {
     #[cfg(target_os = "linux")]
     fn push_x11_focus(&mut self) {
         if self.focus_pushed { return; }
+        const MAX_FOCUS_ATTEMPTS: u32 = 60;
+        self.focus_attempts = self.focus_attempts.saturating_add(1);
         use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
         let xid = match self.window.window_handle() {
             Ok(h) => match h.as_raw() {
                 RawWindowHandle::Xlib(x) => x.window as u32,
-                _ => return,
+                _ => { self.focus_pushed = true; return; }
             }
-            Err(_) => return,
+            Err(_) => { self.focus_pushed = true; return; }
         };
         match force_x11_focus(xid) {
             Ok(()) => {
@@ -868,8 +890,16 @@ impl Overlay {
                 self.focus_pushed = true;
             }
             Err(e) => {
-                // Retry next redraw — leave `focus_pushed = false`.
-                eprintln!("kashot: x11 focus retry pending ({e})");
+                if self.focus_attempts >= MAX_FOCUS_ATTEMPTS {
+                    eprintln!(
+                        "kashot: gave up pushing x11 focus after {} attempts ({e}); \
+                         Text tool may not receive keypresses on this WM",
+                        self.focus_attempts
+                    );
+                    self.focus_pushed = true;
+                } else {
+                    eprintln!("kashot: x11 focus retry pending ({e})");
+                }
             }
         }
     }
@@ -994,11 +1024,42 @@ impl Overlay {
 
         // Pass 5: tool panel + action panel + (optional) color popup —
         // floating around the selection, never spanning the screen.
+        let is_selected_now = matches!(self.state, State::Selected);
+        if is_selected_now && !self.last_was_selected {
+            self.panel_pulse_started = Some(std::time::Instant::now());
+        }
+        self.last_was_selected = is_selected_now;
+
         if matches!(self.state, State::Selected | State::Drawing | State::Resizing | State::TextInput) {
             if let Some(sel) = self.selection {
                 draw_tool_panel(&mut buf, win_w, win_h, sel,
                                 self.tool, self.stroke.color, self.stroke.thickness);
+                // Sequential orange-neon halo cycles through every button
+                // (top→bottom, 1 per slot). Mirrors the website's tool-palette
+                // demo so the in-app palette feels alive even when the user
+                // is just hovering. Painted after the panel so the halo sits
+                // on top of the button background but under the icon glyph.
+                let elapsed = self.opened_at.elapsed().as_secs_f32();
+                draw_tool_panel_glow(&mut buf, win_w, win_h, sel, elapsed);
+                // The glow is a continuous animation — ask for another frame
+                // so it keeps cycling while the editor is idle.
+                self.window.request_redraw();
                 draw_action_panel(&mut buf, win_w, win_h, sel);
+                // Attention pulse on the action panel for the first 3 s after
+                // it appears — the panel auto-positions based on selection +
+                // screen, so first-time users can lose track of where Save /
+                // Copy / Pin landed. Fades smoothly to nothing.
+                if matches!(self.state, State::Selected) {
+                    if let Some(start) = self.panel_pulse_started {
+                        let elapsed = start.elapsed().as_secs_f32();
+                        if elapsed < 3.0 {
+                            draw_action_panel_pulse(&mut buf, win_w, win_h, sel, elapsed);
+                            self.window.request_redraw();
+                        } else {
+                            self.panel_pulse_started = None;
+                        }
+                    }
+                }
                 if self.palette_open {
                     let tp_origin = tool_panel_origin(win_w, win_h, sel);
                     draw_palette_popup(&mut buf, win_w, win_h, tp_origin, self.stroke.color, self.palette_index);
@@ -1226,6 +1287,142 @@ fn draw_tool_panel(
             ToolPanelButton::Redo       => crate::icons::render_icon(buf, win_w, win_h, x0, y0, x1, y1, crate::icons::IconKind::Redo, [232,232,236,255], None, thickness),
         }
     }
+}
+
+/// Sequential orange-neon halo around the tool-panel buttons, cycling
+/// top-to-bottom one button per second. Each button gets a brief glow
+/// window of ~0.85 s out of every (N × 1 s) cycle, where N is the number
+/// of buttons in `TOOL_PANEL_BUTTONS`. Halo is a 4-ring outer glow that
+/// fades with distance so the icon glyph stays readable through it.
+///
+/// Visual mirror of the website's `.tool-glow` CSS animation — same
+/// orange palette, same ~1 s active window, same slow loop.
+fn draw_tool_panel_glow(
+    buf:     &mut [u32],
+    win_w:   usize,
+    win_h:   usize,
+    sel:     (i32, i32, i32, i32),
+    elapsed: f32,
+) {
+    let n = TOOL_PANEL_BUTTONS.len() as f32;       // 13
+    let slot = 1.0_f32;                            // 1 second per button
+    let cycle = n * slot;                          // 13 s total
+    let t = elapsed.rem_euclid(cycle);
+    let active_idx = (t / slot).floor() as i32;
+    // Fraction-through-slot, 0..1.
+    let phase = (t - active_idx as f32 * slot) / slot;
+    // On for the first 85 % of the slot, off for the trailing 15 % so the
+    // glow has a visible "step" between buttons.
+    if phase > 0.85 { return; }
+    // Triangular envelope inside the on-window: rises fast, peaks ~mid,
+    // fades. Keeps the transition smooth at slot boundaries.
+    let env = if phase < 0.15 { phase / 0.15 }
+              else if phase < 0.55 { 1.0 }
+              else { ((0.85 - phase) / 0.30).max(0.0) };
+
+    let panel_origin = tool_panel_origin(win_w, win_h, sel);
+    let (x0, y0, x1, y1) = tool_panel_button_rect(panel_origin, active_idx);
+
+    // Orange-neon palette — matches the website's `.tool-glow` filter.
+    // Outer rings are progressively fainter so the halo reads as a soft
+    // glow rather than a hard frame around the button.
+    let orange_r: u32 = 0xFF;
+    let orange_g: u32 = 0x7A;
+    let orange_b: u32 = 0x1A;
+    let base_alpha = (210.0 * env).round().clamp(0.0, 255.0) as u32;
+    for ring in 0..6 {
+        let inset    = 1 + ring;
+        let layer_a  = (base_alpha / (1 + ring as u32 / 2)).min(255);
+        if layer_a == 0 { continue; }
+        let rx0 = x0 - inset;
+        let ry0 = y0 - inset;
+        let rx1 = x1 + inset - 1;
+        let ry1 = y1 + inset - 1;
+        blend_rect_outline(buf, win_w, win_h, rx0, ry0, rx1, ry1,
+                           orange_r, orange_g, orange_b, layer_a);
+    }
+}
+
+/// Square-wave flicker of a laser-green outline around the action panel,
+/// running for the first 3 s after the user finishes their selection. Square
+/// wave is much harder to ignore than a sine pulse — the eye locks onto the
+/// hard on/off transitions exactly the way a missed-call indicator does.
+///
+/// Layout: 3-pixel solid inner stroke + 5 progressively-fainter outer halo
+/// rings for the laser-glow silhouette. The flicker frequency (~6.5 Hz) is
+/// fast enough to read as a strobe but slow enough not to look like a render
+/// glitch. The pulse stops abruptly at t=3 s rather than fading — the caller
+/// clears `panel_pulse_started` the moment elapsed crosses the threshold so
+/// the next frame draws no pulse at all.
+fn draw_action_panel_pulse(
+    buf:   &mut [u32],
+    win_w: usize,
+    win_h: usize,
+    sel:   (i32, i32, i32, i32),
+    elapsed: f32,
+) {
+    if elapsed >= 3.0 { return; }
+    let origin = action_panel_origin(win_w, win_h, sel);
+    let (pw, ph) = action_panel_dims();
+
+    // Cycle: ~150 ms total; 60% ON, 40% OFF. Solid on the bright phase, faint
+    // halo on the dim phase so the panel is always findable even mid-blink.
+    let cycle  = (elapsed * 6.5).fract();
+    let bright = cycle < 0.6;
+    let stroke_a: u32 = if bright { 240 } else { 40 };
+    let halo_a:   u32 = if bright { 130 } else { 22 };
+
+    let laser_r: u32 = 0x00;
+    let laser_g: u32 = 0xff;
+    let laser_b: u32 = 0x95;
+
+    // 3-px solid stroke directly hugging the panel.
+    for inset in 1..=3 {
+        let x0 = origin.0 - inset;
+        let y0 = origin.1 - inset;
+        let x1 = origin.0 + pw + inset;
+        let y1 = origin.1 + ph + inset;
+        blend_rect_outline(buf, win_w, win_h, x0, y0, x1, y1,
+                           laser_r, laser_g, laser_b, stroke_a);
+    }
+    // 5-ring outer halo — each ring is fainter than the last.
+    for ring in 0..5 {
+        let inset    = 4 + ring;
+        let layer_a  = (halo_a / (1 + ring as u32)).min(255);
+        let x0       = origin.0 - inset;
+        let y0       = origin.1 - inset;
+        let x1       = origin.0 + pw + inset;
+        let y1       = origin.1 + ph + inset;
+        blend_rect_outline(buf, win_w, win_h, x0, y0, x1, y1,
+                           laser_r, laser_g, laser_b, layer_a);
+    }
+}
+
+/// Source-over blend a 1-px rectangular outline of `(r,g,b,a)` onto the
+/// XRGB softbuffer. Clipped at the buffer bounds.
+fn blend_rect_outline(
+    buf: &mut [u32], win_w: usize, win_h: usize,
+    x0: i32, y0: i32, x1: i32, y1: i32,
+    r: u32, g: u32, b: u32, a: u32,
+) {
+    if a == 0 { return; }
+    let inv = 255 - a;
+    let plot = |buf: &mut [u32], x: i32, y: i32| {
+        if x < 0 || y < 0 { return; }
+        let (xu, yu) = (x as usize, y as usize);
+        if xu >= win_w || yu >= win_h { return; }
+        let idx = yu * win_w + xu;
+        let cur = buf[idx];
+        let dr  = (cur >> 16) & 0xFF;
+        let dg  = (cur >>  8) & 0xFF;
+        let db  =  cur        & 0xFF;
+        let nr  = ((r * a + dr * inv + 127) / 255).min(255);
+        let ng  = ((g * a + dg * inv + 127) / 255).min(255);
+        let nb  = ((b * a + db * inv + 127) / 255).min(255);
+        buf[idx] = (nr << 16) | (ng << 8) | nb;
+    };
+    for x in x0..=x1 { plot(buf, x, y0); plot(buf, x, y1); }
+    for y in y0..=y1 { plot(buf, x0, y); plot(buf, x1, y); }
 }
 
 fn draw_action_panel(

@@ -43,6 +43,7 @@ impl PinView {
             .with_resizable(false)
             .with_inner_size(PhysicalSize::new(w, h))
             .with_position(PhysicalPosition::new(screen_pos.0, screen_pos.1))
+            .with_window_icon(crate::brand_icon::shared())
             .with_window_level(WindowLevel::AlwaysOnTop);
 
         let window = loop_target
