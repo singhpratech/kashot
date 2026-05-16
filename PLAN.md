@@ -54,15 +54,39 @@ maintainer explicitly bumps.
 - `Kashot-portable.zip` — extract-and-run, no install
 - All three artifacts produced by `Installer/build.ps1` in one run
 
-### Cross-platform foundation (Rust)
-- **`kashot-rs/` workspace** — `kashot-core` (logic, **9 unit tests pass**),
-  `kashot-platform` (capture / hotkey / tray / clipboard via xcap,
-  global-hotkey, tray-icon, arboard), `kashot-app` (iced daemon-mode binary)
+### Cross-platform foundation (Rust) — `kashot-rs/`
+- **`kashot-rs/` workspace** — `kashot-core` (logic, **9 unit tests pass on
+  Linux + Windows + macOS**), `kashot-platform` (capture / hotkey / tray /
+  clipboard / recorder via xcap, global-hotkey, tray-icon, arboard, ffmpeg
+  / screencapture shell-out), `kashot-app` (winit + softbuffer overlay,
+  Pin window, tray-resident main loop)
 - Wire-compatible with C# `settings.json` — same PascalCase keys, same
   Win32-VK hotkey encoding, same ARGB color ints
-- Editor scaffold landed: state machine, all 9 annotation types, toolbar +
-  action panel + color picker, save / copy / pin, settings + about + pin
-  windows. **CI iteration ongoing** on iced 0.14 API specifics.
+- **All 9 annotation tools shipped** with hand-designed 5×7 ASCII bitmap
+  font for text rendering, no TTF rasterizer dep
+- **Floating panels** (tool column + action row) hugging the selection,
+  matching `OverlayForm.PositionToolbars` 1:1; auto-flip when they'd clip
+- **X11 override-redirect** + side-channel `XSetInputFocus` so the overlay
+  layers above DOCK panels (Cinnamon / Plasma / GNOME) AND keeps keyboard
+  focus for the Text tool — needed because plain `_NET_WM_STATE_ABOVE`
+  sits at the same stratum as panels
+- **Tray menu** parity with C# TrayContext: Capture / Capture-after-delay
+  (3 / 5 / 10 s + Cancel pending) / Record Screen (mic-audio when
+  PulseAudio is reachable) / Stop Recording / Settings / About / Exit
+- **About modal** matches `AboutForm.cs` text 1:1 ("With love from
+  PrateekSingh ❤" + copyright)
+- **Watermark** (`WatermarkEnabled` / `WatermarkText`) applied on every
+  save / copy / pin path — bottom-right corner, white-on-black-shadow so
+  it stays legible on either light or dark screenshots
+- **Hover tooltips** on every tool / utility / action button
+- **Magnifier zoom** in Idle / Selecting state — 7× lens with red
+  crosshair so the user can place selection edges by individual pixels
+- **Edge-resize**, **Color palette popup** (4 palettes × 16 swatches),
+  **Thickness cycle**, **Pin window** (always-on-top, drag-to-move),
+  **Undo/Redo stack**, **Save / Copy / Pin / Close** action buttons,
+  **Dimension chip** with real "W × H" text
+- All Linux + macOS (arm64 + x64) + Windows-Rust release builds **green
+  in CI** and downloadable from the GitHub Release on tag push
 
 ### Brand + asset pack
 - Brand-stamped "KA" + camera + viewfinder icon, master at 1024×1024
@@ -94,7 +118,10 @@ maintainer explicitly bumps.
 | R4 | Meme text annotation | `MemeAnnotation` in `Annotations.cs` ✅ — Impact-style font, white fill + black outline, uppercase auto | Wire `Tool.Meme` into `OverlayForm`: keyboard shortcut **K**, toolbar entry, `StartTextInput(meme: true)` path |
 | R5 | PDF export | `PdfSharp` 6.2.4 added | `*.pdf` filter in `SaveToFile` dialog + single-page export path |
 | R6 | Image resize presets | (planned) | New `Resize…` action button → popup with 100 / 75 / 50 / 25 % + Max-1920 / Max-1280 / Max-640 + custom W×H. Apply to `GetFinalImage` output before save/copy/pin |
-| R7 | Rust editor port | Workspace scaffolded; iced overlay, state machine, all 9 annotation types, toolbar, save/copy/pin, settings, about all written | CI iteration on iced 0.14 API specifics; once green, ships native binaries on Linux + macOS |
+| R7 | Rust editor port | ✅ **shipped** (PR #1 + PR #2 + PR #3) — winit + softbuffer overlay, all 9 annotation tools, region selector, edge resize, color palette popup with 4 palettes, thickness cycle, undo/redo, Save/Copy/Pin action panel, Pin window, magnifier, tooltips, dimension chip, watermark, mic-audio recording on Linux | — |
+| R8 | Native Settings dialog (Rust) | Settings entry point opens `settings.json` in default editor (every key editable) + quick save-folder picker | Custom widget-based form with hotkey rebinder + theme combo + watermark fields. Needs the iced UI port to land first |
+| R9 | Video format conversion / export | Screen recordings ship as MP4 H.264 only | Add a "Convert recording…" tray action: pick source MP4, choose target format (WebM / GIF / MOV), shell to ffmpeg with the right transcoding args, drop result next to source |
+| R10 | Bundled Wayland support | Linux X11 only via `xcap` + `x11rb`; Wayland sessions fall back to a portal-based capture (queued) | Wire `xdg-desktop-portal` Screenshot + ScreenCast portals through `ashpd` so kashot works on GNOME-on-Wayland / KDE-on-Wayland out of the box |
 
 ---
 
