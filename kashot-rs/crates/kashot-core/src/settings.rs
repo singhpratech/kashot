@@ -65,6 +65,9 @@ pub struct AppSettings {
     #[serde(rename = "SaveDirectory", default)]
     pub save_directory: String,
 
+    #[serde(rename = "RecordingsDirectory", default)]
+    pub recordings_directory: String,
+
     #[serde(rename = "HotkeyModifiers", default)]
     pub hotkey_modifiers: u32,
 
@@ -80,6 +83,12 @@ pub struct AppSettings {
     #[serde(rename = "WatermarkText", default = "default_watermark")]
     pub watermark_text: String,
 
+    #[serde(rename = "WatermarkOpacity", default = "default_watermark_opacity")]
+    pub watermark_opacity: f32,
+
+    #[serde(rename = "WatermarkPosition", default = "default_watermark_position")]
+    pub watermark_position: String,
+
     #[serde(rename = "PaletteIndex", default)]
     pub palette_index: i32,
 
@@ -94,11 +103,14 @@ impl Default for AppSettings {
             last_color_argb:     default_color_argb(),
             last_thickness:      default_thickness(),
             save_directory:      String::new(),
+            recordings_directory: String::new(),
             hotkey_modifiers:    0,
             hotkey_virtual_key:  default_vk(),
             start_with_windows:  false,
             watermark_enabled:   true,
             watermark_text:      default_watermark(),
+            watermark_opacity:   default_watermark_opacity(),
+            watermark_position:  default_watermark_position(),
             palette_index:       0,
             theme:               default_theme(),
         }
@@ -110,8 +122,31 @@ fn default_color_argb()  -> i32     { 0xFFFF_0000_u32 as i32 }
 fn default_thickness()   -> f32     { 3.0 }
 fn default_vk()          -> u32     { 0x2C }
 fn default_true()        -> bool    { true }
-fn default_watermark()   -> String  { "PrateekSingh".to_owned() }
+fn default_watermark()   -> String  { "KAShot".to_owned() }
 fn default_theme()       -> String  { "Light".to_owned() }
+fn default_watermark_opacity() -> f32 { 0.85 }
+fn default_watermark_position() -> String { "BottomRight".to_owned() }
+
+/// Anchor for the watermark inside the saved frame. JSON values are case-
+/// insensitive `TopLeft` / `TopRight` / `BottomLeft` / `BottomRight`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WatermarkAnchor {
+    TopLeft,
+    TopRight,
+    BottomLeft,
+    BottomRight,
+}
+
+impl WatermarkAnchor {
+    pub fn parse(s: &str) -> WatermarkAnchor {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "topleft"     | "top_left"     | "top-left"     => WatermarkAnchor::TopLeft,
+            "topright"    | "top_right"    | "top-right"    => WatermarkAnchor::TopRight,
+            "bottomleft"  | "bottom_left"  | "bottom-left"  => WatermarkAnchor::BottomLeft,
+            _                                                => WatermarkAnchor::BottomRight,
+        }
+    }
+}
 
 impl AppSettings {
     /// `~/.../Kashot/`, created if it doesn't exist.
