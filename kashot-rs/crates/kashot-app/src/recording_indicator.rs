@@ -72,7 +72,7 @@ impl RecordingIndicator {
         let y = 24;
 
         let attrs = WindowAttributes::default()
-            .with_title("Kashot — recording")
+            .with_title("KAShot — recording")
             .with_decorations(false)
             .with_resizable(false)
             .with_inner_size(PhysicalSize::new(WIN_W, WIN_H))
