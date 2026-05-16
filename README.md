@@ -1,8 +1,8 @@
 <div align="center">
 
-<img src="docs/assets/kashot-256.png" width="140" height="140" alt="Kashot" />
+<img src="docs/assets/kashot-256.png" width="140" height="140" alt="KAShot" />
 
-# Kashot
+# KAShot
 
 ### The lightweight screenshot tool every platform deserves.
 
@@ -23,7 +23,7 @@
 
 ---
 
-## What is Kashot
+## What is KAShot
 
 A tray-resident screenshot + screen-recording tool that ships **the same binary discipline** to Windows, Linux, and macOS. No Electron, no Wine, no bundled browser, no accounts, no telemetry. Hit your hotkey → drag → annotate → save / copy / pin / record → done.
 
@@ -49,7 +49,7 @@ I wanted **one** screenshot tool. Same hotkey, same overlay, same shortcuts, sam
 
 So I started building. The first cut was a Windows-only C# / WinForms app. Once the workflow felt right I ported it to **Rust** so Linux and macOS could have the same thing natively. No Electron. No Wine. No bundled browser. No accounts. No telemetry.
 
-That's Kashot. Lightweight. One workflow. Everywhere.
+That's KAShot. Lightweight. One workflow. Everywhere.
 
 — [PrateekSingh](https://github.com/singhpratech)
 
@@ -265,7 +265,7 @@ Built by [Prateek Singh](https://github.com/singhpratech). Bug reports and PRs w
 
 <div align="center">
 
-<img src="docs/assets/kashot-64.png" width="48" alt="Kashot" />
+<img src="docs/assets/kashot-64.png" width="48" alt="KAShot" />
 
 [**kashot.org**](https://kashot.org)
 

@@ -134,7 +134,7 @@ impl SettingsView {
     pub fn new(loop_target: &ActiveEventLoop, current: AppSettings) -> Result<Self> {
         let (cx, cy) = centered_origin(loop_target, WIN_W, WIN_H);
         let attrs = WindowAttributes::default()
-            .with_title("Kashot — Settings")
+            .with_title("KAShot — Settings")
             .with_decorations(true)
             .with_resizable(false)
             .with_inner_size(PhysicalSize::new(WIN_W, WIN_H))
@@ -335,7 +335,7 @@ impl SettingsView {
                     PathBuf::from(&self.draft.save_directory)
                 };
                 if let Some(p) = rfd::FileDialog::new()
-                    .set_title("Kashot — Screenshots folder")
+                    .set_title("KAShot — Screenshots folder")
                     .set_directory(&starting)
                     .pick_folder()
                 {
@@ -351,7 +351,7 @@ impl SettingsView {
                     PathBuf::from(&self.draft.recordings_directory)
                 };
                 if let Some(p) = rfd::FileDialog::new()
-                    .set_title("Kashot — Recordings folder")
+                    .set_title("KAShot — Recordings folder")
                     .set_directory(&starting)
                     .pick_folder()
                 {
