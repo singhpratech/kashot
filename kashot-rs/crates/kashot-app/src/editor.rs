@@ -40,7 +40,7 @@ use winit::dpi::PhysicalPosition;
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::event_loop::ActiveEventLoop;
 use winit::keyboard::{Key, ModifiersState, NamedKey};
-use winit::window::{CursorIcon, Fullscreen, Window, WindowAttributes, WindowId};
+use winit::window::{CursorIcon, Fullscreen, Window, WindowAttributes, WindowId, WindowLevel};
 
 use crate::painter::{self, ImageSurface, U32Surface};
 
@@ -87,19 +87,53 @@ enum State {
     TextInput,
 }
 
-/// Toolbar geometry — kept simple and centered horizontally near the top
-/// of the screen. We rebuild it on every redraw, which is cheap.
-const TOOLBAR_TOP:        i32 = 18;
-const TOOLBAR_PAD:        i32 = 8;
-const TOOLBAR_BTN:        i32 = 36;
-const TOOLBAR_GAP:        i32 = 4;
-const TOOLBAR_RADIUS:     i32 = 8;
-/// Wide gap between the tools group and the thickness picker so the two
-/// visually read as separate sections.
-const TOOLBAR_GROUP_GAP:  i32 = 14;
-/// Stroke widths the thickness picker offers. Index 1 (4 px) is the default
-/// — same as `Stroke::default().thickness` in kashot-core.
-const THICKNESSES:        [f32; 3] = [2.0, 4.0, 8.0];
+/// Tool / action panel geometry. Mirrors `Kashot/OverlayForm.cs::PositionToolbars`:
+/// the tool panel is a vertical column adjacent to the right edge of the
+/// selection; the action panel is a horizontal row beneath the selection,
+/// right-aligned. Both fall back to the opposite side if they'd clip the
+/// screen edge. Free-floating, never covering the whole screen.
+const PANEL_BTN:    i32 = 36;
+const PANEL_GAP:    i32 = 4;
+const PANEL_PAD:    i32 = 5;
+const PANEL_RADIUS: i32 = 8;
+/// Wide gap between visually distinct groups inside the tool panel.
+const PANEL_GROUP_GAP: i32 = 8;
+/// Stroke widths the thickness button cycles through. Default is index 1
+/// (4 px) — matches `Stroke::default().thickness` in kashot-core.
+const THICKNESSES: [f32; 3] = [2.0, 4.0, 8.0];
+
+/// Tool-panel button identities. The first 9 mirror `Tool::ALL`; the last 4
+/// (`Color`, `Thickness`, `Undo`, `Redo`) are buttons that don't pick a tool
+/// — they trigger a popup or an action. Mirrors C# CreateToolPanel.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ToolPanelButton { Tool(Tool), Color, Thickness, Undo, Redo }
+
+const TOOL_PANEL_BUTTONS: [ToolPanelButton; 13] = [
+    ToolPanelButton::Tool(Tool::Pen),
+    ToolPanelButton::Tool(Tool::Line),
+    ToolPanelButton::Tool(Tool::Arrow),
+    ToolPanelButton::Tool(Tool::Rectangle),
+    ToolPanelButton::Tool(Tool::Ellipse),
+    ToolPanelButton::Tool(Tool::Marker),
+    ToolPanelButton::Tool(Tool::Text),
+    ToolPanelButton::Tool(Tool::Step),
+    ToolPanelButton::Tool(Tool::Pixelate),
+    // Visual divider sits between index 8 and 9 — see `tool_panel_dims`.
+    ToolPanelButton::Color,
+    ToolPanelButton::Thickness,
+    ToolPanelButton::Undo,
+    ToolPanelButton::Redo,
+];
+
+/// Action-panel buttons (horizontal row under the selection). Returning
+/// outcomes routed through `tray_loop`. `Close` mirrors C# OverlayForm
+/// "Close (Esc)" — closes the overlay without saving.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ActionButton { Pin, Copy, Save, Close }
+
+const ACTION_BUTTONS: [ActionButton; 4] = [
+    ActionButton::Pin, ActionButton::Copy, ActionButton::Save, ActionButton::Close,
+];
 
 /// Magnifier — small zoomed lens shown near the cursor in Idle / Selecting,
 /// so the user can position the selection edge by individual pixels.
@@ -137,6 +171,48 @@ pub struct Overlay {
     mods:        ModifiersState,
     /// Which edge / corner is being dragged while `state == Resizing`.
     resize_edge: Edge,
+    /// True while the color palette popup is showing. Toggled by clicking
+    /// the Color button in the tool panel; closes when the user picks a
+    /// swatch or clicks anywhere outside the popup.
+    palette_open:  bool,
+    /// Active palette in the popup (0..=3 → Vivid / Highlighter / Pastel /
+    /// Pro). Stored on Overlay rather than in `Stroke` so swapping between
+    /// palettes doesn't change the live stroke color until the user picks
+    /// a new swatch. Mirrors C# `_paletteIndex`.
+    palette_index: usize,
+    /// Hovered tool/action/utility button → tooltip label + anchor pixel.
+    /// Recomputed on every CursorMoved while in `Selected`. Mirrors the
+    /// `tip` arg in C# OverlayForm `MakeButton(tip, …)`.
+    hover_tip:     Option<(&'static str, i32, i32)>,
+    /// On X11, set true once we've called XSetInputFocus + XGrabKeyboard
+    /// against the overlay's window. Done lazily on the first redraw so
+    /// the window is already mapped by the time we make the X requests.
+    /// Without this Cinnamon never delivers KeyPress to the overlay and
+    /// the Text tool sees no characters.
+    focus_pushed:  bool,
+    /// How many times we've tried to push X11 focus. Capped — see
+    /// `push_x11_focus`. Without a cap, WMs that refuse focus entirely
+    /// (GNOME focus-stealing prevention; some tiling WMs) make us spin
+    /// requesting redraws forever and pin a CPU core.
+    focus_attempts: u32,
+    /// When the action panel was first shown (transition into `Selected`).
+    /// Drives the laser-green attention pulse that fades over 3 s so users
+    /// find the panel after it auto-positions for any screen size.
+    panel_pulse_started: Option<std::time::Instant>,
+    /// Was the previous redraw in `Selected` state? Used to detect the
+    /// transition that triggers `panel_pulse_started`.
+    last_was_selected: bool,
+    /// Wall-clock when the overlay window opened. Drives the slow
+    /// sequential orange-neon glow that cycles through every tool-panel
+    /// button top-to-bottom (mirrors the website's tool-palette demo).
+    opened_at: std::time::Instant,
+}
+
+impl Drop for Overlay {
+    fn drop(&mut self) {
+        #[cfg(target_os = "linux")]
+        release_x11_focus();
+    }
 }
 
 impl Overlay {
@@ -145,11 +221,37 @@ impl Overlay {
         loop_target: &ActiveEventLoop,
         screenshot: ImageBuffer<Rgba<u8>, Vec<u8>>,
     ) -> Result<Self> {
+        // Plain borderless fullscreen — let the WM manage focus + stacking
+        // normally. We tried `override_redirect=true` on X11 to layer above
+        // DOCK panels, but it blocked KeyPress delivery to the Text tool on
+        // Cinnamon because keyboard focus doesn't propagate to override-
+        // redirect windows the same way. Trade-off: dock panels may still
+        // be visible at the screen edges, but every annotation tool works
+        // including Text. Mirrors C# OverlayForm:
+        //   `FormBorderStyle = None; WindowState = Maximized;`
+        // `Fullscreen::Borderless(None)` opens at a default size on Cinnamon
+        // (~800×600). Setting an explicit inner_size to the primary monitor's
+        // physical size + position (0,0) + AlwaysOnTop makes the WM open us
+        // at full screen even when fullscreen state isn't honored.
+        let monitor_size = loop_target
+            .primary_monitor()
+            .or_else(|| loop_target.available_monitors().next())
+            .map(|m| m.size())
+            .unwrap_or(winit::dpi::PhysicalSize::new(
+                screenshot.width(),
+                screenshot.height(),
+            ));
+        let primary = loop_target.primary_monitor()
+            .or_else(|| loop_target.available_monitors().next());
         let attrs = WindowAttributes::default()
-            .with_title("Kashot")
+            .with_title("KAShot")
             .with_decorations(false)
             .with_resizable(false)
-            .with_fullscreen(Some(Fullscreen::Borderless(None)));
+            .with_inner_size(monitor_size)
+            .with_position(PhysicalPosition::new(0i32, 0i32))
+            .with_window_level(WindowLevel::AlwaysOnTop)
+            .with_window_icon(crate::brand_icon::shared())
+            .with_fullscreen(Some(Fullscreen::Borderless(primary)));
 
         let window = loop_target
             .create_window(attrs)
@@ -158,6 +260,11 @@ impl Overlay {
 
         window.set_cursor(CursorIcon::Crosshair);
         window.focus_window();
+
+        // `focus_window()` above is the spec-correct ask via _NET_ACTIVE_WINDOW.
+        // Cinnamon ignores it fast enough that the overlay never gets KeyPress,
+        // so we follow up with a manual XSetInputFocus + XGrabKeyboard from
+        // `push_x11_focus` once the window is viewable.
 
         let ctx = Context::new(window.clone())
             .map_err(|e| anyhow!("softbuffer Context::new: {e}"))?;
@@ -181,6 +288,14 @@ impl Overlay {
             step_count:  1,
             mods:        ModifiersState::empty(),
             resize_edge: Edge::None,
+            palette_open: false,
+            palette_index: 0,
+            hover_tip:     None,
+            focus_pushed:  false,
+            focus_attempts: 0,
+            panel_pulse_started: None,
+            last_was_selected:   false,
+            opened_at:           std::time::Instant::now(),
         })
     }
 
@@ -220,6 +335,12 @@ impl Overlay {
                         // Update the cursor icon based on which edge we're
                         // hovering, matching the C# OverlayForm convention.
                         self.update_resize_cursor();
+                        // And recompute the hover tooltip so the user can
+                        // tell Pen / Line / Marker apart instantly. Mirrors
+                        // C# MakeButton(tip, …) tooltip text.
+                        let prev = self.hover_tip;
+                        self.hover_tip = self.compute_hover_tip();
+                        if prev != self.hover_tip { self.window.request_redraw(); }
                     }
                     State::Idle => {
                         // Magnifier follows the cursor in Idle so the user
@@ -268,6 +389,7 @@ impl Overlay {
     }
 
     fn handle_key(&mut self, key: Key) -> OverlayOutcome {
+        eprintln!("kashot: key={:?} state={:?} mods={:?}", key, self.state, self.mods);
         // Text-input state owns the keyboard while it's active — typed
         // characters extend the pending annotation; Enter commits, Esc
         // cancels, Backspace pops the last char.
@@ -328,6 +450,7 @@ impl Overlay {
 
     fn handle_text_key(&mut self, key: Key) -> OverlayOutcome {
         use kashot_core::annotation::AnnotationKind;
+        eprintln!("kashot: text-input key={:?}", key);
         match key {
             Key::Named(NamedKey::Escape) => {
                 self.current = None;
@@ -421,25 +544,76 @@ impl Overlay {
             // Fall through so the click can still pick a swatch / start a
             // new text input / drag a region etc.
         }
-        // Toolbar takes priority — clicking a tool button never starts a draw.
+        // Tool/action panel + popup hit-testing happens BEFORE the
+        // edge-resize / draw-start path, so a click on a button always
+        // wins over a draw inside the selection. Mirrors the order in
+        // C# OverlayForm.OnMouseDown.
         if self.state == State::Selected {
-            if let Some(t) = self.toolbar_hit(self.cursor) {
-                self.tool = t;
-                self.window.request_redraw();
-                return OverlayOutcome::Continue;
-            }
-            // Thickness picker — 3 small dots to the right of the tool row.
-            let win_w = self.window.inner_size().width as usize;
-            if let Some(t) = thickness_hit(win_w, self.cursor) {
-                self.stroke.thickness = t;
-                self.window.request_redraw();
-                return OverlayOutcome::Continue;
-            }
-            // Color-palette swatch under the toolbar — click to switch.
-            if let Some(c) = palette_hit(win_w, self.cursor) {
-                self.stroke.color = c;
-                self.window.request_redraw();
-                return OverlayOutcome::Continue;
+            if let Some(sel) = self.selection {
+                let win_w = self.window.inner_size().width  as usize;
+                let win_h = self.window.inner_size().height as usize;
+                let tp_origin = tool_panel_origin(win_w, win_h, sel);
+
+                // Color popup — must be tested before the tool panel itself
+                // so a click that falls on the popup doesn't get eaten by
+                // the panel underneath.
+                if self.palette_open {
+                    let pp_origin = palette_popup_origin(win_w, tp_origin);
+                    // Header arrows — prev/next palette.
+                    if let Some(prev) = palette_header_hit(pp_origin, self.cursor) {
+                        if prev {
+                            self.palette_index = (self.palette_index + PALETTE_COUNT - 1) % PALETTE_COUNT;
+                        } else {
+                            self.palette_index = (self.palette_index + 1) % PALETTE_COUNT;
+                        }
+                        self.window.request_redraw();
+                        return OverlayOutcome::Continue;
+                    }
+                    if let Some(idx) = palette_popup_hit(pp_origin, self.cursor) {
+                        let pal = kashot_core::annotation::Palettes::get(self.palette_index);
+                        self.stroke.color = pal.colors[idx];
+                        self.palette_open = false;
+                        self.window.request_redraw();
+                        return OverlayOutcome::Continue;
+                    }
+                    if !palette_popup_in(pp_origin, self.cursor) {
+                        // Click outside the popup → close it; let the click
+                        // continue dispatching (so e.g. clicking another
+                        // button still works).
+                        self.palette_open = false;
+                    } else {
+                        return OverlayOutcome::Continue;
+                    }
+                }
+
+                // Tool panel.
+                if let Some((_, btn)) = tool_panel_hit(tp_origin, self.cursor) {
+                    match btn {
+                        ToolPanelButton::Tool(t) => { self.tool = t; }
+                        ToolPanelButton::Color   => { self.palette_open = !self.palette_open; }
+                        ToolPanelButton::Thickness => {
+                            // Cycle through the configured stroke widths,
+                            // matching C# OverlayForm.CycleThickness.
+                            let cur = THICKNESSES.iter().position(|t| (t - self.stroke.thickness).abs() < 0.01).unwrap_or(1);
+                            self.stroke.thickness = THICKNESSES[(cur + 1) % THICKNESSES.len()];
+                        }
+                        ToolPanelButton::Undo => self.undo(),
+                        ToolPanelButton::Redo => self.redo(),
+                    }
+                    self.window.request_redraw();
+                    return OverlayOutcome::Continue;
+                }
+
+                // Action panel.
+                let ap_origin = action_panel_origin(win_w, win_h, sel);
+                if let Some(action) = action_panel_hit(ap_origin, self.cursor) {
+                    return match action {
+                        ActionButton::Pin   => self.commit_as_pin(),
+                        ActionButton::Copy  => self.commit_as_copy(),
+                        ActionButton::Save  => self.commit(),
+                        ActionButton::Close => OverlayOutcome::Cancelled,
+                    };
+                }
             }
         }
 
@@ -481,6 +655,7 @@ impl Overlay {
                         let p = Point2::new(self.cursor.0 as f32, self.cursor.1 as f32);
                         self.current = Some(Annotation::text(self.stroke.color, p, ""));
                         self.state   = State::TextInput;
+                        eprintln!("kashot: entered TextInput at ({}, {})", p.x, p.y);
                         self.window.request_redraw();
                     } else if let Some(a) = self.start_annotation() {
                         self.current = Some(a);
@@ -561,6 +736,45 @@ impl Overlay {
         if w < 4 { w = 4; }
         if h < 4 { h = 4; }
         self.selection = Some((x, y, w, h));
+    }
+
+    fn compute_hover_tip(&self) -> Option<(&'static str, i32, i32)> {
+        let sel = self.selection?;
+        let win_w = self.window.inner_size().width  as usize;
+        let win_h = self.window.inner_size().height as usize;
+        // Tool panel.
+        let tp = tool_panel_origin(win_w, win_h, sel);
+        if let Some((idx, btn)) = tool_panel_hit(tp, self.cursor) {
+            let (_, _, x1, y1) = tool_panel_button_rect(tp, idx as i32);
+            let label = match btn {
+                ToolPanelButton::Tool(Tool::Pen)        => "Pen (P)",
+                ToolPanelButton::Tool(Tool::Line)       => "Line (L)",
+                ToolPanelButton::Tool(Tool::Arrow)      => "Arrow (A)",
+                ToolPanelButton::Tool(Tool::Rectangle)  => "Rectangle (R)",
+                ToolPanelButton::Tool(Tool::Ellipse)    => "Ellipse (E)",
+                ToolPanelButton::Tool(Tool::Marker)     => "Marker (M)",
+                ToolPanelButton::Tool(Tool::Text)       => "Text (T)",
+                ToolPanelButton::Tool(Tool::Step)       => "Step (N)",
+                ToolPanelButton::Tool(Tool::Pixelate)   => "Pixelate (B)",
+                ToolPanelButton::Color                  => "Color",
+                ToolPanelButton::Thickness              => "Thickness",
+                ToolPanelButton::Undo                   => "Undo (Ctrl+Z)",
+                ToolPanelButton::Redo                   => "Redo (Ctrl+Y)",
+            };
+            return Some((label, x1 + 6, y1 - 14));
+        }
+        // Action panel.
+        let ap = action_panel_origin(win_w, win_h, sel);
+        if let Some(btn) = action_panel_hit(ap, self.cursor) {
+            let label = match btn {
+                ActionButton::Pin   => "Pin to screen",
+                ActionButton::Copy  => "Copy (Ctrl+C)",
+                ActionButton::Save  => "Save (Ctrl+S)",
+                ActionButton::Close => "Close (Esc)",
+            };
+            return Some((label, self.cursor.0 + 14, self.cursor.1 + 14));
+        }
+        None
     }
 
     fn update_resize_cursor(&self) {
@@ -651,7 +865,55 @@ impl Overlay {
         Some(img)
     }
 
+    /// Force keyboard focus + grab to our window via raw X11 calls. Retries
+    /// on every redraw until SetInputFocus stops returning BadMatch — the
+    /// window may still be in `IsUnviewable` state on the first frame and
+    /// X11 rejects focus changes against unviewable windows. Cinnamon
+    /// usually maps the window within ~2-3 redraw cycles after which the
+    /// focus push succeeds.
+    #[cfg(target_os = "linux")]
+    fn push_x11_focus(&mut self) {
+        if self.focus_pushed { return; }
+        const MAX_FOCUS_ATTEMPTS: u32 = 60;
+        self.focus_attempts = self.focus_attempts.saturating_add(1);
+        use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+        let xid = match self.window.window_handle() {
+            Ok(h) => match h.as_raw() {
+                RawWindowHandle::Xlib(x) => x.window as u32,
+                _ => { self.focus_pushed = true; return; }
+            }
+            Err(_) => { self.focus_pushed = true; return; }
+        };
+        match force_x11_focus(xid) {
+            Ok(()) => {
+                eprintln!("kashot: x11 focus + grab pushed for window 0x{xid:x}");
+                self.focus_pushed = true;
+            }
+            Err(e) => {
+                if self.focus_attempts >= MAX_FOCUS_ATTEMPTS {
+                    eprintln!(
+                        "kashot: gave up pushing x11 focus after {} attempts ({e}); \
+                         Text tool may not receive keypresses on this WM",
+                        self.focus_attempts
+                    );
+                    self.focus_pushed = true;
+                } else {
+                    eprintln!("kashot: x11 focus retry pending ({e})");
+                }
+            }
+        }
+    }
+
     fn redraw(&mut self) {
+        #[cfg(target_os = "linux")]
+        {
+            self.push_x11_focus();
+            // Keep cycling redraws until focus is grabbed. After that it
+            // settles and we redraw only on actual events.
+            if !self.focus_pushed {
+                self.window.request_redraw();
+            }
+        }
         let phys = self.window.inner_size();
         let (Some(w), Some(h)) = (NonZeroU32::new(phys.width), NonZeroU32::new(phys.height)) else { return; };
         if let Err(e) = self.surface.resize(w, h) {
@@ -706,6 +968,33 @@ impl Overlay {
             painter::render_annotation(&mut surf, a, Some(&self.screenshot));
         }
 
+        // While typing — show a subtle dashed rectangle around the text
+        // bounds so the user can see where text will appear. Drawn only
+        // in the live preview; `compose_final` never renders it, so the
+        // saved/copied bitmap shows just the text without any frame.
+        if self.state == State::TextInput {
+            if let Some(a) = self.current.as_ref() {
+                if let kashot_core::annotation::AnnotationKind::Text { position, text, font_size, .. } = &a.kind {
+                    let scale = ((*font_size / 7.0).round() as i32).max(1);
+                    let text_w = crate::bitmap_font::measure(text, scale).max(scale * 5);
+                    let text_h = crate::bitmap_font::GLYPH_H * scale;
+                    let pad = 4;
+                    let x0 = position.x as i32 - pad;
+                    let y0 = position.y as i32 - pad;
+                    let x1 = position.x as i32 + text_w + pad;
+                    let y1 = position.y as i32 + text_h + pad;
+                    draw_dashed_border(&mut buf, win_w, win_h, x0, y0, x1, y1, 0x00_88_88_8C);
+                    // Solid 1-px caret at the trailing edge of the text.
+                    let caret_x = position.x as i32 + text_w + 1;
+                    for cy in (y0 + 2)..(y1 - 2) {
+                        if caret_x >= 0 && (caret_x as usize) < win_w && cy >= 0 && (cy as usize) < win_h {
+                            buf[cy as usize * win_w + caret_x as usize] = 0x00_E8_E8_EC;
+                        }
+                    }
+                }
+            }
+        }
+
         // Pass 3: selection border + 8 handles.
         if let Some((x0, y0, x1, y1)) = sel_rect {
             const BLUE:  u32 = 0x00_64_95_ED;
@@ -733,9 +1022,49 @@ impl Overlay {
             }
         }
 
-        // Pass 5: toolbar (only while a region is locked in).
+        // Pass 5: tool panel + action panel + (optional) color popup —
+        // floating around the selection, never spanning the screen.
+        let is_selected_now = matches!(self.state, State::Selected);
+        if is_selected_now && !self.last_was_selected {
+            self.panel_pulse_started = Some(std::time::Instant::now());
+        }
+        self.last_was_selected = is_selected_now;
+
         if matches!(self.state, State::Selected | State::Drawing | State::Resizing | State::TextInput) {
-            draw_toolbar(&mut buf, win_w, win_h, self.tool, self.stroke.color, self.stroke.thickness);
+            if let Some(sel) = self.selection {
+                draw_tool_panel(&mut buf, win_w, win_h, sel,
+                                self.tool, self.stroke.color, self.stroke.thickness);
+                // Sequential orange-neon halo cycles through every button
+                // (top→bottom, 1 per slot). Mirrors the website's tool-palette
+                // demo so the in-app palette feels alive even when the user
+                // is just hovering. Painted after the panel so the halo sits
+                // on top of the button background but under the icon glyph.
+                let elapsed = self.opened_at.elapsed().as_secs_f32();
+                draw_tool_panel_glow(&mut buf, win_w, win_h, sel, elapsed);
+                // The glow is a continuous animation — ask for another frame
+                // so it keeps cycling while the editor is idle.
+                self.window.request_redraw();
+                draw_action_panel(&mut buf, win_w, win_h, sel);
+                // Attention pulse on the action panel for the first 3 s after
+                // it appears — the panel auto-positions based on selection +
+                // screen, so first-time users can lose track of where Save /
+                // Copy / Pin landed. Fades smoothly to nothing.
+                if matches!(self.state, State::Selected) {
+                    if let Some(start) = self.panel_pulse_started {
+                        let elapsed = start.elapsed().as_secs_f32();
+                        if elapsed < 3.0 {
+                            draw_action_panel_pulse(&mut buf, win_w, win_h, sel, elapsed);
+                            self.window.request_redraw();
+                        } else {
+                            self.panel_pulse_started = None;
+                        }
+                    }
+                }
+                if self.palette_open {
+                    let tp_origin = tool_panel_origin(win_w, win_h, sel);
+                    draw_palette_popup(&mut buf, win_w, win_h, tp_origin, self.stroke.color, self.palette_index);
+                }
+            }
         }
 
         // Pass 6: magnifier — only useful when the user is positioning the
@@ -745,138 +1074,552 @@ impl Overlay {
             draw_magnifier(&mut buf, win_w, win_h, &self.screenshot, self.cursor);
         }
 
+        // Pass 7: tooltip chip — only when the user is hovering a button
+        // in `Selected`. Mirrors C# `MakeButton(tip, ...)` behaviour.
+        if let Some((label, x, y)) = self.hover_tip {
+            if matches!(self.state, State::Selected) {
+                draw_tooltip(&mut buf, win_w, win_h, label, x, y);
+            }
+        }
+
         if let Err(e) = buf.present() {
             eprintln!("overlay: buf.present: {e}");
         }
     }
 
-    fn toolbar_hit(&self, (cx, cy): (i32, i32)) -> Option<Tool> {
-        let win_w = self.window.inner_size().width as usize;
-        for (i, t) in Tool::ALL.iter().enumerate() {
-            let (x0, y0, x1, y1) = toolbar_button_rect(win_w, i as i32);
-            if cx >= x0 && cx < x1 && cy >= y0 && cy < y1 {
-                return Some(*t);
-            }
-        }
-        None
-    }
 }
 
-// ── toolbar (free fns; can't be methods because they share the softbuffer
-//    `buf` borrow with `self.surface`) ──────────────────────────────────────
+// ── tool/action panel layout (mirrors C# OverlayForm.PositionToolbars) ─────
 
-fn toolbar_total_w() -> i32 {
-    let n_tools = Tool::ALL.len() as i32;
-    let n_thick = THICKNESSES.len() as i32;
-    let tools_w = n_tools * TOOLBAR_BTN + (n_tools - 1) * TOOLBAR_GAP;
-    let thick_w = n_thick * TOOLBAR_BTN + (n_thick - 1) * TOOLBAR_GAP;
-    tools_w + TOOLBAR_GROUP_GAP + thick_w + TOOLBAR_PAD * 2
+/// Outer width × height of the vertical tool panel (13 buttons + 1 divider).
+fn tool_panel_dims() -> (i32, i32) {
+    let n   = TOOL_PANEL_BUTTONS.len() as i32;
+    let h_buttons = n * PANEL_BTN + (n - 1) * PANEL_GAP;
+    // A 1-px divider sits between the 9 tool buttons and the 4 utility
+    // buttons (color / thickness / undo / redo). Two extra group-gaps add
+    // breathing room above and below the divider line.
+    let extra = PANEL_GROUP_GAP * 2 + 1;
+    let w = PANEL_BTN + PANEL_PAD * 2;
+    let h = h_buttons + extra + PANEL_PAD * 2;
+    (w, h)
 }
 
-fn toolbar_origin(win_w: usize) -> (i32, i32) {
-    let total = toolbar_total_w();
-    let x = ((win_w as i32) - total) / 2;
-    (x.max(0), TOOLBAR_TOP)
+fn action_panel_dims() -> (i32, i32) {
+    let n = ACTION_BUTTONS.len() as i32;
+    let w = n * PANEL_BTN + (n - 1) * PANEL_GAP + PANEL_PAD * 2;
+    let h = PANEL_BTN + PANEL_PAD * 2;
+    (w, h)
 }
 
-fn toolbar_button_rect(win_w: usize, idx: i32) -> (i32, i32, i32, i32) {
-    let (ox, oy) = toolbar_origin(win_w);
-    let x = ox + TOOLBAR_PAD + idx * (TOOLBAR_BTN + TOOLBAR_GAP);
-    let y = oy + TOOLBAR_PAD;
-    (x, y, x + TOOLBAR_BTN, y + TOOLBAR_BTN)
+/// Screen-space origin of the tool panel. Right of selection by default;
+/// flips to the left if the right edge would clip; rounds inward to keep
+/// the panel fully on screen. Returns `None` if no selection is locked in.
+fn tool_panel_origin(win_w: usize, win_h: usize, sel: (i32, i32, i32, i32)) -> (i32, i32) {
+    let (sx, sy, sw, sh) = sel;
+    let (pw, ph) = tool_panel_dims();
+    let mut tx = sx + sw + 5;
+    let mut ty = sy;
+    if tx + pw > win_w as i32 { tx = sx - pw - 5; }
+    if ty + ph > win_h as i32 { ty = (win_h as i32) - ph; }
+    let _ = sh;
+    (tx.max(0), ty.max(0))
 }
 
-fn thickness_button_rect(win_w: usize, idx: i32) -> (i32, i32, i32, i32) {
-    let (ox, oy) = toolbar_origin(win_w);
-    let n_tools  = Tool::ALL.len() as i32;
-    let tools_w  = n_tools * TOOLBAR_BTN + (n_tools - 1) * TOOLBAR_GAP;
-    let x = ox + TOOLBAR_PAD + tools_w + TOOLBAR_GROUP_GAP + idx * (TOOLBAR_BTN + TOOLBAR_GAP);
-    let y = oy + TOOLBAR_PAD;
-    (x, y, x + TOOLBAR_BTN, y + TOOLBAR_BTN)
+fn action_panel_origin(win_w: usize, win_h: usize, sel: (i32, i32, i32, i32)) -> (i32, i32) {
+    let (sx, sy, sw, sh) = sel;
+    let (pw, ph) = action_panel_dims();
+    let mut ax = sx + sw - pw;
+    let mut ay = sy + sh + 5;
+    if ay + ph > win_h as i32 { ay = sy - ph - 5; }
+    if ax < 0 { ax = sx; }
+    let _ = win_w;
+    (ax.max(0), ay.max(0))
 }
 
-fn thickness_hit(win_w: usize, (cx, cy): (i32, i32)) -> Option<f32> {
-    for (i, t) in THICKNESSES.iter().enumerate() {
-        let (x0, y0, x1, y1) = thickness_button_rect(win_w, i as i32);
+/// Rectangle for the i-th tool-panel button. Index above the divider
+/// position skips one slot to leave room for the line.
+fn tool_panel_button_rect(panel_origin: (i32, i32), idx: i32) -> (i32, i32, i32, i32) {
+    let (ox, oy) = panel_origin;
+    let x = ox + PANEL_PAD;
+    // Indices 0..9 are the 9 tools. Index 9..13 are utility buttons that
+    // sit *below* the divider (extra group gap + 1px line + group gap).
+    let above_divider = idx < 9;
+    let extra = if above_divider { 0 } else { PANEL_GROUP_GAP * 2 + 1 };
+    let y = oy + PANEL_PAD + idx * (PANEL_BTN + PANEL_GAP) + extra;
+    (x, y, x + PANEL_BTN, y + PANEL_BTN)
+}
+
+fn action_panel_button_rect(panel_origin: (i32, i32), idx: i32) -> (i32, i32, i32, i32) {
+    let (ox, oy) = panel_origin;
+    let x = ox + PANEL_PAD + idx * (PANEL_BTN + PANEL_GAP);
+    let y = oy + PANEL_PAD;
+    (x, y, x + PANEL_BTN, y + PANEL_BTN)
+}
+
+fn tool_panel_hit(panel_origin: (i32, i32), (cx, cy): (i32, i32)) -> Option<(usize, ToolPanelButton)> {
+    for (i, b) in TOOL_PANEL_BUTTONS.iter().enumerate() {
+        let (x0, y0, x1, y1) = tool_panel_button_rect(panel_origin, i as i32);
         if cx >= x0 && cx < x1 && cy >= y0 && cy < y1 {
-            return Some(*t);
+            return Some((i, *b));
         }
     }
     None
 }
 
-fn draw_toolbar(
-    buf:       &mut [u32],
-    win_w:     usize,
-    win_h:     usize,
-    active:    Tool,
-    swatch:    kashot_core::color::Rgba,
-    thickness: f32,
+fn action_panel_hit(panel_origin: (i32, i32), (cx, cy): (i32, i32)) -> Option<ActionButton> {
+    for (i, b) in ACTION_BUTTONS.iter().enumerate() {
+        let (x0, y0, x1, y1) = action_panel_button_rect(panel_origin, i as i32);
+        if cx >= x0 && cx < x1 && cy >= y0 && cy < y1 {
+            return Some(*b);
+        }
+    }
+    None
+}
+
+// ── color popup (header + 4×4 grid of 16 swatches) ────────────────────────
+
+const PALETTE_SWATCH: i32 = 40;
+const PALETTE_COLS:   i32 = 4;
+const PALETTE_ROWS:   i32 = 4;
+const PALETTE_PAD:    i32 = 6;
+/// Header row with prev / palette-name / next.
+const PALETTE_HEADER: i32 = 32;
+/// Gap between header and swatch grid.
+const PALETTE_HEADER_GAP: i32 = 8;
+/// Total palette count from kashot-core (Vivid / Highlighter / Pastel / Pro).
+const PALETTE_COUNT: usize = 4;
+
+fn palette_popup_dims() -> (i32, i32) {
+    let grid_w = PALETTE_COLS * PALETTE_SWATCH + (PALETTE_COLS - 1) * PANEL_GAP;
+    let grid_h = PALETTE_ROWS * PALETTE_SWATCH + (PALETTE_ROWS - 1) * PANEL_GAP;
+    let w = grid_w + PALETTE_PAD * 2;
+    let h = PALETTE_HEADER + PALETTE_HEADER_GAP + grid_h + PALETTE_PAD * 2;
+    (w, h)
+}
+
+fn palette_header_button_rect(origin: (i32, i32), prev: bool) -> (i32, i32, i32, i32) {
+    let (pw, _ph) = palette_popup_dims();
+    let y0 = origin.1 + PALETTE_PAD;
+    let y1 = y0 + PALETTE_HEADER;
+    if prev {
+        let x0 = origin.0 + PALETTE_PAD;
+        (x0, y0, x0 + PALETTE_HEADER, y1)
+    } else {
+        let x1 = origin.0 + pw - PALETTE_PAD;
+        (x1 - PALETTE_HEADER, y0, x1, y1)
+    }
+}
+
+/// Where the color popup opens — to the LEFT of the tool panel, top-aligned
+/// with the Color button, falling back to the right side if the left clips.
+fn palette_popup_origin(win_w: usize, panel_origin: (i32, i32)) -> (i32, i32) {
+    let (pw, _ph) = palette_popup_dims();
+    let mut x = panel_origin.0 - pw - 5;
+    let y     = panel_origin.1;
+    if x < 0 {
+        let (tw, _) = tool_panel_dims();
+        x = panel_origin.0 + tw + 5;
+        if x + pw > win_w as i32 { x = (win_w as i32) - pw - 5; }
+    }
+    (x.max(0), y.max(0))
+}
+
+fn palette_popup_swatch_rect(origin: (i32, i32), idx: i32) -> (i32, i32, i32, i32) {
+    let row = idx / PALETTE_COLS;
+    let col = idx % PALETTE_COLS;
+    let grid_y0 = origin.1 + PALETTE_PAD + PALETTE_HEADER + PALETTE_HEADER_GAP;
+    let x = origin.0 + PALETTE_PAD + col * (PALETTE_SWATCH + PANEL_GAP);
+    let y = grid_y0 + row * (PALETTE_SWATCH + PANEL_GAP);
+    (x, y, x + PALETTE_SWATCH, y + PALETTE_SWATCH)
+}
+
+fn palette_popup_hit(origin: (i32, i32), (cx, cy): (i32, i32)) -> Option<usize> {
+    for i in 0..16 {
+        let (x0, y0, x1, y1) = palette_popup_swatch_rect(origin, i as i32);
+        if cx >= x0 && cx < x1 && cy >= y0 && cy < y1 { return Some(i); }
+    }
+    None
+}
+
+fn palette_popup_in(origin: (i32, i32), (cx, cy): (i32, i32)) -> bool {
+    let (pw, ph) = palette_popup_dims();
+    cx >= origin.0 && cx < origin.0 + pw && cy >= origin.1 && cy < origin.1 + ph
+}
+
+// ── drawing ─────────────────────────────────────────────────────────────────
+
+fn draw_tool_panel(
+    buf:        &mut [u32],
+    win_w:      usize,
+    win_h:      usize,
+    sel:        (i32, i32, i32, i32),
+    active:     Tool,
+    swatch:     kashot_core::color::Rgba,
+    thickness:  f32,
 ) {
     const BG:         u32 = 0x00_22_22_24;
     const BTN:        u32 = 0x00_2E_2E_32;
     const BTN_ACTIVE: u32 = 0x00_64_95_ED;
     const TEXT:       u32 = 0x00_E8_E8_EC;
+    const DIVIDER:    u32 = 0x00_44_44_48;
 
-    let (ox, oy) = toolbar_origin(win_w);
-    let h_total  = TOOLBAR_BTN + TOOLBAR_PAD * 2;
-    let total    = toolbar_total_w();
+    let (ox, oy) = tool_panel_origin(win_w, win_h, sel);
+    let (pw, ph) = tool_panel_dims();
+    draw_rounded_rect(buf, win_w, win_h, ox, oy, ox + pw, oy + ph, PANEL_RADIUS, BG);
 
-    draw_rounded_rect(buf, win_w, win_h, ox, oy, ox + total, oy + h_total, TOOLBAR_RADIUS, BG);
+    // Divider sits between buttons 8 (Pixelate) and 9 (Color).
+    let div_y = oy + PANEL_PAD + 9 * (PANEL_BTN + PANEL_GAP) + PANEL_GROUP_GAP;
+    draw_filled_rect(buf, win_w, win_h, ox + 6, div_y, ox + pw - 6, div_y + 1, DIVIDER);
 
-    for (i, t) in Tool::ALL.iter().enumerate() {
-        let (x0, y0, x1, y1) = toolbar_button_rect(win_w, i as i32);
-        let bg = if *t == active { BTN_ACTIVE } else { BTN };
+    for (i, b) in TOOL_PANEL_BUTTONS.iter().enumerate() {
+        let (x0, y0, x1, y1) = tool_panel_button_rect((ox, oy), i as i32);
+        let highlight = match b {
+            ToolPanelButton::Tool(t) => *t == active,
+            _ => false,
+        };
+        let bg = if highlight { BTN_ACTIVE } else { BTN };
         draw_rounded_rect(buf, win_w, win_h, x0, y0, x1, y1, 6, bg);
-        draw_tool_glyph(buf, win_w, win_h, x0, y0, x1, y1, *t, TEXT);
-    }
-
-    if let Some(active_idx) = Tool::ALL.iter().position(|t| *t == active) {
-        let (x0, _y0, x1, y1) = toolbar_button_rect(win_w, active_idx as i32);
-        let rgb = ((swatch.r as u32) << 16) | ((swatch.g as u32) << 8) | swatch.b as u32;
-        draw_filled_rect(buf, win_w, win_h, x0 + 4, y1 + 2, x1 - 4, y1 + 5, rgb);
-    }
-
-    // Thickness picker — 3 buttons to the right of the tool row, separated
-    // by `TOOLBAR_GROUP_GAP`. Each button shows a filled disc whose diameter
-    // matches the corresponding stroke width.
-    for i in 0..THICKNESSES.len() {
-        let (x0, y0, x1, y1) = thickness_button_rect(win_w, i as i32);
-        let is_active = (THICKNESSES[i] - thickness).abs() < 0.01;
-        let bg = if is_active { BTN_ACTIVE } else { BTN };
-        draw_rounded_rect(buf, win_w, win_h, x0, y0, x1, y1, 6, bg);
-        let cx = (x0 + x1) / 2;
-        let cy = (y0 + y1) / 2;
-        let r  = (THICKNESSES[i] as i32).max(1) + 2;
-        let mut surf = crate::painter::U32Surface { buf, stride: win_w as i32, height: win_h as i32 };
-        crate::painter::fill_disc(&mut surf, cx, cy, r, kashot_core::color::Rgba::WHITE);
-    }
-
-    // Color palette strip below the toolbar — 16 vivid swatches in a single
-    // row, click to switch the active stroke color. Centered under the
-    // toolbar background pill.
-    let pal = kashot_core::annotation::Palettes::get(0); // "Vivid"
-    let (px, py) = palette_strip_origin(win_w);
-    draw_rounded_rect(buf, win_w, win_h, px - 4, py - 4,
-                      px + PALETTE_SWATCH_W * 16 + 4, py + PALETTE_SWATCH_H + 4, 6, BG);
-    for i in 0..16 {
-        let c = pal.colors[i];
-        let rgb = ((c.r as u32) << 16) | ((c.g as u32) << 8) | c.b as u32;
-        let sx0 = px + (i as i32) * PALETTE_SWATCH_W;
-        let sx1 = sx0 + PALETTE_SWATCH_W - 1;
-        let sy0 = py;
-        let sy1 = py + PALETTE_SWATCH_H;
-        draw_filled_rect(buf, win_w, win_h, sx0, sy0, sx1, sy1, rgb);
-        // Highlight the currently active swatch with a 1-px white border.
-        if c.r == swatch.r && c.g == swatch.g && c.b == swatch.b {
-            draw_rect_border(buf, win_w, win_h, sx0, sy0, sx1, sy1, 0x00_FF_FF_FF);
+        match b {
+            ToolPanelButton::Tool(t)    => crate::icons::render_icon(buf, win_w, win_h, x0, y0, x1, y1, crate::icons::IconKind::Tool(*t), [232,232,236,255], None, thickness),
+            ToolPanelButton::Color      => crate::icons::render_icon(buf, win_w, win_h, x0, y0, x1, y1, crate::icons::IconKind::Color, [232,232,236,255], Some([swatch.r, swatch.g, swatch.b, 255]), thickness),
+            ToolPanelButton::Thickness  => crate::icons::render_icon(buf, win_w, win_h, x0, y0, x1, y1, crate::icons::IconKind::Thickness, [232,232,236,255], None, thickness),
+            ToolPanelButton::Undo       => crate::icons::render_icon(buf, win_w, win_h, x0, y0, x1, y1, crate::icons::IconKind::Undo, [232,232,236,255], None, thickness),
+            ToolPanelButton::Redo       => crate::icons::render_icon(buf, win_w, win_h, x0, y0, x1, y1, crate::icons::IconKind::Redo, [232,232,236,255], None, thickness),
         }
     }
 }
 
-const PALETTE_SWATCH_W: i32 = 22;
-const PALETTE_SWATCH_H: i32 = 14;
-const PALETTE_GAP_TOP:  i32 = 8;
+/// Sequential orange-neon halo around the tool-panel buttons, cycling
+/// top-to-bottom one button per second. Each button gets a brief glow
+/// window of ~0.85 s out of every (N × 1 s) cycle, where N is the number
+/// of buttons in `TOOL_PANEL_BUTTONS`. Halo is a 4-ring outer glow that
+/// fades with distance so the icon glyph stays readable through it.
+///
+/// Visual mirror of the website's `.tool-glow` CSS animation — same
+/// orange palette, same ~1 s active window, same slow loop.
+fn draw_tool_panel_glow(
+    buf:     &mut [u32],
+    win_w:   usize,
+    win_h:   usize,
+    sel:     (i32, i32, i32, i32),
+    elapsed: f32,
+) {
+    let n = TOOL_PANEL_BUTTONS.len() as f32;       // 13
+    let slot = 1.0_f32;                            // 1 second per button
+    let cycle = n * slot;                          // 13 s total
+    let t = elapsed.rem_euclid(cycle);
+    let active_idx = (t / slot).floor() as i32;
+    // Fraction-through-slot, 0..1.
+    let phase = (t - active_idx as f32 * slot) / slot;
+    // On for the first 85 % of the slot, off for the trailing 15 % so the
+    // glow has a visible "step" between buttons.
+    if phase > 0.85 { return; }
+    // Triangular envelope inside the on-window: rises fast, peaks ~mid,
+    // fades. Keeps the transition smooth at slot boundaries.
+    let env = if phase < 0.15 { phase / 0.15 }
+              else if phase < 0.55 { 1.0 }
+              else { ((0.85 - phase) / 0.30).max(0.0) };
+
+    let panel_origin = tool_panel_origin(win_w, win_h, sel);
+    let (x0, y0, x1, y1) = tool_panel_button_rect(panel_origin, active_idx);
+
+    // Orange-neon palette — matches the website's `.tool-glow` filter.
+    // Outer rings are progressively fainter so the halo reads as a soft
+    // glow rather than a hard frame around the button.
+    let orange_r: u32 = 0xFF;
+    let orange_g: u32 = 0x7A;
+    let orange_b: u32 = 0x1A;
+    let base_alpha = (210.0 * env).round().clamp(0.0, 255.0) as u32;
+    for ring in 0..6 {
+        let inset    = 1 + ring;
+        let layer_a  = (base_alpha / (1 + ring as u32 / 2)).min(255);
+        if layer_a == 0 { continue; }
+        let rx0 = x0 - inset;
+        let ry0 = y0 - inset;
+        let rx1 = x1 + inset - 1;
+        let ry1 = y1 + inset - 1;
+        blend_rect_outline(buf, win_w, win_h, rx0, ry0, rx1, ry1,
+                           orange_r, orange_g, orange_b, layer_a);
+    }
+}
+
+/// Square-wave flicker of a laser-green outline around the action panel,
+/// running for the first 3 s after the user finishes their selection. Square
+/// wave is much harder to ignore than a sine pulse — the eye locks onto the
+/// hard on/off transitions exactly the way a missed-call indicator does.
+///
+/// Layout: 3-pixel solid inner stroke + 5 progressively-fainter outer halo
+/// rings for the laser-glow silhouette. The flicker frequency (~6.5 Hz) is
+/// fast enough to read as a strobe but slow enough not to look like a render
+/// glitch. The pulse stops abruptly at t=3 s rather than fading — the caller
+/// clears `panel_pulse_started` the moment elapsed crosses the threshold so
+/// the next frame draws no pulse at all.
+fn draw_action_panel_pulse(
+    buf:   &mut [u32],
+    win_w: usize,
+    win_h: usize,
+    sel:   (i32, i32, i32, i32),
+    elapsed: f32,
+) {
+    if elapsed >= 3.0 { return; }
+    let origin = action_panel_origin(win_w, win_h, sel);
+    let (pw, ph) = action_panel_dims();
+
+    // Cycle: ~150 ms total; 60% ON, 40% OFF. Solid on the bright phase, faint
+    // halo on the dim phase so the panel is always findable even mid-blink.
+    let cycle  = (elapsed * 6.5).fract();
+    let bright = cycle < 0.6;
+    let stroke_a: u32 = if bright { 240 } else { 40 };
+    let halo_a:   u32 = if bright { 130 } else { 22 };
+
+    let laser_r: u32 = 0x00;
+    let laser_g: u32 = 0xff;
+    let laser_b: u32 = 0x95;
+
+    // 3-px solid stroke directly hugging the panel.
+    for inset in 1..=3 {
+        let x0 = origin.0 - inset;
+        let y0 = origin.1 - inset;
+        let x1 = origin.0 + pw + inset;
+        let y1 = origin.1 + ph + inset;
+        blend_rect_outline(buf, win_w, win_h, x0, y0, x1, y1,
+                           laser_r, laser_g, laser_b, stroke_a);
+    }
+    // 5-ring outer halo — each ring is fainter than the last.
+    for ring in 0..5 {
+        let inset    = 4 + ring;
+        let layer_a  = (halo_a / (1 + ring as u32)).min(255);
+        let x0       = origin.0 - inset;
+        let y0       = origin.1 - inset;
+        let x1       = origin.0 + pw + inset;
+        let y1       = origin.1 + ph + inset;
+        blend_rect_outline(buf, win_w, win_h, x0, y0, x1, y1,
+                           laser_r, laser_g, laser_b, layer_a);
+    }
+}
+
+/// Source-over blend a 1-px rectangular outline of `(r,g,b,a)` onto the
+/// XRGB softbuffer. Clipped at the buffer bounds.
+fn blend_rect_outline(
+    buf: &mut [u32], win_w: usize, win_h: usize,
+    x0: i32, y0: i32, x1: i32, y1: i32,
+    r: u32, g: u32, b: u32, a: u32,
+) {
+    if a == 0 { return; }
+    let inv = 255 - a;
+    let plot = |buf: &mut [u32], x: i32, y: i32| {
+        if x < 0 || y < 0 { return; }
+        let (xu, yu) = (x as usize, y as usize);
+        if xu >= win_w || yu >= win_h { return; }
+        let idx = yu * win_w + xu;
+        let cur = buf[idx];
+        let dr  = (cur >> 16) & 0xFF;
+        let dg  = (cur >>  8) & 0xFF;
+        let db  =  cur        & 0xFF;
+        let nr  = ((r * a + dr * inv + 127) / 255).min(255);
+        let ng  = ((g * a + dg * inv + 127) / 255).min(255);
+        let nb  = ((b * a + db * inv + 127) / 255).min(255);
+        buf[idx] = (nr << 16) | (ng << 8) | nb;
+    };
+    for x in x0..=x1 { plot(buf, x, y0); plot(buf, x, y1); }
+    for y in y0..=y1 { plot(buf, x0, y); plot(buf, x1, y); }
+}
+
+fn draw_action_panel(
+    buf:   &mut [u32],
+    win_w: usize,
+    win_h: usize,
+    sel:   (i32, i32, i32, i32),
+) {
+    const BG:   u32 = 0x00_22_22_24;
+    const BTN:  u32 = 0x00_2E_2E_32;
+    const TEXT: u32 = 0x00_E8_E8_EC;
+
+    let origin = action_panel_origin(win_w, win_h, sel);
+    let (pw, ph) = action_panel_dims();
+    draw_rounded_rect(buf, win_w, win_h, origin.0, origin.1, origin.0 + pw, origin.1 + ph, PANEL_RADIUS, BG);
+
+    for (i, b) in ACTION_BUTTONS.iter().enumerate() {
+        let (x0, y0, x1, y1) = action_panel_button_rect(origin, i as i32);
+        draw_rounded_rect(buf, win_w, win_h, x0, y0, x1, y1, 6, BTN);
+        match b {
+            ActionButton::Pin   => crate::icons::render_icon(buf, win_w, win_h, x0, y0, x1, y1, crate::icons::IconKind::Pin,   [232,232,236,255], None, 4.0),
+            ActionButton::Copy  => crate::icons::render_icon(buf, win_w, win_h, x0, y0, x1, y1, crate::icons::IconKind::Copy,  [232,232,236,255], None, 4.0),
+            ActionButton::Save  => crate::icons::render_icon(buf, win_w, win_h, x0, y0, x1, y1, crate::icons::IconKind::Save,  [232,232,236,255], None, 4.0),
+            ActionButton::Close => crate::icons::render_icon(buf, win_w, win_h, x0, y0, x1, y1, crate::icons::IconKind::Close, [232,232,236,255], None, 4.0),
+        }
+    }
+}
+
+fn draw_palette_popup(
+    buf:           &mut [u32],
+    win_w:         usize,
+    win_h:         usize,
+    panel_origin:  (i32, i32),
+    active_color:  kashot_core::color::Rgba,
+    palette_index: usize,
+) {
+    const BG:        u32 = 0x00_22_22_24;
+    const HEADER_BG: u32 = 0x00_2E_2E_32;
+
+    let origin = palette_popup_origin(win_w, panel_origin);
+    let (pw, ph) = palette_popup_dims();
+    draw_rounded_rect(buf, win_w, win_h, origin.0, origin.1, origin.0 + pw, origin.1 + ph, PANEL_RADIUS, BG);
+
+    // Header — prev arrow + palette name + next arrow.
+    let prev = palette_header_button_rect(origin, true);
+    let next = palette_header_button_rect(origin, false);
+    draw_rounded_rect(buf, win_w, win_h, prev.0, prev.1, prev.2, prev.3, 4, HEADER_BG);
+    draw_rounded_rect(buf, win_w, win_h, next.0, next.1, next.2, next.3, 4, HEADER_BG);
+    {
+        // Center label between the two buttons, same height.
+        let lx0 = prev.2 + 4;
+        let lx1 = next.0 - 4;
+        let ly0 = prev.1;
+        let ly1 = prev.3;
+        draw_rounded_rect(buf, win_w, win_h, lx0, ly0, lx1, ly1, 4, HEADER_BG);
+        let name = palette_name(palette_index);
+        let scale = 2;
+        let text_w = crate::bitmap_font::measure(name, scale);
+        let text_x = (lx0 + lx1) / 2 - text_w / 2;
+        let text_y = (ly0 + ly1) / 2 - (crate::bitmap_font::GLYPH_H * scale) / 2;
+        let mut surf = crate::painter::U32Surface { buf, stride: win_w as i32, height: win_h as i32 };
+        crate::painter::draw_text(&mut surf, text_x, text_y, scale, name, kashot_core::color::Rgba::WHITE);
+        // Arrow glyphs.
+        draw_chevron(buf, win_w, win_h, prev.0, prev.1, prev.2, prev.3, true);
+        draw_chevron(buf, win_w, win_h, next.0, next.1, next.2, next.3, false);
+    }
+
+    // Swatches.
+    let pal = kashot_core::annotation::Palettes::get(palette_index);
+    for i in 0..16usize {
+        let c = pal.colors[i];
+        let (x0, y0, x1, y1) = palette_popup_swatch_rect(origin, i as i32);
+        let rgb = ((c.r as u32) << 16) | ((c.g as u32) << 8) | c.b as u32;
+        draw_filled_rect(buf, win_w, win_h, x0, y0, x1, y1, rgb);
+        let selected = c.r == active_color.r && c.g == active_color.g && c.b == active_color.b;
+        let bw = if selected { 0x00_FF_FF_FF } else { 0x00_50_50_54 };
+        draw_rect_border(buf, win_w, win_h, x0, y0, x1, y1, bw);
+        if selected {
+            // Double border to make selection unmistakable.
+            draw_rect_border(buf, win_w, win_h, x0 + 1, y0 + 1, x1 - 1, y1 - 1, 0x00_FF_FF_FF);
+        }
+    }
+}
+
+fn palette_name(idx: usize) -> &'static str {
+    match idx % PALETTE_COUNT {
+        0 => "Vivid",
+        1 => "Highlighter",
+        2 => "Pastel",
+        _ => "Pro",
+    }
+}
+
+fn draw_chevron(
+    buf: &mut [u32], stride: usize, height: usize,
+    x0: i32, y0: i32, x1: i32, y1: i32, left: bool,
+) {
+    let cx = (x0 + x1) / 2;
+    let cy = (y0 + y1) / 2;
+    let line = |buf: &mut [u32], mut sx0: i32, mut sy0: i32, ex: i32, ey: i32| {
+        let dx =  (ex - sx0).abs();
+        let dy = -(ey - sy0).abs();
+        let stepx = if sx0 < ex { 1 } else { -1 };
+        let stepy = if sy0 < ey { 1 } else { -1 };
+        let mut err = dx + dy;
+        loop {
+            if sx0 >= 0 && (sx0 as usize) < stride && sy0 >= 0 && (sy0 as usize) < height {
+                buf[sy0 as usize * stride + sx0 as usize] = 0x00_E8_E8_EC;
+            }
+            if sx0 == ex && sy0 == ey { break; }
+            let e2 = 2 * err;
+            if e2 >= dy { err += dy; sx0 += stepx; }
+            if e2 <= dx { err += dx; sy0 += stepy; }
+        }
+    };
+    if left {
+        line(buf, cx + 4, cy - 6, cx - 4, cy);
+        line(buf, cx - 4, cy,     cx + 4, cy + 6);
+    } else {
+        line(buf, cx - 4, cy - 6, cx + 4, cy);
+        line(buf, cx + 4, cy,     cx - 4, cy + 6);
+    }
+}
+
+/// Returns Some(true) if the prev-arrow button was hit, Some(false) if next.
+fn palette_header_hit(origin: (i32, i32), (cx, cy): (i32, i32)) -> Option<bool> {
+    let (px0, py0, px1, py1) = palette_header_button_rect(origin, true);
+    if cx >= px0 && cx < px1 && cy >= py0 && cy < py1 { return Some(true); }
+    let (nx0, ny0, nx1, ny1) = palette_header_button_rect(origin, false);
+    if cx >= nx0 && cx < nx1 && cy >= ny0 && cy < ny1 { return Some(false); }
+    None
+}
+
+/// Force focus + keyboard grab onto the given X11 window XID. Without this
+/// Cinnamon ignores winit's `_NET_ACTIVE_WINDOW` request and never routes
+/// KeyPress events to us, so the Text tool sees nothing.
+#[cfg(target_os = "linux")]
+fn force_x11_focus(xid: u32) -> anyhow::Result<()> {
+    use x11rb::connection::Connection;
+    use x11rb::protocol::xproto::{ConnectionExt, GrabMode, InputFocus};
+    let (conn, _screen) = x11rb::connect(None)
+        .map_err(|e| anyhow!("x11rb::connect: {e}"))?;
+    conn.set_input_focus(InputFocus::PARENT, xid, x11rb::CURRENT_TIME)
+        .map_err(|e| anyhow!("set_input_focus: {e}"))?
+        .check()
+        .map_err(|e| anyhow!("set_input_focus check: {e}"))?;
+    conn.grab_keyboard(false, xid, x11rb::CURRENT_TIME, GrabMode::ASYNC, GrabMode::ASYNC)
+        .map_err(|e| anyhow!("grab_keyboard: {e}"))?
+        .reply()
+        .map_err(|e| anyhow!("grab_keyboard reply: {e}"))?;
+    conn.flush().map_err(|e| anyhow!("flush: {e}"))?;
+    Ok(())
+}
+
+/// Drop the X11 keyboard grab when the overlay closes so the next focused
+/// app gets typed input back.
+#[cfg(target_os = "linux")]
+fn release_x11_focus() {
+    use x11rb::connection::Connection;
+    use x11rb::protocol::xproto::ConnectionExt;
+    let Ok((conn, _)) = x11rb::connect(None) else { return; };
+    let _ = conn.ungrab_keyboard(x11rb::CURRENT_TIME);
+    let _ = conn.flush();
+}
+
+/// Small dark pill carrying a button label, drawn near where the user's
+/// cursor is hovering. Uses the in-tree 5×7 bitmap font at scale 2 so it
+/// stays consistent with the dimension chip and palette header.
+fn draw_tooltip(
+    buf:   &mut [u32],
+    win_w: usize,
+    win_h: usize,
+    label: &str,
+    x:     i32,
+    y:     i32,
+) {
+    let scale = 2;
+    let text_w = crate::bitmap_font::measure(label, scale);
+    let text_h = crate::bitmap_font::GLYPH_H * scale;
+    let pad_x  = 6;
+    let pad_y  = 4;
+    let chip_w = text_w + pad_x * 2;
+    let chip_h = text_h + pad_y * 2;
+    // Auto-flip so the chip stays on screen.
+    let mut x0 = x;
+    let mut y0 = y;
+    if x0 + chip_w > win_w as i32 { x0 = (win_w as i32) - chip_w - 4; }
+    if y0 + chip_h > win_h as i32 { y0 = (win_h as i32) - chip_h - 4; }
+    if x0 < 0 { x0 = 4; }
+    if y0 < 0 { y0 = 4; }
+    let x1 = x0 + chip_w;
+    let y1 = y0 + chip_h;
+    draw_filled_rect(buf, win_w, win_h, x0, y0, x1, y1, 0x00_10_10_14);
+    draw_rect_border(buf, win_w, win_h, x0, y0, x1, y1, 0x00_4A_4A_50);
+    let mut surf = crate::painter::U32Surface { buf, stride: win_w as i32, height: win_h as i32 };
+    crate::painter::draw_text(&mut surf, x0 + pad_x, y0 + pad_y, scale, label, kashot_core::color::Rgba::WHITE);
+}
 
 /// Magnifier lens. Samples the original screenshot in a (2·R+1)² window
 /// around the cursor and draws each source pixel as a `MAG_ZOOM`-sized
@@ -927,22 +1670,6 @@ fn draw_magnifier(
     let red = 0x00_DC_26_26;
     draw_filled_rect(buf, win_w, win_h, inner_x, cy, inner_x + MAG_SIZE, cy + 1, red);
     draw_filled_rect(buf, win_w, win_h, cx, inner_y, cx + 1, inner_y + MAG_SIZE, red);
-}
-
-fn palette_strip_origin(win_w: usize) -> (i32, i32) {
-    let strip_w = PALETTE_SWATCH_W * 16;
-    let x = ((win_w as i32) - strip_w) / 2;
-    let (_ox, oy) = toolbar_origin(win_w);
-    let toolbar_bottom = oy + TOOLBAR_BTN + TOOLBAR_PAD * 2;
-    (x.max(0), toolbar_bottom + PALETTE_GAP_TOP)
-}
-
-fn palette_hit(win_w: usize, (cx, cy): (i32, i32)) -> Option<kashot_core::color::Rgba> {
-    let (px, py) = palette_strip_origin(win_w);
-    if cy < py || cy >= py + PALETTE_SWATCH_H { return None; }
-    if cx < px || cx >= px + PALETTE_SWATCH_W * 16 { return None; }
-    let idx = ((cx - px) / PALETTE_SWATCH_W) as usize;
-    Some(kashot_core::annotation::Palettes::get(0).colors[idx])
 }
 
 // ── helpers ──────────────────────────────────────────────────────────────
@@ -1074,6 +1801,37 @@ fn draw_x_glyph(surf: &mut crate::painter::U32Surface, x: i32, y: i32, scale: i3
     crate::painter::line(surf, x + w - 1, y + scale, x, y + h - scale - 1, scale as f32, Rgba::WHITE);
 }
 
+/// 1-px dashed rectangle border. Used as a subtle text-area indicator
+/// while the Text tool is in TextInput state — vanishes the moment the
+/// user commits because compose_final / save / copy / pin all snapshot
+/// the bitmap without re-running this render pass.
+fn draw_dashed_border(
+    buf: &mut [u32], stride: usize, height: usize,
+    x0: i32, y0: i32, x1: i32, y1: i32, rgb: u32,
+) {
+    let xa = x0.max(0) as usize;
+    let xb = (x1.min(stride as i32) as usize).max(xa);
+    let ya = y0.max(0) as usize;
+    let yb = (y1.min(height as i32) as usize).max(ya);
+    if xa >= stride || ya >= height || xa == xb || ya == yb { return; }
+    // 3-on-3-off dash pattern.
+    let dash = |i: usize| (i / 3) & 1 == 0;
+    for x in xa..xb.min(stride) {
+        if dash(x) {
+            buf[ya * stride + x] = rgb;
+            let by = (yb - 1).min(height - 1);
+            buf[by * stride + x] = rgb;
+        }
+    }
+    for y in ya..yb.min(height) {
+        if dash(y) {
+            buf[y * stride + xa] = rgb;
+            let bx = (xb - 1).min(stride - 1);
+            buf[y * stride + bx] = rgb;
+        }
+    }
+}
+
 fn draw_rect_border(
     buf: &mut [u32], stride: usize, height: usize,
     x0: i32, y0: i32, x1: i32, y1: i32, rgb: u32,
@@ -1139,105 +1897,3 @@ fn draw_diagonal_stripe(
     }
 }
 
-/// Draw a procedural glyph for each tool — same convention the C# overlay
-/// uses (`IconPen`, `IconArrow`, ...). These are intentionally minimalist:
-/// a few line strokes inside the button bounds. A future slice can swap
-/// these for actual SVG icons if we want to.
-fn draw_tool_glyph(
-    buf: &mut [u32], stride: usize, height: usize,
-    x0: i32, y0: i32, x1: i32, y1: i32, tool: Tool, rgb: u32,
-) {
-    let (cx, cy) = ((x0 + x1) / 2, (y0 + y1) / 2);
-    let pad = 8;
-    let ix0 = x0 + pad;
-    let iy0 = y0 + pad;
-    let ix1 = x1 - pad;
-    let iy1 = y1 - pad;
-    let stamp = |buf: &mut [u32], x: i32, y: i32| {
-        if x >= 0 && (x as usize) < stride && y >= 0 && (y as usize) < height {
-            buf[y as usize * stride + x as usize] = rgb;
-        }
-    };
-    let line2 = |buf: &mut [u32], a: (i32, i32), b: (i32, i32)| {
-        // Naive thin Bresenham — fine for icon-sized glyphs.
-        let mut x0 = a.0; let mut y0 = a.1;
-        let x1 = b.0; let y1 = b.1;
-        let dx =  (x1 - x0).abs(); let dy = -(y1 - y0).abs();
-        let sx = if x0 < x1 { 1 } else { -1 };
-        let sy = if y0 < y1 { 1 } else { -1 };
-        let mut err = dx + dy;
-        loop {
-            stamp(buf, x0, y0);
-            if x0 == x1 && y0 == y1 { break; }
-            let e2 = 2 * err;
-            if e2 >= dy { err += dy; x0 += sx; }
-            if e2 <= dx { err += dx; y0 += sy; }
-        }
-    };
-    match tool {
-        Tool::Pen       => line2(buf, (ix0, iy1), (ix1, iy0)),
-        Tool::Line      => line2(buf, (ix0, iy1), (ix1, iy0)),
-        Tool::Arrow     => {
-            line2(buf, (ix0, iy1), (ix1, iy0));
-            line2(buf, (ix1, iy0), (ix1 - 6, iy0));
-            line2(buf, (ix1, iy0), (ix1, iy0 + 6));
-        }
-        Tool::Rectangle => {
-            line2(buf, (ix0, iy0), (ix1, iy0));
-            line2(buf, (ix1, iy0), (ix1, iy1));
-            line2(buf, (ix1, iy1), (ix0, iy1));
-            line2(buf, (ix0, iy1), (ix0, iy0));
-        }
-        Tool::Ellipse   => {
-            // 64-step parametric circle.
-            let rx = (ix1 - ix0) / 2;
-            let ry = (iy1 - iy0) / 2;
-            let mut prev = (cx + rx, cy);
-            for k in 1..=64 {
-                let t = (k as f32) / 64.0 * std::f32::consts::TAU;
-                let p = (cx + ((rx as f32) * t.cos()) as i32, cy + ((ry as f32) * t.sin()) as i32);
-                line2(buf, prev, p);
-                prev = p;
-            }
-        }
-        Tool::Marker    => {
-            line2(buf, (ix0, iy1), (ix1, iy0));
-            line2(buf, (ix0, iy1 - 1), (ix1, iy0 - 1));
-            line2(buf, (ix0, iy1 - 2), (ix1, iy0 - 2));
-        }
-        Tool::Text      => {
-            line2(buf, (ix0, iy0), (ix1, iy0));
-            line2(buf, (cx,  iy0), (cx,  iy1));
-        }
-        Tool::Step      => {
-            let rx = (ix1 - ix0) / 2;
-            let ry = (iy1 - iy0) / 2;
-            let mut prev = (cx + rx, cy);
-            for k in 1..=48 {
-                let t = (k as f32) / 48.0 * std::f32::consts::TAU;
-                let p = (cx + ((rx as f32) * t.cos()) as i32, cy + ((ry as f32) * t.sin()) as i32);
-                line2(buf, prev, p);
-                prev = p;
-            }
-            line2(buf, (cx - 1, cy + 3), (cx + 1, cy + 3));
-            line2(buf, (cx - 2, cy - 3), (cx + 2, cy - 3));
-        }
-        Tool::Pixelate  => {
-            for gy in 0..3 {
-                for gx in 0..3 {
-                    let bx = ix0 + gx * (ix1 - ix0) / 3;
-                    let by = iy0 + gy * (iy1 - iy0) / 3;
-                    let bw = (ix1 - ix0) / 3;
-                    let bh = (iy1 - iy0) / 3;
-                    if (gx + gy) & 1 == 0 {
-                        for yy in by..by + bh {
-                            for xx in bx..bx + bw {
-                                stamp(buf, xx, yy);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
