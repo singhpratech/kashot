@@ -6,6 +6,11 @@ authors     = { workspace = true }
 license     = { workspace = true }
 repository  = { workspace = true }
 description = "Kashot — native cross-platform screenshot tool"
+# Build-time hook that bundles ffmpeg next to the kashot binary so the
+# Convert-video dialog works on machines without a system ffmpeg. Honors
+# `KASHOT_FFMPEG=/path/to/ffmpeg` to override the auto-discovered binary
+# (set this in CI to a static build for shipping).
+build       = "build.rs"
 
 [[bin]]
 name = "kashot"
