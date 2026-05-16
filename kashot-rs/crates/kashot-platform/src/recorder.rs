@@ -13,12 +13,16 @@
 //!
 //! Wayland: not supported here yet — proper screen capture on Wayland goes
 //! through `xdg-desktop-portal` (PipeWire), which is a substantial integration
-//! and queued separately.
+//! and queued separately. Until that lands, `start()` detects a Wayland
+//! session up-front (via `XDG_SESSION_TYPE` / `WAYLAND_DISPLAY`) and returns
+//! a clear error rather than spawning ffmpeg into a black `-f x11grab` capture
+//! that XWayland silently produces.
 //!
 //! Stop is graceful per platform: write `q` to `ffmpeg`'s stdin (Linux) or
 //! send SIGINT to `screencapture` (macOS) so the MP4 moov atom is finalized.
-//! `Drop` falls back to `child.kill()` — the file may be unplayable in that
-//! case but the process won't leak.
+//! `Drop` polls `try_wait` for up to ~2 s after the graceful signal — only if
+//! the child is still alive at that point do we fall back to SIGKILL, so the
+//! file is playable on every normal teardown.
 
 use crate::{Error, Result};
 use std::path::{Path, PathBuf};
@@ -88,11 +92,18 @@ impl Recorder {
 impl Drop for Recorder {
     fn drop(&mut self) {
         if let Some(mut c) = self.child.take() {
-            // Best-effort graceful first; SIGKILL if the process doesn't
-            // exit promptly. We can't sit forever in Drop so the wait is
-            // whatever the OS does with kill().
             graceful_signal(&mut c);
-            let _ = c.kill();
+            let mut exited = false;
+            for _ in 0..20 {
+                match c.try_wait() {
+                    Ok(Some(_)) => { exited = true; break; }
+                    Ok(None)    => std::thread::sleep(std::time::Duration::from_millis(100)),
+                    Err(_)      => break,
+                }
+            }
+            if !exited {
+                let _ = c.kill();
+            }
             let _ = c.wait();
         }
     }
@@ -102,6 +113,22 @@ impl Drop for Recorder {
 
 #[cfg(target_os = "linux")]
 fn spawn_recorder(output: &Path, options: RecordingOptions) -> Result<Child> {
+    // Reject Wayland up-front — `-f x11grab` against XWayland silently
+    // captures only XWayland clients (typically a black frame), and on
+    // Wayland-only sessions DISPLAY may be unset entirely.
+    let wayland_typed = std::env::var("XDG_SESSION_TYPE")
+        .map(|s| s.eq_ignore_ascii_case("wayland"))
+        .unwrap_or(false);
+    let wayland_socket = std::env::var("WAYLAND_DISPLAY")
+        .map(|s| !s.is_empty())
+        .unwrap_or(false);
+    if wayland_typed || wayland_socket {
+        return Err(Error::Recording(
+            "screen recording on Wayland isn't wired up yet \
+             (xdg-desktop-portal / PipeWire path is planned — see PLAN.md R10). \
+             To record now, log into an X11 / Xorg session from your display manager.".into()
+        ));
+    }
     let display = std::env::var("DISPLAY").unwrap_or_else(|_| ":0".into());
     let path = output.to_str().ok_or_else(||
         Error::Recording("non-UTF-8 output path".into()))?;
