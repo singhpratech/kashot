@@ -22,6 +22,20 @@ Drag a region. Annotate. Save, copy, or pin. That's it.
 
 ---
 
+## The story
+
+Three machines. Three different screenshot tools. Three different sets of habits.
+
+On **Windows**, Snipping Tool is fine but its annotation story is "scribble in MS Paint." Greenshot feels frozen in 2014. ShareX has a thousand options I'd never use. On **Linux**, every native option — Flameshot, Shutter, ksnip, GNOME Screenshot — is either heavyweight, opinionated, or missing the basics. On **macOS**, the built-in capture is genuinely good, but nothing else matches it on the other two operating systems I use every day.
+
+I wanted **one** screenshot tool. Same hotkey, same overlay, same shortcuts, same JSON settings — on every machine I touch.
+
+So I started building. The first cut was a Windows-only C# / WinForms app, because that's where I needed it most and shipping fast mattered more than being cross-platform on day one. Once the workflow felt right — drag a region, annotate with one of nine tools, save / copy / pin, get back to work — I began porting it to **Rust** so Linux and macOS could have the same thing natively. No Electron. No Wine. No bundled browser. No accounts. No telemetry.
+
+That's Kashot. Lightweight. One workflow. Everywhere.
+
+— [PrateekSingh](https://github.com/singhpratech)
+
 ## Why Kashot
 
 Every screenshot tool does too much. Kashot does one thing well, on every platform.
