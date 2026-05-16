@@ -52,7 +52,7 @@ pub fn run() -> Result<()> {
         Err(e) => { eprintln!("hotkey init failed: {e} — use tray menu to capture"); None }
     };
 
-    eprintln!("Kashot is running. Press {} or use the tray menu to capture.",
+    eprintln!("KAShot is running. Press {} or use the tray menu to capture.",
         describe_hotkey(&settings));
 
     struct TrayApp {
@@ -261,7 +261,7 @@ pub fn run() -> Result<()> {
                         Ok(v)  => self.recording_view = Some(v),
                         Err(e) => eprintln!("Recording indicator failed: {e}"),
                     }
-                    notify("Kashot — recording started",
+                    notify("KAShot — recording started",
                         &format!("{audio_label}\nSaving to {}\n\nClick the floating STOP button or use the tray menu to finish.",
                             out.display()),
                         true);
@@ -270,7 +270,7 @@ pub fn run() -> Result<()> {
                     eprintln!("Recording failed to start: {e}");
                     rfd::MessageDialog::new()
                         .set_level(rfd::MessageLevel::Error)
-                        .set_title("Kashot — recording failed")
+                        .set_title("KAShot — recording failed")
                         .set_description(format!("{e}"))
                         .show();
                 }
@@ -284,7 +284,7 @@ pub fn run() -> Result<()> {
                 Ok(path) => {
                     eprintln!("Saved recording {}", path.display());
                     if let Some(t) = &self.tray { t.set_recording(false); }
-                    notify("Kashot — recording saved",
+                    notify("KAShot — recording saved",
                         &format!("{}", path.display()),
                         false);
                 }
@@ -693,7 +693,7 @@ fn vk_name(vk: u32) -> &'static str {
 }
 
 fn tray_tooltip(s: &AppSettings) -> String {
-    format!("Kashot — press {} to capture", describe_hotkey(s))
+    format!("KAShot — press {} to capture", describe_hotkey(s))
 }
 
 /// Open `url` in the user's default browser. Best-effort — failures are
@@ -708,7 +708,7 @@ fn notify(title: &str, body: &str, urgent: bool) {
     #[cfg(target_os = "linux")]
     {
         let _ = std::process::Command::new("notify-send")
-            .args(["-a", "Kashot", "-t", timeout, title, body])
+            .args(["-a", "KAShot", "-t", timeout, title, body])
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .spawn();

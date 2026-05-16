@@ -70,7 +70,7 @@ pub enum TrayEvent {
 
 impl Tray {
     /// Build the tray icon with the default Kashot menu. `tooltip` shows the
-    /// current hotkey, e.g. `"Kashot — press PrintScreen to capture"`.
+    /// current hotkey, e.g. `"KAShot — press PrintScreen to capture"`.
     ///
     /// On Linux this calls `gtk::init()` first — the tray-icon backend uses
     /// libayatana-appindicator which requires GTK to be initialized on the

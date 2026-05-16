@@ -244,7 +244,7 @@ impl Overlay {
         let primary = loop_target.primary_monitor()
             .or_else(|| loop_target.available_monitors().next());
         let attrs = WindowAttributes::default()
-            .with_title("Kashot")
+            .with_title("KAShot")
             .with_decorations(false)
             .with_resizable(false)
             .with_inner_size(monitor_size)
