@@ -6,22 +6,35 @@
 //! from the iced subscription that owns the loop.
 
 use crate::{Error, Result};
-use tray_icon::menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem, Submenu};
+use tray_icon::menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem};
 use tray_icon::{Icon as TrayIconImage, TrayIcon, TrayIconBuilder};
 
 pub struct Tray {
     _icon: TrayIcon,
-    pub capture_id:  tray_icon::menu::MenuId,
-    pub delay3_id:   tray_icon::menu::MenuId,
-    pub delay5_id:   tray_icon::menu::MenuId,
-    pub delay10_id:  tray_icon::menu::MenuId,
-    pub record_id:   tray_icon::menu::MenuId,
-    pub stop_rec_id: tray_icon::menu::MenuId,
-    pub settings_id: tray_icon::menu::MenuId,
-    pub about_id:    tray_icon::menu::MenuId,
-    pub exit_id:     tray_icon::menu::MenuId,
-    record_item:     MenuItem,
-    stop_rec_item:   MenuItem,
+    pub capture_id:    tray_icon::menu::MenuId,
+    pub delay3_id:     tray_icon::menu::MenuId,
+    pub delay5_id:     tray_icon::menu::MenuId,
+    pub delay10_id:    tray_icon::menu::MenuId,
+    pub cancel_id:     tray_icon::menu::MenuId,
+    pub rec_none_id:   tray_icon::menu::MenuId,
+    pub rec_mic_id:    tray_icon::menu::MenuId,
+    pub rec_sys_id:    tray_icon::menu::MenuId,
+    pub rec_both_id:   tray_icon::menu::MenuId,
+    pub stop_rec_id:   tray_icon::menu::MenuId,
+    pub open_folder_id:tray_icon::menu::MenuId,
+    pub open_recs_id:  tray_icon::menu::MenuId,
+    pub settings_id:   tray_icon::menu::MenuId,
+    pub about_id:      tray_icon::menu::MenuId,
+    pub updates_id:    tray_icon::menu::MenuId,
+    pub convert_img_id: tray_icon::menu::MenuId,
+    pub convert_vid_id: tray_icon::menu::MenuId,
+    pub exit_id:       tray_icon::menu::MenuId,
+    rec_none_item:     MenuItem,
+    rec_mic_item:      MenuItem,
+    rec_sys_item:      MenuItem,
+    rec_both_item:     MenuItem,
+    stop_rec_item:     MenuItem,
+    cancel_item:       MenuItem,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -31,16 +44,33 @@ pub enum TrayEvent {
     /// Capture after N seconds. Lets the user dismiss menus, position
     /// windows, etc. before the screenshot fires.
     CaptureDelayed(u32),
-    StartRecording,
+    /// Cancel the in-flight delay capture. Polled during the delay loop —
+    /// resets `_capturing` and skips the screenshot.
+    CancelPending,
+    /// Begin recording with the given audio sources mixed in.
+    StartRecording(crate::recorder::RecordingOptions),
     StopRecording,
+    /// Open the configured screenshot save folder in the user's default
+    /// file manager. Mirrors C# TrayContext "Open Save Folder".
+    OpenSaveFolder,
+    /// Open the recordings folder (typically `~/Videos`).
+    OpenRecordingsFolder,
     Settings,
     About,
+    /// Open the GitHub Releases page so the user can grab the latest build.
+    /// Mirrors C# TrayContext "Check for updates".
+    CheckForUpdates,
+    /// Open the themed "Convert image" dialog (PNG ↔ JPG ↔ WEBP ↔ BMP).
+    ConvertImage,
+    /// Open the themed "Convert video" dialog (MP4 → MOV / WEBM / MKV / GIF).
+    /// Requires a bundled or system-installed `ffmpeg` binary at runtime.
+    ConvertVideo,
     Exit,
 }
 
 impl Tray {
     /// Build the tray icon with the default Kashot menu. `tooltip` shows the
-    /// current hotkey, e.g. `"Kashot — press PrintScreen to capture"`.
+    /// current hotkey, e.g. `"KAShot — press PrintScreen to capture"`.
     ///
     /// On Linux this calls `gtk::init()` first — the tray-icon backend uses
     /// libayatana-appindicator which requires GTK to be initialized on the
@@ -55,47 +85,80 @@ impl Tray {
 
         let menu = Menu::new();
 
-        let capture   = MenuItem::new("Capture Screen",   true, None);
-        let record    = MenuItem::new("Record Screen",    true, None);
-        let stop_rec  = MenuItem::new("Stop Recording",   false, None);
-        let settings  = MenuItem::new("Settings…",        true, None);
-        let about     = MenuItem::new("About",            true, None);
-        let exit      = MenuItem::new("Exit",             true, None);
-        let sep_rec   = PredefinedMenuItem::separator();
-        let sep1      = PredefinedMenuItem::separator();
-        let sep2      = PredefinedMenuItem::separator();
+        // Flat menu — no submenus. Cinnamon / KDE / a few GNOME extensions
+        // mis-render scrollable submenus from `StatusNotifierItem` (items
+        // truncate or overlap), so we hoist every preset to a top-level row.
+        // The trade is a slightly taller menu in exchange for menu items that
+        // actually render correctly on every Linux DE we've tested.
+        // Labels intentionally kept tight — Cinnamon's DBusMenu renderer
+        // (and a few KDE plasmoids) truncates wider strings with an ellipsis.
+        // Every label here is one or two readable phrases at most.
+        let capture   = MenuItem::new("Capture",           true,  None);
+        let delay_3s  = MenuItem::new("Capture in 3s",     true,  None);
+        let delay_5s  = MenuItem::new("Capture in 5s",     true,  None);
+        let delay_10s = MenuItem::new("Capture in 10s",    true,  None);
+        // Disabled until a delay is actually in flight — the tray loop calls
+        // `set_pending` to enable/disable as `capture_after` enters/exits.
+        let cancel    = MenuItem::new("Cancel pending",    false, None);
 
-        // "Capture after delay…" submenu — three preset durations covering
-        // the common screenshot-tool delay use cases (open a menu, focus a
-        // window, dismiss a tooltip, etc.) without a free-form input UI.
-        let delay_menu = Submenu::new("Capture after delay", true);
-        let delay_3s   = MenuItem::new("3 seconds",  true, None);
-        let delay_5s   = MenuItem::new("5 seconds",  true, None);
-        let delay_10s  = MenuItem::new("10 seconds", true, None);
+        // Four record modes flattened to siblings. Plain text labels (no
+        // emoji) so they render identically on every backend.
+        let rec_none  = MenuItem::new("Record",            true,  None);
+        let rec_mic   = MenuItem::new("Record + mic",      true,  None);
+        let rec_sys   = MenuItem::new("Record + audio",    true,  None);
+        let rec_both  = MenuItem::new("Record + mic+audio",true,  None);
+        let stop_rec  = MenuItem::new("Stop recording",    false, None);
+
+        let open_fold = MenuItem::new("Open shots",        true,  None);
+        let open_recs = MenuItem::new("Open recordings",   true,  None);
+        let convert_img = MenuItem::new("Convert image",   true,  None);
+        let convert_vid = MenuItem::new("Convert video",   true,  None);
+        let settings  = MenuItem::new("Settings",          true,  None);
+        let about     = MenuItem::new("About",             true,  None);
+        let updates   = MenuItem::new("Check for updates", true,  None);
+        let exit      = MenuItem::new("Exit",              true,  None);
 
         let capture_id  = capture.id().clone();
         let delay3_id   = delay_3s.id().clone();
         let delay5_id   = delay_5s.id().clone();
         let delay10_id  = delay_10s.id().clone();
-        let record_id   = record.id().clone();
+        let cancel_id   = cancel.id().clone();
+        let rec_none_id = rec_none.id().clone();
+        let rec_mic_id  = rec_mic.id().clone();
+        let rec_sys_id  = rec_sys.id().clone();
+        let rec_both_id = rec_both.id().clone();
         let stop_rec_id = stop_rec.id().clone();
+        let open_folder_id = open_fold.id().clone();
+        let open_recs_id   = open_recs.id().clone();
         let settings_id = settings.id().clone();
         let about_id    = about.id().clone();
+        let updates_id  = updates.id().clone();
+        let convert_img_id = convert_img.id().clone();
+        let convert_vid_id = convert_vid.id().clone();
         let exit_id     = exit.id().clone();
 
-        delay_menu.append(&delay_3s ).map_err(|e| Error::Tray(e.to_string()))?;
-        delay_menu.append(&delay_5s ).map_err(|e| Error::Tray(e.to_string()))?;
-        delay_menu.append(&delay_10s).map_err(|e| Error::Tray(e.to_string()))?;
-
         menu.append(&capture).map_err(|e| Error::Tray(e.to_string()))?;
-        menu.append(&delay_menu).map_err(|e| Error::Tray(e.to_string()))?;
-        menu.append(&sep_rec).map_err(|e| Error::Tray(e.to_string()))?;
-        menu.append(&record).map_err(|e| Error::Tray(e.to_string()))?;
+        menu.append(&delay_3s).map_err(|e| Error::Tray(e.to_string()))?;
+        menu.append(&delay_5s).map_err(|e| Error::Tray(e.to_string()))?;
+        menu.append(&delay_10s).map_err(|e| Error::Tray(e.to_string()))?;
+        menu.append(&cancel).map_err(|e| Error::Tray(e.to_string()))?;
+        menu.append(&PredefinedMenuItem::separator()).map_err(|e| Error::Tray(e.to_string()))?;
+        menu.append(&rec_none).map_err(|e| Error::Tray(e.to_string()))?;
+        menu.append(&rec_mic).map_err(|e| Error::Tray(e.to_string()))?;
+        menu.append(&rec_sys).map_err(|e| Error::Tray(e.to_string()))?;
+        menu.append(&rec_both).map_err(|e| Error::Tray(e.to_string()))?;
         menu.append(&stop_rec).map_err(|e| Error::Tray(e.to_string()))?;
-        menu.append(&sep1).map_err(|e| Error::Tray(e.to_string()))?;
+        menu.append(&PredefinedMenuItem::separator()).map_err(|e| Error::Tray(e.to_string()))?;
+        menu.append(&open_fold).map_err(|e| Error::Tray(e.to_string()))?;
+        menu.append(&open_recs).map_err(|e| Error::Tray(e.to_string()))?;
+        menu.append(&PredefinedMenuItem::separator()).map_err(|e| Error::Tray(e.to_string()))?;
+        menu.append(&convert_img).map_err(|e| Error::Tray(e.to_string()))?;
+        menu.append(&convert_vid).map_err(|e| Error::Tray(e.to_string()))?;
+        menu.append(&PredefinedMenuItem::separator()).map_err(|e| Error::Tray(e.to_string()))?;
         menu.append(&settings).map_err(|e| Error::Tray(e.to_string()))?;
         menu.append(&about).map_err(|e| Error::Tray(e.to_string()))?;
-        menu.append(&sep2).map_err(|e| Error::Tray(e.to_string()))?;
+        menu.append(&updates).map_err(|e| Error::Tray(e.to_string()))?;
+        menu.append(&PredefinedMenuItem::separator()).map_err(|e| Error::Tray(e.to_string()))?;
         menu.append(&exit).map_err(|e| Error::Tray(e.to_string()))?;
 
         let img = build_icon();
@@ -112,13 +175,26 @@ impl Tray {
             delay3_id,
             delay5_id,
             delay10_id,
-            record_id,
+            cancel_id,
+            rec_none_id,
+            rec_mic_id,
+            rec_sys_id,
+            rec_both_id,
             stop_rec_id,
+            open_folder_id,
+            open_recs_id,
             settings_id,
             about_id,
+            updates_id,
+            convert_img_id,
+            convert_vid_id,
             exit_id,
-            record_item:   record,
+            rec_none_item: rec_none,
+            rec_mic_item:  rec_mic,
+            rec_sys_item:  rec_sys,
+            rec_both_item: rec_both,
             stop_rec_item: stop_rec,
+            cancel_item:   cancel,
         })
     }
 
@@ -130,20 +206,40 @@ impl Tray {
             Ok(ev) if ev.id == self.delay3_id    => TrayEvent::CaptureDelayed(3),
             Ok(ev) if ev.id == self.delay5_id    => TrayEvent::CaptureDelayed(5),
             Ok(ev) if ev.id == self.delay10_id   => TrayEvent::CaptureDelayed(10),
-            Ok(ev) if ev.id == self.record_id    => TrayEvent::StartRecording,
+            Ok(ev) if ev.id == self.cancel_id    => TrayEvent::CancelPending,
+            Ok(ev) if ev.id == self.rec_none_id  => TrayEvent::StartRecording(crate::recorder::RecordingOptions::NONE),
+            Ok(ev) if ev.id == self.rec_mic_id   => TrayEvent::StartRecording(crate::recorder::RecordingOptions::MIC_ONLY),
+            Ok(ev) if ev.id == self.rec_sys_id   => TrayEvent::StartRecording(crate::recorder::RecordingOptions::SYSTEM_ONLY),
+            Ok(ev) if ev.id == self.rec_both_id  => TrayEvent::StartRecording(crate::recorder::RecordingOptions::MIC_AND_SYS),
             Ok(ev) if ev.id == self.stop_rec_id  => TrayEvent::StopRecording,
+            Ok(ev) if ev.id == self.open_folder_id => TrayEvent::OpenSaveFolder,
+            Ok(ev) if ev.id == self.open_recs_id  => TrayEvent::OpenRecordingsFolder,
             Ok(ev) if ev.id == self.settings_id  => TrayEvent::Settings,
             Ok(ev) if ev.id == self.about_id     => TrayEvent::About,
+            Ok(ev) if ev.id == self.updates_id   => TrayEvent::CheckForUpdates,
+            Ok(ev) if ev.id == self.convert_img_id => TrayEvent::ConvertImage,
+            Ok(ev) if ev.id == self.convert_vid_id => TrayEvent::ConvertVideo,
             Ok(ev) if ev.id == self.exit_id      => TrayEvent::Exit,
             _ => TrayEvent::None,
         }
+    }
+
+    /// Toggle the "Cancel pending capture" item — enabled only while a
+    /// delay capture is in flight, mirroring how `Stop Recording` is gated
+    /// by recording state.
+    pub fn set_pending(&self, pending: bool) {
+        self.cancel_item.set_enabled(pending);
     }
 
     /// Reflect recording state in the menu — only one of "Record Screen" /
     /// "Stop Recording" is enabled at a time, mirroring the model of the
     /// `Recorder` shim.
     pub fn set_recording(&self, recording: bool) {
-        self.record_item.set_enabled(!recording);
+        let enabled = !recording;
+        self.rec_none_item.set_enabled(enabled);
+        self.rec_mic_item .set_enabled(enabled);
+        self.rec_sys_item .set_enabled(enabled);
+        self.rec_both_item.set_enabled(enabled);
         self.stop_rec_item.set_enabled(recording);
     }
 

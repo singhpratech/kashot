@@ -13,16 +13,36 @@
 //!
 //! Wayland: not supported here yet — proper screen capture on Wayland goes
 //! through `xdg-desktop-portal` (PipeWire), which is a substantial integration
-//! and queued separately.
+//! and queued separately. Until that lands, `start()` detects a Wayland
+//! session up-front (via `XDG_SESSION_TYPE` / `WAYLAND_DISPLAY`) and returns
+//! a clear error rather than spawning ffmpeg into a black `-f x11grab` capture
+//! that XWayland silently produces.
 //!
 //! Stop is graceful per platform: write `q` to `ffmpeg`'s stdin (Linux) or
 //! send SIGINT to `screencapture` (macOS) so the MP4 moov atom is finalized.
-//! `Drop` falls back to `child.kill()` — the file may be unplayable in that
-//! case but the process won't leak.
+//! `Drop` polls `try_wait` for up to ~2 s after the graceful signal — only if
+//! the child is still alive at that point do we fall back to SIGKILL, so the
+//! file is playable on every normal teardown.
 
 use crate::{Error, Result};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+
+/// What audio sources to mix into the recording. Mirrors the C#
+/// `KashotRecorder.Start(path, micEnabled, systemAudioEnabled)` triple.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct RecordingOptions {
+    pub mic:          bool,
+    pub system_audio: bool,
+}
+
+impl RecordingOptions {
+    pub const NONE:        Self = Self { mic: false, system_audio: false };
+    pub const MIC_ONLY:    Self = Self { mic: true,  system_audio: false };
+    pub const SYSTEM_ONLY: Self = Self { mic: false, system_audio: true  };
+    pub const MIC_AND_SYS: Self = Self { mic: true,  system_audio: true  };
+    pub fn has_audio(self) -> bool { self.mic || self.system_audio }
+}
 
 pub struct Recorder {
     child:  Option<Child>,
@@ -40,14 +60,14 @@ impl Recorder {
     /// Begin recording the primary display to `output`. Errors if a recording
     /// is already in progress, if the parent directory can't be created, or
     /// if the platform's recording tool isn't available.
-    pub fn start(&mut self, output: PathBuf) -> Result<()> {
+    pub fn start(&mut self, output: PathBuf, options: RecordingOptions) -> Result<()> {
         if self.is_recording() {
             return Err(Error::Recording("a recording is already in progress".into()));
         }
         if let Some(parent) = output.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let child = spawn_recorder(&output)?;
+        let child = spawn_recorder(&output, options)?;
         self.child  = Some(child);
         self.output = Some(output);
         Ok(())
@@ -72,11 +92,18 @@ impl Recorder {
 impl Drop for Recorder {
     fn drop(&mut self) {
         if let Some(mut c) = self.child.take() {
-            // Best-effort graceful first; SIGKILL if the process doesn't
-            // exit promptly. We can't sit forever in Drop so the wait is
-            // whatever the OS does with kill().
             graceful_signal(&mut c);
-            let _ = c.kill();
+            let mut exited = false;
+            for _ in 0..20 {
+                match c.try_wait() {
+                    Ok(Some(_)) => { exited = true; break; }
+                    Ok(None)    => std::thread::sleep(std::time::Duration::from_millis(100)),
+                    Err(_)      => break,
+                }
+            }
+            if !exited {
+                let _ = c.kill();
+            }
             let _ = c.wait();
         }
     }
@@ -85,22 +112,85 @@ impl Drop for Recorder {
 // ── platform spawn / signal ─────────────────────────────────────────────────
 
 #[cfg(target_os = "linux")]
-fn spawn_recorder(output: &Path) -> Result<Child> {
+fn spawn_recorder(output: &Path, options: RecordingOptions) -> Result<Child> {
+    // Reject Wayland up-front — `-f x11grab` against XWayland silently
+    // captures only XWayland clients (typically a black frame), and on
+    // Wayland-only sessions DISPLAY may be unset entirely.
+    let wayland_typed = std::env::var("XDG_SESSION_TYPE")
+        .map(|s| s.eq_ignore_ascii_case("wayland"))
+        .unwrap_or(false);
+    let wayland_socket = std::env::var("WAYLAND_DISPLAY")
+        .map(|s| !s.is_empty())
+        .unwrap_or(false);
+    if wayland_typed || wayland_socket {
+        return Err(Error::Recording(
+            "screen recording on Wayland isn't wired up yet \
+             (xdg-desktop-portal / PipeWire path is planned — see PLAN.md R10). \
+             To record now, log into an X11 / Xorg session from your display manager.".into()
+        ));
+    }
     let display = std::env::var("DISPLAY").unwrap_or_else(|_| ":0".into());
     let path = output.to_str().ok_or_else(||
         Error::Recording("non-UTF-8 output path".into()))?;
 
-    let res = Command::new("ffmpeg")
-        .args([
-            "-y",                   // overwrite existing output
-            "-f", "x11grab",
-            "-framerate", "30",
-            "-i", &display,
-            "-c:v", "libx264",
-            "-preset", "ultrafast",
-            "-pix_fmt", "yuv420p",
-            path,
-        ])
+    // Pulse must be reachable for either audio source to work — `pactl info`
+    // returns 0 when a server is up. If it isn't reachable we silently drop
+    // back to video-only so headless / no-audio boxes still record cleanly.
+    let pulse_ok = Command::new("pactl")
+        .arg("info")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+    let opt = if pulse_ok { options } else { RecordingOptions::NONE };
+
+    // System-audio source is the default sink's monitor (`<sink>.monitor`).
+    let monitor_source = if opt.system_audio {
+        Command::new("pactl")
+            .arg("get-default-sink")
+            .stdin(Stdio::null())
+            .stderr(Stdio::null())
+            .output()
+            .ok()
+            .and_then(|o| String::from_utf8(o.stdout).ok())
+            .map(|s| format!("{}.monitor", s.trim()))
+    } else { None };
+
+    let mut cmd = Command::new("ffmpeg");
+    cmd.arg("-y")
+       .args(["-f", "x11grab", "-framerate", "30", "-i", &display]);
+    // Optional mic input as the second stream (index 1).
+    if opt.mic {
+        cmd.args(["-f", "pulse", "-i", "default"]);
+    }
+    // Optional system-audio input. If mic is also set, this becomes
+    // stream index 2; otherwise index 1.
+    if let Some(monitor) = monitor_source.as_deref() {
+        cmd.args(["-f", "pulse", "-i", monitor]);
+    }
+    cmd.args(["-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p"])
+       // x264 + yuv420p require even dimensions; common RDP / odd laptop
+       // panels otherwise hit "height not divisible by 2" and abort.
+       .args(["-vf", "pad=ceil(iw/2)*2:ceil(ih/2)*2"]);
+    match (opt.mic, monitor_source.as_deref()) {
+        (true, Some(_)) => {
+            // Mix mic + system into one stereo track. Stream 1 = mic, 2 = sys.
+            cmd.args(["-filter_complex", "[1:a][2:a]amix=inputs=2:duration=longest:dropout_transition=0[aout]"])
+               .args(["-map", "0:v", "-map", "[aout]"])
+               .args(["-c:a", "aac", "-b:a", "160k"]);
+        }
+        (true, None) | (false, Some(_)) => {
+            cmd.args(["-c:a", "aac", "-b:a", "160k"]);
+        }
+        (false, None) => {
+            // Pure video.
+        }
+    }
+    cmd.arg(path);
+
+    let res = cmd
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -116,7 +206,8 @@ fn spawn_recorder(output: &Path) -> Result<Child> {
 }
 
 #[cfg(target_os = "macos")]
-fn spawn_recorder(output: &Path) -> Result<Child> {
+fn spawn_recorder(output: &Path, options: RecordingOptions) -> Result<Child> {
+    let _ = options; // screencapture has limited audio control; ignore for now
     let path = output.to_str().ok_or_else(||
         Error::Recording("non-UTF-8 output path".into()))?;
 
@@ -130,7 +221,7 @@ fn spawn_recorder(output: &Path) -> Result<Child> {
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-fn spawn_recorder(_output: &Path) -> Result<Child> {
+fn spawn_recorder(_output: &Path, _options: RecordingOptions) -> Result<Child> {
     Err(Error::Recording(
         "recording is not supported on this platform — \
          the Windows MSI uses the C# ScreenRecorderLib build".into()))
