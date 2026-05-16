@@ -17,8 +17,15 @@ mod bitmap_font;
 mod editor;
 mod icons;
 mod painter;
+mod about_form;
+mod brand_icon;
+mod convert_image_form;
+mod convert_video_form;
 mod pin;
+mod recording_indicator;
+mod settings_form;
 mod tray_loop;
+mod updates_form;
 
 use anyhow::Result;
 
