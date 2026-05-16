@@ -77,7 +77,7 @@ impl AboutView {
     pub fn new(loop_target: &ActiveEventLoop) -> Result<Self> {
         let (cx, cy) = centered_origin(loop_target, WIN_W, WIN_H);
         let attrs = WindowAttributes::default()
-            .with_title("About Kashot")
+            .with_title("About KAShot")
             .with_decorations(true)
             .with_resizable(false)
             .with_inner_size(PhysicalSize::new(WIN_W, WIN_H))

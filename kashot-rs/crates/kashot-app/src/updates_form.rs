@@ -80,7 +80,7 @@ impl UpdatesView {
     pub fn new(loop_target: &ActiveEventLoop) -> Result<Self> {
         let (cx, cy) = centered_origin(loop_target, WIN_W, WIN_H);
         let attrs = WindowAttributes::default()
-            .with_title("Kashot — Updates")
+            .with_title("KAShot — Updates")
             .with_decorations(true)
             .with_resizable(false)
             .with_inner_size(PhysicalSize::new(WIN_W, WIN_H))
