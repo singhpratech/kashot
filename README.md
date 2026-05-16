@@ -1,12 +1,12 @@
 <div align="center">
 
-<img src="icons/web_pwa_favicon/kashot-256x256.png" width="120" height="120" alt="Kashot" />
+<img src="docs/assets/kashot-256.png" width="140" height="140" alt="Kashot" />
 
 # Kashot
 
-**The lightweight screenshot tool every platform deserves.**
+### The lightweight screenshot tool every platform deserves.
 
-Drag a region. Annotate. Save, copy, or pin. That's it.
+**Drag a region. Annotate. Save, copy, pin, record — get back to work.**
 
 [**kashot.org**](https://kashot.org)
 &nbsp;·&nbsp; [Download](https://kashot.org/#download)
@@ -15,8 +15,25 @@ Drag a region. Annotate. Save, copy, or pin. That's it.
 
 [![License](https://img.shields.io/badge/license-MIT-22c55e.svg)](LICENSE)
 ![Platform](https://img.shields.io/badge/platforms-Windows%20%7C%20Linux%20%7C%20macOS-0ea5e9)
-![Size](https://img.shields.io/badge/size-~10%20MB%20Linux%20%7C%20~30%20MB%20Windows-eab308)
+![Binary](https://img.shields.io/badge/binary-~7MB%20stripped-eab308)
+![No telemetry](https://img.shields.io/badge/telemetry-none-ec4899)
 [![Build](https://github.com/singhpratech/kashot/actions/workflows/build-rust.yml/badge.svg)](https://github.com/singhpratech/kashot/actions)
+
+</div>
+
+---
+
+## What is Kashot
+
+A tray-resident screenshot + screen-recording tool that ships **the same binary discipline** to Windows, Linux, and macOS. No Electron, no Wine, no bundled browser, no accounts, no telemetry. Hit your hotkey → drag → annotate → save / copy / pin / record → done.
+
+<div align="center">
+
+| Capture | Annotate | Save / Share |
+|:---:|:---:|:---:|
+| 🎯 Pixel-accurate region select with 4× live magnifier | ✏️ 9 tools, 4 palettes, 16 swatches each | 💾 PNG · JPG · BMP · clipboard · pin-to-screen |
+| 🖥️ Spans every monitor, single virtual desktop | ⌨️ Single-key shortcuts for every tool | 🎬 Screen recording → MP4 with mic + system audio |
+| ⏱️ Capture-in-3s / 5s / 10s with tray countdown | 🔢 Numbered steps, blur / pixelate, free-text | 🔄 Convert image · MP4 → MOV/WEBM/MKV/GIF |
 
 </div>
 
@@ -30,29 +47,33 @@ On **Windows**, Snipping Tool is fine but its annotation story is "scribble in M
 
 I wanted **one** screenshot tool. Same hotkey, same overlay, same shortcuts, same JSON settings — on every machine I touch.
 
-So I started building. The first cut was a Windows-only C# / WinForms app, because that's where I needed it most and shipping fast mattered more than being cross-platform on day one. Once the workflow felt right — drag a region, annotate with one of nine tools, save / copy / pin, get back to work — I began porting it to **Rust** so Linux and macOS could have the same thing natively. No Electron. No Wine. No bundled browser. No accounts. No telemetry.
+So I started building. The first cut was a Windows-only C# / WinForms app. Once the workflow felt right I ported it to **Rust** so Linux and macOS could have the same thing natively. No Electron. No Wine. No bundled browser. No accounts. No telemetry.
 
 That's Kashot. Lightweight. One workflow. Everywhere.
 
 — [PrateekSingh](https://github.com/singhpratech)
 
-## Why Kashot
-
-Every screenshot tool does too much. Kashot does one thing well, on every platform.
-
-- **Lightweight.** ~10 MB native binary on Linux and macOS. ~30 MB self-contained MSI on Windows. No Electron. No Wine. No bundled browser.
-- **Tray-resident.** No main window. Hit the hotkey, drag, annotate, done. Get back to work.
-- **Native everywhere.** Same binary discipline on all three OSes — Rust core for Linux/macOS, the existing C# build for Windows. Same hotkeys. Same tools. Same JSON settings.
-- **Linux finally has one.** Most Linux capture tools are either heavyweight (Shutter, ksnip) or skip annotation. Kashot ships the same fast, focused workflow Windows users expect.
-- **No accounts. No telemetry. No upsell.** Free, open source, MIT.
+---
 
 ## Install
 
 <table>
 <tr>
-<th width="33%">Windows</th>
-<th width="33%">Linux</th>
-<th width="33%">macOS</th>
+<th width="33%" align="center">
+
+<img src="docs/assets/kashot-64.png" width="40" alt="Win"/><br>**Windows**
+
+</th>
+<th width="33%" align="center">
+
+<img src="docs/assets/kashot-64.png" width="40" alt="Linux"/><br>**Linux**
+
+</th>
+<th width="33%" align="center">
+
+<img src="docs/assets/kashot-64.png" width="40" alt="macOS"/><br>**macOS**
+
+</th>
 </tr>
 <tr>
 <td valign="top">
@@ -103,77 +124,134 @@ brew install --cask kashot
 </tr>
 </table>
 
-> **Status today:** Windows ships the full overlay editor (region select, 9 annotation tools, undo/redo, save/copy/pin). Linux and macOS ship the tray + hotkey + capture-to-PNG core today; the editor port is the next milestone — see [PLAN.md § R7](PLAN.md).
+---
 
-## What it does
+## What you get out of the box
 
-Hit `PrintScreen` (or your bound hotkey). Drag a region. Then:
+<div align="center">
 
-- **9 annotation tools** — pen, line, arrow, rectangle, ellipse, marker, text, numbered steps, pixelate / blur.
-- **4 color palettes** — Vivid, Highlighter, Pastel, Pro. 16 swatches each, plus a custom picker.
-- **Pixel-accurate selection** — live magnifier with 4× zoom. Drag any edge to resize. `Alt`+drag to move the whole selection.
-- **Save · Copy · Pin** — PNG/JPG/BMP, clipboard, or pin a borderless top-most window anywhere on your desktop.
-- **Multi-monitor** — capture spans the entire virtual desktop, no per-screen mode-switching.
-- **Persistent preferences** — last tool, color, thickness, and save folder remembered between sessions.
+|  | Feature |
+|:---:|:---|
+| 🎯 | **Pixel-accurate region select** — 4× live magnifier, drag any edge to resize, `Alt`+drag to move |
+| ✏️ | **9 annotation tools** — pen, line, arrow, rectangle, ellipse, marker, text, numbered steps, blur / pixelate |
+| 🎨 | **4 palettes × 16 swatches** — Vivid · Highlighter · Pastel · Pro, plus a custom color picker |
+| 📌 | **Pin to screen** — borderless top-most window, drag anywhere on the desktop |
+| 🎬 | **Screen recording** — MP4 with optional mic + system audio, floating STOP control |
+| 🔄 | **Format conversion** — PNG ↔ JPG / WEBP / BMP · MP4 → MOV / WEBM / MKV / GIF |
+| 🏷️ | **Watermark** — editable text, 4 anchors, 0–100 % opacity slider |
+| ⌨️ | **Global hotkey** — defaults to `PrintScreen`; remappable via settings |
+| ⏱️ | **Delayed capture** — 3 s / 5 s / 10 s countdown with tray indicator |
+| 🖥️ | **Multi-monitor** — single virtual-desktop capture, no per-screen switching |
+| 🌗 | **Themed dialogs** — Settings · About · Updates · Convert — same laser-green skin everywhere |
+| 🔒 | **No accounts. No telemetry. No upsell.** Free, MIT, closed source today |
+
+</div>
+
+---
 
 ## Keyboard shortcuts
 
 Once a region is selected:
 
-| Tools | | Actions | |
-|---|---|---|---|
-| `P` Pen          | `M` Marker         | `Ctrl`+`Z` Undo            | `Ctrl`+`C` Copy        |
-| `L` Line         | `T` Text           | `Ctrl`+`Y` Redo            | `Ctrl`+`S` Save        |
-| `A` Arrow        | `N` Numbered step  | `Esc` Cancel / close       | `Alt`+drag Move        |
-| `R` Rectangle    | `B` Blur / pixelate| Drag edges Resize          |                        |
-| `E` Ellipse      |                    |                            |                        |
+<table>
+<tr><th colspan="2">Tools</th><th colspan="2">Actions</th></tr>
+<tr>
+<td><kbd>P</kbd> Pen</td><td><kbd>M</kbd> Marker</td>
+<td><kbd>Ctrl</kbd>+<kbd>Z</kbd> Undo</td><td><kbd>Ctrl</kbd>+<kbd>C</kbd> Copy</td>
+</tr>
+<tr>
+<td><kbd>L</kbd> Line</td><td><kbd>T</kbd> Text</td>
+<td><kbd>Ctrl</kbd>+<kbd>Y</kbd> Redo</td><td><kbd>Ctrl</kbd>+<kbd>S</kbd> Save</td>
+</tr>
+<tr>
+<td><kbd>A</kbd> Arrow</td><td><kbd>N</kbd> Numbered step</td>
+<td><kbd>Esc</kbd> Cancel / close</td><td><kbd>Alt</kbd>+drag Move</td>
+</tr>
+<tr>
+<td><kbd>R</kbd> Rectangle</td><td><kbd>B</kbd> Blur / pixelate</td>
+<td>Drag edges Resize</td><td></td>
+</tr>
+<tr>
+<td><kbd>E</kbd> Ellipse</td><td></td>
+<td></td><td></td>
+</tr>
+</table>
+
+---
 
 ## Build from source
 
-This repo contains two implementations side-by-side:
+Two implementations live side-by-side in this repo:
 
 ```text
-Kashot/        — C# / .NET 8 / WinForms (Windows-only, current shipping build)
-kashot-rs/     — Rust workspace (cross-platform; tray + capture core today)
+Kashot/        C# / .NET 8 / WinForms — Windows-only, the v0.1 reference build
+kashot-rs/     Rust workspace — cross-platform, ships the same UX natively
 ```
 
+### Windows (C#)
+```powershell
+dotnet publish Kashot/Kashot.csproj -c Release
+./Installer/build.ps1     # → Kashot.msi + Kashot.exe + Kashot-portable.zip
+```
+
+### Cross-platform (Rust)
 ```sh
-# Windows build (C#) — requires .NET 8 SDK + WiX 5
-./Installer/build.ps1
-# → Kashot.msi, Kashot.exe, Kashot-portable.zip at repo root
-
-# Cross-platform build (Rust)
 cd kashot-rs
-cargo test  -p kashot-core             # pure logic, no system deps
-cargo build --release --bin kashot     # native binary
+cargo test  -p kashot-core               # 9 tests, no system deps
+cargo build --release --bin kashot       # 7 MB stripped binary
+./target/release/kashot
 ```
 
-Linux build deps and full architecture notes are in [`CLAUDE.md`](CLAUDE.md).
+Linux build deps:
+```sh
+sudo apt install libwayland-dev libxkbcommon-dev libxcb*-dev \
+                 libgtk-3-dev libdbus-1-dev libayatana-appindicator3-dev \
+                 libxdo-dev pkg-config ffmpeg
+```
+
+macOS + Windows need no extra system packages — winit, softbuffer, tray-icon, and global-hotkey use Cocoa / Win32 directly.
+
+### Bundling ffmpeg for shipping
+`kashot-rs/crates/kashot-app/build.rs` copies an ffmpeg binary next to the kashot executable so the Convert-video dialog works without a system install. For release builds, point it at a static binary:
+```sh
+KASHOT_FFMPEG=/path/to/static/ffmpeg cargo build --release --bin kashot
+```
+
+Full architecture notes in [`CLAUDE.md`](CLAUDE.md).
+
+---
 
 ## Project layout
 
+```text
+Kashot/                C# / WinForms reference build (Windows)
+kashot-rs/             Rust workspace (cross-platform port)
+  crates/kashot-core      Tool · Annotation · AppSettings · ThemeColors — pure logic
+  crates/kashot-platform  capture · hotkey · tray · recorder · clipboard
+  crates/kashot-app       tray-resident binary + overlay editor + themed dialogs
+docs/                  kashot.org landing page (GitHub Pages)
+dist/                  package-channel metadata: winget, choco, scoop, brew, flatpak, AUR, deb
+icons/                 branded icon pack (every platform size, one source PNG)
+.github/workflows/     CI: matrix tests + multi-platform release builds
 ```
-Kashot/                — C# / WinForms reference build (Windows)
-kashot-rs/             — Rust workspace (cross-platform port)
-  crates/kashot-core      — Tool, Annotation, Settings, Theme — pure logic
-  crates/kashot-platform  — capture · hotkey · tray · clipboard shims
-  crates/kashot-app       — tray-resident binary (winit event loop)
-docs/                  — kashot.org landing page (GitHub Pages)
-dist/                  — package-channel metadata: winget, choco, scoop, brew, flatpak, AUR, .deb
-icons/                 — branded icon pack (per-platform sizes)
-.github/workflows/     — CI: matrix tests + multi-platform release builds
-```
 
-## Roadmap
+---
 
-Everything is tracked in [`PLAN.md`](PLAN.md). Highlights for the `0.1.x` line:
+## Status
 
-- Wire the existing OCR / screen-recording / Meme-text features into the UI (R2–R4)
-- PDF export (R5)
-- Resize-on-save presets (R6)
-- Rust editor port to feature parity with the Windows build (R7) — same 9 tools, same shortcuts, same UX
+| Surface | Windows | Linux | macOS |
+|---|:---:|:---:|:---:|
+| Tray + global hotkey | ✅ | ✅ | ✅ |
+| Capture + 9-tool overlay editor | ✅ | ✅ | ✅ |
+| Save · Copy · Pin · Watermark | ✅ | ✅ | ✅ |
+| Screen recording (MP4 + audio) | ⏳ | ✅ | ⏳ |
+| Themed Settings · About · Updates | ✅ | ✅ | ✅ |
+| Image + video format conversion | ✅ | ✅ | ✅ |
+| Native installers | MSI / EXE / ZIP | tar.gz | dmg (planned) |
 
-No dates, no `v1.0` mythology. Each feature ships when it's ready, on the `0.1.x` line.
+Linux + macOS ship the Rust port; Windows ships both the original C# build (current MSI) and the Rust port. The two stay aligned on settings JSON shape and hotkey wire format — see [`PLAN.md`](PLAN.md) § "Architecture invariants".
+
+---
 
 ## License
 
@@ -181,12 +259,13 @@ MIT. See [`LICENSE`](LICENSE).
 
 ## Credits
 
-Built by [Prateek Singh](https://github.com/singhpratech).
-Bug reports and PRs welcome at [github.com/singhpratech/kashot](https://github.com/singhpratech/kashot).
+Built by [Prateek Singh](https://github.com/singhpratech). Bug reports and PRs welcome at [github.com/singhpratech/kashot](https://github.com/singhpratech/kashot).
 
 ---
 
 <div align="center">
+
+<img src="docs/assets/kashot-64.png" width="48" alt="Kashot" />
 
 [**kashot.org**](https://kashot.org)
 
