@@ -1,486 +1,865 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-theme="tron">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-  <meta name="color-scheme" content="dark light" />
-  <title>Kashot — the lightweight screenshot tool for every platform</title>
+  <meta name="color-scheme" content="dark" />
+  <title>Kashot — the lightweight screenshot tool for every grid</title>
   <meta name="description" content="Kashot is a lightweight, fast screenshot tool with a built-in annotation editor. Native on Windows, Linux, and macOS. No accounts, no telemetry, no bloat." />
-  <meta name="theme-color" content="#0c0c0e" />
+  <meta name="theme-color" content="#000000" />
 
-  <meta property="og:title" content="Kashot — the lightweight screenshot tool for every platform" />
-  <meta property="og:description" content="A lightweight, fast screenshot tool with a built-in annotation editor. Native on Windows, Linux, and macOS. No accounts, no telemetry, no bloat." />
+  <meta property="og:title" content="Kashot — the lightweight screenshot tool" />
+  <meta property="og:description" content="Drag a region. Annotate. Save, copy, or pin. Native on Windows, Linux, and macOS. No accounts, no telemetry, no bloat." />
   <meta property="og:type" content="website" />
   <meta property="og:url" content="https://kashot.org/" />
-  <meta property="og:image" content="https://kashot.org/assets/og.svg" />
-  <meta name="twitter:card" content="summary_large_image" />
+  <meta property="og:image" content="https://kashot.org/assets/og.png" />
+  <meta property="og:image:width"  content="1200" />
+  <meta property="og:image:height" content="630" />
+  <meta property="og:image:alt"    content="Kashot — the lightweight screenshot tool for every grid" />
+  <meta name="twitter:card"   content="summary_large_image" />
+  <meta name="twitter:image"  content="https://kashot.org/assets/og.png" />
+  <meta name="twitter:title"  content="Kashot — the lightweight screenshot tool" />
+  <meta name="twitter:description" content="Drag a region. Annotate. Save, copy, or pin. Native on Windows, Linux, and macOS. No accounts, no telemetry, no bloat." />
 
+  <link rel="icon" type="image/png" sizes="32x32" href="assets/kashot-32.png" />
+  <link rel="icon" type="image/png" sizes="16x16" href="assets/kashot-16.png" />
+  <link rel="icon" type="image/png" sizes="192x192" href="assets/kashot-256.png" />
+  <link rel="apple-touch-icon" sizes="180x180" href="assets/kashot-180.png" />
   <link rel="icon" href="assets/icon.svg" type="image/svg+xml" />
-  <link rel="apple-touch-icon" href="assets/icon.svg" />
+
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" />
   <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
 
+<!-- ── Boot sequence (covers initial paint, fades after 600ms) ──────────── -->
+<div class="boot" aria-hidden="true">
+  <div class="boot-line">// KASHOT.OS // BOOTING //</div>
+  <div class="boot-bar"><span></span></div>
+</div>
+
+<!-- ── Background layers (fixed, full-viewport) ─────────────────────────── -->
+<div class="grid-floor"  aria-hidden="true"></div>
+<div class="grid-haze"   aria-hidden="true"></div>
+<div class="scanline"    aria-hidden="true"></div>
+<div class="vignette"    aria-hidden="true"></div>
+<div class="cursor-glow" aria-hidden="true"></div>
+
+<!-- ── Top status bar ───────────────────────────────────────────────────── -->
+<div class="topbar" aria-hidden="true">
+  <span class="topbar-cell"><span class="dot dot-pulse"></span> SYS::ONLINE</span>
+  <span class="topbar-cell">GRID::03</span>
+  <span class="topbar-cell">UPLINK::SECURE</span>
+  <span class="topbar-cell topbar-spacer"></span>
+  <span class="topbar-cell">KASHOT.ORG</span>
+  <span class="topbar-cell"><span class="dot"></span> v0.1</span>
+</div>
+
 <header class="nav">
   <a class="brand" href="/" aria-label="Kashot home">
-    <span class="brand-icon" aria-hidden="true">
-      <svg viewBox="0 0 64 64" width="28" height="28">
-        <defs>
-          <linearGradient id="navGrad" x1="0" y1="0" x2="1" y2="1">
-            <stop offset="0" stop-color="#ffe600"/>
-            <stop offset="1" stop-color="#00e6c0"/>
-          </linearGradient>
-        </defs>
-        <rect x="3" y="3" width="58" height="58" rx="13" fill="url(#navGrad)"/>
-        <g stroke="#fff" stroke-width="4.5" stroke-linecap="round" fill="none">
-          <path d="M16 22 L16 16 L22 16"/>
-          <path d="M48 22 L48 16 L42 16"/>
-          <path d="M16 42 L16 48 L22 48"/>
-          <path d="M48 42 L48 48 L42 48"/>
-        </g>
-        <circle cx="32" cy="32" r="3.4" fill="#fff"/>
-      </svg>
+    <span class="brand-mark" aria-hidden="true">
+      <img src="assets/kashot-64.png" alt="" width="32" height="32" />
     </span>
-    <span class="brand-text">Kashot</span>
+    <span class="brand-text">KASHOT</span>
+    <span class="brand-tag">_v0.1</span>
   </a>
 
   <nav class="nav-links" aria-label="Primary">
-    <a href="#features">Features</a>
-    <a href="#download">Download</a>
-    <a href="#shortcuts">Shortcuts</a>
-    <a href="https://github.com/singhpratech/kashot" target="_blank" rel="noopener">GitHub</a>
+    <a href="#origin">// ORIGIN</a>
+    <a href="#showcase">// LIVE</a>
+    <a href="#modules">// MODULES</a>
+    <a href="#acquire">// ACQUIRE</a>
+    <a href="#manual">// MANUAL</a>
+    <a href="https://github.com/singhpratech/kashot" target="_blank" rel="noopener">// GIT</a>
   </nav>
 
-  <button class="theme-toggle" type="button" aria-label="Toggle color theme" title="Toggle color theme">
-    <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
-      <path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z" fill="currentColor"/>
-    </svg>
-  </button>
+  <a class="nav-cta" href="#acquire">
+    <span class="nav-cta-bracket">[</span>
+    <span>RUN.EXE</span>
+    <span class="nav-cta-bracket">]</span>
+    <span class="btn-sweep" aria-hidden="true"></span>
+  </a>
 </header>
 
 <main>
 
-  <section class="hero">
-    <div class="hero-icon" aria-hidden="true">
-      <svg viewBox="0 0 256 256" width="160" height="160">
-        <defs>
-          <linearGradient id="heroGrad" x1="0" y1="0" x2="1" y2="1">
-            <stop offset="0%"   stop-color="#ffe600"/>
-            <stop offset="55%"  stop-color="#7df0a8"/>
-            <stop offset="100%" stop-color="#00e6c0"/>
-          </linearGradient>
-          <filter id="heroShadow" x="-20%" y="-20%" width="140%" height="140%">
-            <feGaussianBlur in="SourceAlpha" stdDeviation="10"/>
-            <feOffset dy="8"/>
-            <feComponentTransfer><feFuncA type="linear" slope="0.35"/></feComponentTransfer>
-            <feMerge><feMergeNode/><feMergeNode in="SourceGraphic"/></feMerge>
-          </filter>
-        </defs>
-        <g filter="url(#heroShadow)">
-          <rect x="14" y="14" width="228" height="228" rx="52" fill="url(#heroGrad)"/>
-          <g stroke="#fff" stroke-width="14" stroke-linecap="round" fill="none">
-            <path d="M70 92 L70 70 L92 70"/>
-            <path d="M186 92 L186 70 L164 70"/>
-            <path d="M70 164 L70 186 L92 186"/>
-            <path d="M186 164 L186 186 L164 186"/>
-          </g>
-          <circle cx="128" cy="128" r="11" fill="#fff"/>
-        </g>
-      </svg>
+  <!-- ── Hero ──────────────────────────────────────────────────────────── -->
+  <section class="hero" data-scrub-fade>
+
+    <span class="hero-corner hc-tl" aria-hidden="true"></span>
+    <span class="hero-corner hc-tr" aria-hidden="true"></span>
+    <span class="hero-corner hc-bl" aria-hidden="true"></span>
+    <span class="hero-corner hc-br" aria-hidden="true"></span>
+
+    <div class="hero-status reveal">
+      <span class="dot dot-pulse"></span>
+      <span>BOOT::OK</span>
+      <span class="sep">·</span>
+      <span>RENDER::00FF95</span>
+      <span class="sep">·</span>
+      <span>03 PLATFORMS DETECTED</span>
     </div>
 
-    <h1 class="hero-title">Kashot</h1>
-    <p class="hero-tagline">
-      The lightweight screenshot tool every platform deserves.
-      <br/>Drag, annotate, save. No accounts, no bloat.
+    <div class="hero-reticle reveal" aria-hidden="true">
+      <svg class="reticle-svg" viewBox="0 0 200 200">
+        <defs>
+          <linearGradient id="scanGrad" x1="0" y1="0" x2="1" y2="0">
+            <stop offset="0%"   stop-color="#00ff95" stop-opacity="0"/>
+            <stop offset="50%"  stop-color="#00ff95" stop-opacity="1"/>
+            <stop offset="100%" stop-color="#00ff95" stop-opacity="0"/>
+          </linearGradient>
+        </defs>
+
+        <!-- outer frame edges -->
+        <g stroke="rgba(0,255,149,0.18)" stroke-width="1" fill="none">
+          <line x1="100" y1="6"   x2="100" y2="22"/>
+          <line x1="100" y1="178" x2="100" y2="194"/>
+          <line x1="6"   y1="100" x2="22"  y2="100"/>
+          <line x1="178" y1="100" x2="194" y2="100"/>
+        </g>
+
+        <!-- four corner L-brackets -->
+        <g stroke="#00ff95" stroke-width="2.2" fill="none" stroke-linecap="square"
+           style="filter: drop-shadow(0 0 4px rgba(0,255,149,0.7))">
+          <path d="M40 62 L40 40 L62 40"/>
+          <path d="M138 40 L160 40 L160 62"/>
+          <path d="M40 138 L40 160 L62 160"/>
+          <path d="M160 138 L160 160 L138 160"/>
+        </g>
+
+        <!-- crosshair lines -->
+        <g stroke="#00ff95" stroke-width="1" opacity="0.55">
+          <line x1="100" y1="55"  x2="100" y2="92"/>
+          <line x1="100" y1="108" x2="100" y2="145"/>
+          <line x1="55"  y1="100" x2="92"  y2="100"/>
+          <line x1="108" y1="100" x2="145" y2="100"/>
+        </g>
+
+        <!-- center reticle: pulsing ring + dot -->
+        <circle cx="100" cy="100" r="14" fill="none" stroke="#00ff95" stroke-width="1" opacity="0.4"/>
+        <circle class="reticle-pulse" cx="100" cy="100" r="8" fill="none" stroke="#00ff95" stroke-width="1.2"/>
+        <circle cx="100" cy="100" r="3" fill="#00ff95"
+                style="filter: drop-shadow(0 0 4px #00ff95)"/>
+
+        <!-- scan line — sweeps inside the reticle -->
+        <line class="reticle-scan"
+              x1="42" y1="0" x2="158" y2="0"
+              stroke="url(#scanGrad)" stroke-width="1.4"/>
+
+        <!-- corner ticks (on the diagonals) -->
+        <g fill="#ffe600" style="filter: drop-shadow(0 0 3px #ffe600)">
+          <rect x="38" y="38" width="2" height="2"/>
+          <rect x="160" y="38" width="2" height="2"/>
+          <rect x="38" y="160" width="2" height="2"/>
+          <rect x="160" y="160" width="2" height="2"/>
+        </g>
+
+        <!-- coordinates / status text -->
+        <text x="40" y="186" font-family="JetBrains Mono, monospace"
+              font-size="8" fill="#4dffb0" letter-spacing="1.5"
+              opacity="0.85">540 × 320</text>
+        <text x="160" y="186" text-anchor="end"
+              font-family="JetBrains Mono, monospace"
+              font-size="8" fill="#4dffb0" letter-spacing="1.5"
+              opacity="0.85">CAPTURE.LOCK</text>
+        <text x="100" y="20" text-anchor="middle"
+              font-family="JetBrains Mono, monospace"
+              font-size="7" fill="#4dffb0" letter-spacing="2.5"
+              opacity="0.7">// REGION SELECTED</text>
+      </svg>
+
+      <span class="reticle-ring" aria-hidden="true"></span>
+    </div>
+
+    <h1 class="hero-title reveal">
+      <span class="glitch" data-text="KASHOT">KASHOT</span>
+    </h1>
+
+    <p class="hero-tagline reveal">
+      The lightweight screenshot tool for every grid.<br/>
+      <span class="hero-tagline-sub">Drag a region. Annotate. Save, copy, or pin. Get back to work.</span>
     </p>
 
-    <div class="hero-cta">
+    <div class="hero-cta reveal">
       <a id="download-btn"
-         class="btn btn-primary btn-lg"
+         class="btn btn-primary"
          href="https://github.com/singhpratech/kashot/releases/latest/download/Kashot.msi"
          data-fallback="https://github.com/singhpratech/kashot/releases/latest">
-        <svg class="btn-icon" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
-          <path fill="currentColor" d="M3 3h8.5v8.5H3zM12.5 3H21v8.5h-8.5zM3 12.5h8.5V21H3zM12.5 12.5H21V21h-8.5z"/>
-        </svg>
+        <span class="btn-bracket">[</span>
         <span class="btn-text">
-          <span class="btn-line">Download for Windows</span>
-          <span class="btn-sub" id="download-sub">v0.1 · 64-bit · MSI</span>
+          <span class="btn-line">DOWNLOAD KASHOT</span>
+          <span class="btn-sub" id="download-sub">v0.1 · WINDOWS · MSI</span>
         </span>
+        <span class="btn-bracket">]</span>
+        <span class="btn-sweep" aria-hidden="true"></span>
       </a>
 
       <a class="btn btn-ghost"
-         href="https://github.com/singhpratech/kashot/releases"
+         href="https://github.com/singhpratech/kashot"
          target="_blank" rel="noopener">
-        All releases
+        <span>VIEW SOURCE</span>
+        <span class="btn-arrow" aria-hidden="true">→</span>
       </a>
     </div>
 
-    <p class="hero-meta">
-      Native on Windows, Linux, macOS · ~10 MB on Linux/macOS, ~30 MB on Windows ·
-      <a href="https://github.com/singhpratech/kashot" target="_blank" rel="noopener">open source on GitHub</a>
-    </p>
+    <!-- Each platform card carries a `data-os` token so app.js can flip the
+         `.is-detected` class onto the OS we detect at runtime. The SVG
+         glyphs are line-art (single stroke, laser-green) so they read as
+         tags rather than vendor logos. -->
+    <div class="platforms reveal" role="list">
+      <div class="platform" role="listitem" data-os="windows">
+        <span class="platform-tag">[01]</span>
+        <svg class="platform-glyph" viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M3 5 L11 4 L11 11 L3 11 Z M12 4 L21 3 L21 11 L12 11 Z M3 12 L11 12 L11 19 L3 18 Z M12 12 L21 12 L21 20 L12 19 Z"
+                fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/>
+        </svg>
+        <strong>WINDOWS</strong>
+        <span class="platform-status">·  ONLINE</span>
+      </div>
+      <div class="platform" role="listitem" data-os="linux">
+        <span class="platform-tag">[02]</span>
+        <svg class="platform-glyph" viewBox="0 0 24 24" aria-hidden="true">
+          <!-- Tux silhouette — rounded head + body, two feet. -->
+          <path d="M12 3.5 C9.5 3.5 8 5.5 8 8 C8 9.2 8.4 10.2 9 11 C7.2 12 6 13.8 6 16 L6 18.5 C6 19.5 7 20.5 8 20.5 L9 20.5 L9 19 L10 19 L10 20.5 L14 20.5 L14 19 L15 19 L15 20.5 L16 20.5 C17 20.5 18 19.5 18 18.5 L18 16 C18 13.8 16.8 12 15 11 C15.6 10.2 16 9.2 16 8 C16 5.5 14.5 3.5 12 3.5 Z"
+                fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/>
+          <circle cx="10.5" cy="8" r="0.9" fill="currentColor"/>
+          <circle cx="13.5" cy="8" r="0.9" fill="currentColor"/>
+        </svg>
+        <strong>LINUX</strong>
+        <span class="platform-status">·  ONLINE</span>
+      </div>
+      <div class="platform" role="listitem" data-os="macos">
+        <span class="platform-tag">[03]</span>
+        <svg class="platform-glyph" viewBox="0 0 24 24" aria-hidden="true">
+          <!-- Apple-ish silhouette — line-art apple body + leaf. -->
+          <path d="M13.4 5.5 C13.4 4 14.4 3 16 3 C16 4.5 15 5.5 13.4 5.5 Z M17 8.5 C15 7 12 7 10 8.5 C8 10 7 12.5 7.4 15 C7.8 17.5 9.4 20.5 12 20.5 C13 20.5 13.4 20 14 20 C14.6 20 15 20.5 16 20.5 C18.6 20.5 20.2 17.5 20.4 15 C20.7 12.7 19.5 10 17 8.5 Z"
+                fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/>
+        </svg>
+        <strong>MACOS</strong>
+        <span class="platform-status">·  ONLINE</span>
+      </div>
+    </div>
 
-    <div class="platforms" role="list">
-      <div class="platform platform-active" role="listitem">
-        <span class="platform-icon" aria-hidden="true">
-          <svg viewBox="0 0 24 24" width="22" height="22"><path fill="currentColor" d="M3 5l7-1v7H3zM11 3.9l10-1.4V11H11zM3 13h7v6.1l-7-1zM11 13h10v8.5l-10-1.4z"/></svg>
-        </span>
-        <span class="platform-text">
-          <strong>Windows</strong>
-          <span>Available now</span>
-        </span>
-      </div>
-      <div class="platform platform-active" role="listitem">
-        <span class="platform-icon" aria-hidden="true">
-          <svg viewBox="0 0 24 24" width="22" height="22"><path fill="currentColor" d="M12 3c1.7 0 3 1.6 3 3.5 0 .6-.1 1.2-.3 1.6.9.4 1.6 1.1 2 2 .8-.5 1.6-1 2.3-1 1.5 0 2 1.6 2 3 0 1.4-.6 2.5-1.4 3.4-.4 2.6-2.5 4.5-5.5 4.5h-4.2C7 20 4.9 18.1 4.4 15.5 3.6 14.6 3 13.5 3 12c0-1.4.5-3 2-3 .8 0 1.6.5 2.4 1 .4-.9 1.1-1.6 2-2-.2-.4-.4-1-.4-1.5C9 4.6 10.3 3 12 3z"/></svg>
-        </span>
-        <span class="platform-text">
-          <strong>Linux</strong>
-          <span>Native, x86_64</span>
-        </span>
-      </div>
-      <div class="platform platform-active" role="listitem">
-        <span class="platform-icon" aria-hidden="true">
-          <svg viewBox="0 0 24 24" width="22" height="22"><path fill="currentColor" d="M16.4 12.5c0-2.7 2.2-4 2.3-4-1.3-1.8-3.2-2.1-3.9-2.1-1.7-.2-3.2 1-4 1-.8 0-2.1-1-3.5-1-1.8 0-3.5 1-4.4 2.7-1.9 3.3-.5 8.1 1.4 10.7.9 1.3 2 2.7 3.4 2.7 1.4-.1 1.9-.9 3.6-.9s2.1.9 3.6.9c1.5 0 2.4-1.3 3.3-2.6.7-1 1.2-2 1.6-3.1-.1-.1-3.4-1.3-3.4-4.3zM13.7 4.6c.7-.9 1.2-2.1 1.1-3.3-1 0-2.3.7-3 1.5-.6.7-1.2 1.9-1.1 3.1 1.1.1 2.2-.6 3-1.3z"/></svg>
-        </span>
-        <span class="platform-text">
-          <strong>macOS</strong>
-          <span>Native, Apple Silicon &amp; Intel</span>
-        </span>
-      </div>
+    <div class="hero-scroll-hint" aria-hidden="true">
+      <span>SCROLL</span>
+      <span class="scroll-bar"><span></span></span>
     </div>
   </section>
 
-  <section class="screenshot" aria-label="Kashot in action">
+  <!-- ── Marquee infinite strip ─────────────────────────────────────────── -->
+  <section class="marquee" aria-hidden="true">
+    <div class="marquee-track">
+      <span>FAST</span><span class="m-dot">▸</span>
+      <span>LIGHT</span><span class="m-dot">▸</span>
+      <span>NATIVE</span><span class="m-dot">▸</span>
+      <span>FREE</span><span class="m-dot">▸</span>
+      <span>OPEN-SOURCE</span><span class="m-dot">▸</span>
+      <span>NO TELEMETRY</span><span class="m-dot">▸</span>
+      <span>WINDOWS</span><span class="m-dot">▸</span>
+      <span>LINUX</span><span class="m-dot">▸</span>
+      <span>MACOS</span><span class="m-dot">▸</span>
+      <span>FAST</span><span class="m-dot">▸</span>
+      <span>LIGHT</span><span class="m-dot">▸</span>
+      <span>NATIVE</span><span class="m-dot">▸</span>
+      <span>FREE</span><span class="m-dot">▸</span>
+      <span>OPEN-SOURCE</span><span class="m-dot">▸</span>
+      <span>NO TELEMETRY</span><span class="m-dot">▸</span>
+      <span>WINDOWS</span><span class="m-dot">▸</span>
+      <span>LINUX</span><span class="m-dot">▸</span>
+      <span>MACOS</span><span class="m-dot">▸</span>
+    </div>
+  </section>
+
+  <!-- ── Stats (counter ticks) ──────────────────────────────────────────── -->
+  <section class="stats">
+    <div class="stat reveal">
+      <div class="stat-num"><span class="counter" data-target="9">0</span></div>
+      <div class="stat-label">// ANNOTATION TOOLS</div>
+    </div>
+    <div class="stat reveal">
+      <div class="stat-num"><span class="counter" data-target="4">0</span></div>
+      <div class="stat-label">// COLOR PALETTES</div>
+    </div>
+    <div class="stat reveal">
+      <div class="stat-num"><span class="counter" data-target="3">0</span></div>
+      <div class="stat-label">// NATIVE PLATFORMS</div>
+    </div>
+    <div class="stat reveal">
+      <div class="stat-num">0<span class="stat-num-sub">.0</span></div>
+      <div class="stat-label">// TELEMETRY · ACCOUNTS</div>
+    </div>
+  </section>
+
+  <!-- ── Screenshot frame (scroll-scrubbed scale) ──────────────────────── -->
+  <section class="screenshot reveal" aria-label="Kashot in action" data-scrub-scale>
     <div class="frame">
       <div class="frame-bar">
-        <span></span><span></span><span></span>
+        <span class="frame-tag">// TRANSMISSION 01 · KASHOT.OVERLAY · LIVE</span>
+        <span class="frame-bar-dots" aria-hidden="true"><i></i><i></i><i></i></span>
       </div>
       <div class="frame-canvas">
         <svg viewBox="0 0 1200 700" preserveAspectRatio="xMidYMid slice" role="img" aria-label="Mock screenshot showing the Kashot overlay over a desktop">
           <defs>
             <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
-              <stop offset="0" stop-color="#1d2541"/>
-              <stop offset="1" stop-color="#0a0e1d"/>
+              <stop offset="0" stop-color="#0a1814"/>
+              <stop offset="1" stop-color="#000"/>
             </linearGradient>
             <linearGradient id="window" x1="0" y1="0" x2="0" y2="1">
               <stop offset="0" stop-color="#fafafa"/>
               <stop offset="1" stop-color="#e6e6ea"/>
             </linearGradient>
             <pattern id="dots" x="0" y="0" width="40" height="40" patternUnits="userSpaceOnUse">
-              <circle cx="2" cy="2" r="1.2" fill="rgba(255,255,255,0.06)"/>
+              <circle cx="2" cy="2" r="1.2" fill="rgba(0,255,149,0.10)"/>
             </pattern>
           </defs>
 
           <rect width="1200" height="700" fill="url(#bg)"/>
           <rect width="1200" height="700" fill="url(#dots)"/>
 
-          <!-- mock app window in background -->
-          <g opacity="0.85">
-            <rect x="120" y="80" width="780" height="500" rx="10" fill="url(#window)"/>
-            <rect x="120" y="80" width="780" height="36" rx="10" fill="#dfe0e6"/>
+          <g opacity="0.9">
+            <rect x="120" y="80" width="780" height="500" rx="6" fill="url(#window)"/>
+            <rect x="120" y="80" width="780" height="36" rx="6" fill="#dfe0e6"/>
             <circle cx="142" cy="98" r="6" fill="#ff5f57"/>
             <circle cx="160" cy="98" r="6" fill="#ffbd2e"/>
             <circle cx="178" cy="98" r="6" fill="#28c941"/>
-            <rect x="140" y="140" width="160" height="14" rx="3" fill="#cfd1d8"/>
-            <rect x="140" y="170" width="600" height="8" rx="3" fill="#e0e2ea"/>
-            <rect x="140" y="186" width="540" height="8" rx="3" fill="#e0e2ea"/>
-            <rect x="140" y="202" width="580" height="8" rx="3" fill="#e0e2ea"/>
-            <rect x="140" y="220" width="420" height="8" rx="3" fill="#e0e2ea"/>
-            <rect x="140" y="260" width="380" height="190" rx="6" fill="#eef0f6"/>
-            <rect x="540" y="260" width="200" height="90" rx="6" fill="#eef0f6"/>
-            <rect x="540" y="360" width="200" height="90" rx="6" fill="#eef0f6"/>
+            <rect x="140" y="140" width="160" height="14" rx="2" fill="#cfd1d8"/>
+            <rect x="140" y="170" width="600" height="8" rx="2" fill="#e0e2ea"/>
+            <rect x="140" y="186" width="540" height="8" rx="2" fill="#e0e2ea"/>
+            <rect x="140" y="202" width="580" height="8" rx="2" fill="#e0e2ea"/>
+            <rect x="140" y="220" width="420" height="8" rx="2" fill="#e0e2ea"/>
+            <rect x="140" y="260" width="380" height="190" rx="4" fill="#eef0f6"/>
+            <rect x="540" y="260" width="200" height="90" rx="4" fill="#eef0f6"/>
+            <rect x="540" y="360" width="200" height="90" rx="4" fill="#eef0f6"/>
           </g>
 
-          <!-- dim overlay -->
-          <rect width="1200" height="700" fill="rgba(0,0,0,0.45)"/>
+          <rect width="1200" height="700" fill="rgba(0,0,0,0.55)"/>
 
-          <!-- selection rectangle (hole punched) -->
           <defs>
             <clipPath id="selClip">
-              <rect x="260" y="200" width="540" height="320" rx="2"/>
+              <rect x="260" y="200" width="540" height="320"/>
             </clipPath>
           </defs>
-          <g clip-path="url(#selClip)" opacity="1">
-            <rect x="120" y="80" width="780" height="500" rx="10" fill="url(#window)"/>
-            <rect x="140" y="140" width="160" height="14" rx="3" fill="#cfd1d8"/>
-            <rect x="140" y="170" width="600" height="8" rx="3" fill="#e0e2ea"/>
-            <rect x="140" y="186" width="540" height="8" rx="3" fill="#e0e2ea"/>
-            <rect x="140" y="202" width="580" height="8" rx="3" fill="#e0e2ea"/>
-            <rect x="140" y="220" width="420" height="8" rx="3" fill="#e0e2ea"/>
-            <rect x="140" y="260" width="380" height="190" rx="6" fill="#eef0f6"/>
-            <rect x="540" y="260" width="200" height="90" rx="6" fill="#eef0f6"/>
-            <rect x="540" y="360" width="200" height="90" rx="6" fill="#eef0f6"/>
+          <g clip-path="url(#selClip)">
+            <rect x="120" y="80" width="780" height="500" rx="6" fill="url(#window)"/>
+            <rect x="140" y="140" width="160" height="14" rx="2" fill="#cfd1d8"/>
+            <rect x="140" y="170" width="600" height="8" rx="2" fill="#e0e2ea"/>
+            <rect x="140" y="186" width="540" height="8" rx="2" fill="#e0e2ea"/>
+            <rect x="140" y="202" width="580" height="8" rx="2" fill="#e0e2ea"/>
+            <rect x="140" y="220" width="420" height="8" rx="2" fill="#e0e2ea"/>
+            <rect x="140" y="260" width="380" height="190" rx="4" fill="#eef0f6"/>
+            <rect x="540" y="260" width="200" height="90" rx="4" fill="#eef0f6"/>
+            <rect x="540" y="360" width="200" height="90" rx="4" fill="#eef0f6"/>
           </g>
 
-          <!-- selection border -->
           <rect x="260" y="200" width="540" height="320"
-                fill="none" stroke="#6495ed" stroke-width="1.5"
-                stroke-dasharray="4 4"/>
+                fill="none" stroke="#00ff95" stroke-width="2"
+                style="filter: drop-shadow(0 0 6px #00ff95)"/>
 
-          <!-- corner handles -->
-          <g fill="#fff" stroke="#6495ed" stroke-width="1">
-            <rect x="257" y="197" width="6" height="6"/>
-            <rect x="797" y="197" width="6" height="6"/>
-            <rect x="257" y="517" width="6" height="6"/>
-            <rect x="797" y="517" width="6" height="6"/>
-            <rect x="527" y="197" width="6" height="6"/>
-            <rect x="527" y="517" width="6" height="6"/>
-            <rect x="257" y="357" width="6" height="6"/>
-            <rect x="797" y="357" width="6" height="6"/>
+          <g fill="#00ff95" stroke="#000" stroke-width="0.5">
+            <rect x="256" y="196" width="8" height="8"/>
+            <rect x="796" y="196" width="8" height="8"/>
+            <rect x="256" y="516" width="8" height="8"/>
+            <rect x="796" y="516" width="8" height="8"/>
+            <rect x="526" y="196" width="8" height="8"/>
+            <rect x="526" y="516" width="8" height="8"/>
+            <rect x="256" y="356" width="8" height="8"/>
+            <rect x="796" y="356" width="8" height="8"/>
           </g>
 
-          <!-- dimension label -->
-          <rect x="260" y="528" width="62" height="20" rx="2" fill="rgba(30,30,30,0.85)"/>
-          <text x="266" y="543" font-family="Segoe UI, system-ui" font-size="11" fill="#fff">540 x 320</text>
+          <rect x="260" y="528" width="80" height="22" fill="#000" stroke="#00ff95" stroke-width="1"/>
+          <text x="270" y="544" font-family="JetBrains Mono, monospace" font-size="12" fill="#00ff95" font-weight="600">540 × 320</text>
 
-          <!-- annotations: arrow + step + rectangle -->
           <g>
-            <rect x="320" y="244" width="200" height="60" fill="none" stroke="#dc2626" stroke-width="3"/>
-            <line x1="600" y1="280" x2="700" y2="380" stroke="#dc2626" stroke-width="3" stroke-linecap="round"/>
-            <polygon points="700,380 690,372 690,388" fill="#dc2626"/>
-            <circle cx="430" cy="430" r="14" fill="#dc2626" stroke="#fff" stroke-width="2"/>
-            <text x="430" y="435" text-anchor="middle" font-family="Segoe UI, system-ui" font-size="13" font-weight="700" fill="#fff">1</text>
-            <circle cx="480" cy="430" r="14" fill="#dc2626" stroke="#fff" stroke-width="2"/>
-            <text x="480" y="435" text-anchor="middle" font-family="Segoe UI, system-ui" font-size="13" font-weight="700" fill="#fff">2</text>
+            <rect x="320" y="244" width="200" height="60" fill="none" stroke="#ffe600" stroke-width="3" style="filter: drop-shadow(0 0 4px #ffe600)"/>
+            <line x1="600" y1="280" x2="700" y2="380" stroke="#ffe600" stroke-width="3" stroke-linecap="round" style="filter: drop-shadow(0 0 4px #ffe600)"/>
+            <polygon points="700,380 690,372 690,388" fill="#ffe600"/>
+            <circle cx="430" cy="430" r="14" fill="#000" stroke="#00e6c0" stroke-width="2.5" style="filter: drop-shadow(0 0 4px #00e6c0)"/>
+            <text x="430" y="435" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="13" font-weight="700" fill="#00e6c0">1</text>
+            <circle cx="480" cy="430" r="14" fill="#000" stroke="#00e6c0" stroke-width="2.5" style="filter: drop-shadow(0 0 4px #00e6c0)"/>
+            <text x="480" y="435" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="13" font-weight="700" fill="#00e6c0">2</text>
           </g>
 
-          <!-- vertical tool panel -->
+          <!-- Tool palette — mirrors the Rust IconKind glyphs:
+               Pen (parallelogram barrel + nib triangle), Line, Arrow, Rect,
+               Ellipse, Marker, Text "A", Step (outlined circle + 1),
+               Pixelate (3×3 alpha grid), Color, Undo (CCW arc + arrow),
+               Redo (CW arc + arrow). -->
           <g transform="translate(820, 200)">
-            <rect width="38" height="362" rx="4" fill="#2d2d2d"/>
-            <g fill="#fff">
-              <rect x="6"  y="6"   width="26" height="26" rx="2" fill="#505050"/>
-              <rect x="6"  y="36"  width="26" height="26" rx="2"/>
-              <rect x="6"  y="66"  width="26" height="26" rx="2"/>
-              <rect x="6"  y="96"  width="26" height="26" rx="2"/>
-              <rect x="6"  y="126" width="26" height="26" rx="2"/>
-              <rect x="6"  y="156" width="26" height="26" rx="2"/>
-              <rect x="6"  y="186" width="26" height="26" rx="2"/>
-              <rect x="6"  y="216" width="26" height="26" rx="2"/>
-              <rect x="6"  y="246" width="26" height="26" rx="2"/>
-              <rect x="6"  y="276" width="26" height="26" rx="2" />
-              <circle cx="19" cy="289" r="6" fill="#dc2626"/>
-              <rect x="6"  y="306" width="26" height="26" rx="2"/>
-              <rect x="6"  y="336" width="26" height="26" rx="2"/>
+            <rect width="38" height="362" fill="#000" stroke="#00ff95" stroke-width="1" style="filter: drop-shadow(0 0 6px rgba(0,255,149,0.6))"/>
+            <g fill="none" stroke="#00ff95" stroke-width="1">
+              <rect x="6"  y="6"   width="26" height="26" fill="#062014"/>
+              <rect x="6"  y="36"  width="26" height="26"/>
+              <rect x="6"  y="66"  width="26" height="26"/>
+              <rect x="6"  y="96"  width="26" height="26"/>
+              <rect x="6"  y="126" width="26" height="26"/>
+              <rect x="6"  y="156" width="26" height="26"/>
+              <rect x="6"  y="186" width="26" height="26"/>
+              <rect x="6"  y="216" width="26" height="26"/>
+              <rect x="6"  y="246" width="26" height="26"/>
+              <rect x="6"  y="276" width="26" height="26"/>
+              <rect x="6"  y="306" width="26" height="26"/>
+              <rect x="6"  y="336" width="26" height="26"/>
             </g>
-            <g stroke="#fff" stroke-width="1.5" fill="none" stroke-linecap="round">
-              <path d="M14 50 Q19 38 26 50" />
-              <line x1="12" y1="78" x2="26" y2="68"/>
-              <line x1="12" y1="108" x2="26" y2="98"/>
-              <polyline points="22,103 26,98 21,93" />
-              <rect x="11" y="129" width="16" height="14" stroke="#fff"/>
-              <ellipse cx="19" cy="167" rx="8" ry="7" stroke="#fff"/>
+            <!-- Each tool wrapped in `.tool-glow` so the sequential
+                 orange-neon CSS animation can light them one at a time,
+                 top to bottom. Animation defined in styles.css. The
+                 action panel below is intentionally NOT wrapped — those
+                 stay quiet. -->
+            <!-- Pen: outlined parallelogram barrel + filled nib triangle -->
+            <g class="tool-glow" style="animation-delay: 0s">
+              <g stroke="#00ff95" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" fill="none">
+                <path d="M11 22 L17 10 L27 14 L21 26 Z"/>
+                <path d="M11 22 L15 24 L13 28 Z" fill="#00ff95"/>
+              </g>
+            </g>
+            <!-- Line -->
+            <g class="tool-glow" style="animation-delay: 1s">
+              <line x1="11" y1="51" x2="27" y2="47" stroke="#00ff95" stroke-width="1.6" stroke-linecap="round"/>
+            </g>
+            <!-- Arrow -->
+            <g class="tool-glow" style="animation-delay: 2s">
+              <g stroke="#00ff95" stroke-width="1.4" fill="none" stroke-linecap="round" stroke-linejoin="round">
+                <line x1="11" y1="81" x2="25" y2="73"/>
+                <polyline points="20,71 26,72 23,77"/>
+              </g>
+            </g>
+            <!-- Rectangle -->
+            <g class="tool-glow" style="animation-delay: 3s">
+              <rect x="11" y="103" width="16" height="14" stroke="#00ff95" stroke-width="1.4" fill="none"/>
+            </g>
+            <!-- Ellipse -->
+            <g class="tool-glow" style="animation-delay: 4s">
+              <ellipse cx="19" cy="141" rx="8" ry="6" stroke="#00ff95" stroke-width="1.4" fill="none"/>
+            </g>
+            <!-- Marker / highlighter (thicker stroke + slight rotation) -->
+            <g class="tool-glow" style="animation-delay: 5s">
+              <line x1="10" y1="177" x2="28" y2="167" stroke="#ffe600" stroke-width="3" stroke-linecap="round" opacity="0.85"/>
+            </g>
+            <!-- Text "A" -->
+            <g class="tool-glow" style="animation-delay: 6s">
+              <text x="19" y="207" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="14" font-weight="700" fill="#00ff95">A</text>
+            </g>
+            <!-- Step — outlined circle + stroked 1 -->
+            <g class="tool-glow" style="animation-delay: 7s">
+              <g stroke="#00ff95" stroke-width="1.4" fill="none">
+                <circle cx="19" cy="229" r="8"/>
+              </g>
+              <text x="19" y="233" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="10" font-weight="700" fill="#00ff95">1</text>
+            </g>
+            <!-- Pixelate — 3×3 alpha-varied grid -->
+            <g class="tool-glow" style="animation-delay: 8s">
+              <g fill="#00ff95">
+                <rect x="11" y="252" width="4" height="4" opacity="0.42"/>
+                <rect x="17" y="252" width="4" height="4" opacity="0.66"/>
+                <rect x="23" y="252" width="4" height="4" opacity="0.42"/>
+                <rect x="11" y="258" width="4" height="4" opacity="0.66"/>
+                <rect x="17" y="258" width="4" height="4" opacity="1"/>
+                <rect x="23" y="258" width="4" height="4" opacity="0.66"/>
+                <rect x="11" y="264" width="4" height="4" opacity="0.42"/>
+                <rect x="17" y="264" width="4" height="4" opacity="0.66"/>
+                <rect x="23" y="264" width="4" height="4" opacity="0.42"/>
+              </g>
+            </g>
+            <!-- Color swatch -->
+            <g class="tool-glow" style="animation-delay: 9s">
+              <circle cx="19" cy="289" r="6" fill="#ffe600" style="filter: drop-shadow(0 0 4px #ffe600)"/>
+            </g>
+            <!-- Undo — CCW arc through top, arrowhead at lower-left -->
+            <g class="tool-glow" style="animation-delay: 10s">
+              <g stroke="#00ff95" stroke-width="1.4" fill="none" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M25 322 A8 8 0 1 0 13 322"/>
+                <polyline points="10,318 13,322 17,320"/>
+              </g>
+            </g>
+            <!-- Redo — mirror CW arc, arrowhead at lower-right -->
+            <g class="tool-glow" style="animation-delay: 11s">
+              <g stroke="#00ff95" stroke-width="1.4" fill="none" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M13 352 A8 8 0 1 1 25 352"/>
+                <polyline points="28,348 25,352 21,350"/>
+              </g>
             </g>
           </g>
 
-          <!-- horizontal action panel -->
+          <!-- Action panel — Pin (Google teardrop), Copy (page+shadow),
+               Save (3.5" floppy), Close. Matches the Rust IconKind glyphs. -->
           <g transform="translate(660, 530)">
-            <rect width="138" height="38" rx="4" fill="#2d2d2d"/>
-            <g fill="#fff">
-              <rect x="6"   y="6" width="26" height="26" rx="2"/>
-              <rect x="36"  y="6" width="26" height="26" rx="2"/>
-              <rect x="66"  y="6" width="26" height="26" rx="2"/>
-              <rect x="96"  y="6" width="26" height="26" rx="2"/>
+            <rect width="138" height="38" fill="#000" stroke="#00ff95" stroke-width="1" style="filter: drop-shadow(0 0 6px rgba(0,255,149,0.6))"/>
+            <!-- Pin: Google Maps teardrop with hole -->
+            <g fill="#00ff95" stroke="#00ff95" stroke-width="1.2" stroke-linejoin="round">
+              <path d="M19 8 C13 8 9 12 9 17 C9 22 19 30 19 30 C19 30 29 22 29 17 C29 12 25 8 19 8 Z" fill="#00ff95"/>
+              <circle cx="19" cy="17" r="3" fill="#000" stroke="none"/>
             </g>
-            <g stroke="#fff" stroke-width="1.5" fill="none" stroke-linecap="round">
-              <line x1="19" y1="14" x2="19" y2="28"/>
-              <circle cx="19" cy="13" r="3" fill="#fff"/>
-              <rect x="42" y="11" width="9" height="11"/>
-              <rect x="46" y="15" width="9" height="11"/>
-              <rect x="72" y="11" width="14" height="14"/>
+            <!-- Copy: back page (shadow) + front page -->
+            <g fill="none" stroke="#00ff95" stroke-width="1.3" stroke-linejoin="round">
+              <rect x="46" y="14" width="12" height="14" rx="1" opacity="0.55"/>
+              <rect x="42" y="10" width="12" height="14" rx="1" fill="#000"/>
             </g>
-            <line x1="102" y1="12" x2="118" y2="28" stroke="#ff6464" stroke-width="2" stroke-linecap="round"/>
-            <line x1="118" y1="12" x2="102" y2="28" stroke="#ff6464" stroke-width="2" stroke-linecap="round"/>
+            <!-- Save: 3.5" floppy disk -->
+            <g fill="none" stroke="#00ff95" stroke-width="1.3" stroke-linejoin="round">
+              <path d="M72 10 L84 10 L86 12 L86 26 L72 26 Z"/>
+              <rect x="75" y="10" width="8" height="5" fill="#00ff95" stroke="none"/>
+              <rect x="74" y="19" width="10" height="7" fill="#062014"/>
+            </g>
+            <!-- Close: pink X -->
+            <line x1="102" y1="12" x2="118" y2="28" stroke="#ff3da9" stroke-width="2" stroke-linecap="round"/>
+            <line x1="118" y1="12" x2="102" y2="28" stroke="#ff3da9" stroke-width="2" stroke-linecap="round"/>
           </g>
         </svg>
       </div>
     </div>
   </section>
 
-  <section id="features" class="features">
-    <h2>Built for speed, sized to disappear</h2>
-    <p class="section-sub">Hit a hotkey. Drag a region. Annotate. Save, copy, or pin to screen. Get back to work.</p>
+  <!-- ── Origin / story ──────────────────────────────────────────────── -->
+  <section id="origin" class="origin section">
+    <div class="section-head reveal">
+      <span class="eyebrow">// ORIGIN</span>
+      <h2>Three machines.<br/><span class="h2-accent">One grid.</span></h2>
+      <p class="section-sub">How this came to exist.</p>
+    </div>
 
-    <div class="feature-grid">
-      <div class="feature">
-        <div class="feature-icon" aria-hidden="true">
-          <svg viewBox="0 0 24 24" width="22" height="22"><path fill="currentColor" d="M5 5h14v14H5zM7 7v10h10V7z M9 9h6v2H9zM9 13h6v2H9z"/></svg>
-        </div>
-        <h3>Tray-resident, no main window</h3>
-        <p>Lives in your system tray. One global hotkey (default <kbd>PrintScreen</kbd>) pulls up the capture overlay across all monitors.</p>
-      </div>
+    <div class="origin-body reveal">
+      <p>
+        On <span class="hl">WINDOWS</span>, Snipping Tool is fine — but its annotation story is "scribble in MS Paint." Greenshot feels frozen in 2014. ShareX has a thousand options I'd never use.
+      </p>
+      <p>
+        On <span class="hl">LINUX</span>, every native option — Flameshot, Shutter, ksnip — is either heavy, opinionated, or skips the basics. On <span class="hl">MACOS</span>, the built-in capture is genuinely good, but nothing else matches it on the other two operating systems I use every day.
+      </p>
 
-      <div class="feature">
-        <div class="feature-icon" aria-hidden="true">
-          <svg viewBox="0 0 24 24" width="22" height="22"><path fill="currentColor" d="M3 17.25V21h3.75l11-11-3.75-3.75-11 11zM20.7 7.05a1 1 0 0 0 0-1.4l-2.35-2.35a1 1 0 0 0-1.4 0l-1.83 1.83 3.75 3.75 1.83-1.83z"/></svg>
-        </div>
-        <h3>9 annotation tools</h3>
-        <p>Pen, line, arrow, rectangle, ellipse, marker, text, numbered steps, and pixelate / blur. Single-key shortcuts on every tool. Undo / redo always one stroke away.</p>
-      </div>
+      <p class="pull">
+        <span class="pull-bar" aria-hidden="true"></span>
+        I wanted <em>one</em> screenshot tool. Same hotkey. Same overlay. Same shortcuts. Same JSON settings — on every machine I touch.
+      </p>
 
-      <div class="feature">
-        <div class="feature-icon" aria-hidden="true">
-          <svg viewBox="0 0 24 24" width="22" height="22"><path fill="currentColor" d="M3 3h7v7H3zm11 0h7v7h-7zM3 14h7v7H3zm11 0h7v7h-7z"/></svg>
-        </div>
-        <h3>4 color palettes</h3>
-        <p>Vivid, Highlighter, Pastel, Pro. 16 swatches each, plus a custom color picker. Cycle thickness with one click — your choices persist across sessions.</p>
-      </div>
+      <p>
+        So I started building. Windows first (<span class="hl">C# / WinForms</span>) because that's where I needed it most and shipping fast mattered more than being cross-platform on day one. Once the workflow felt right — drag a region, annotate with one of nine tools, save / copy / pin, get back to work — I began porting it to <span class="hl">RUST</span> so Linux and macOS could have the same thing natively.
+      </p>
 
-      <div class="feature">
-        <div class="feature-icon" aria-hidden="true">
-          <svg viewBox="0 0 24 24" width="22" height="22"><circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="2"/><path fill="currentColor" d="M11 7h2v6h-2zM11 15h2v2h-2z"/></svg>
-        </div>
-        <h3>Pixel-accurate selection</h3>
-        <p>Live magnifier with 4× zoom and pixel coordinates. Drag any edge or corner to resize. Hold <kbd>Alt</kbd> and drag to reposition the whole selection.</p>
-      </div>
+      <p>
+        No Electron. No Wine. No bundled browser. No accounts. No telemetry.<br/>
+        Lightweight. One workflow. Everywhere.
+      </p>
 
-      <div class="feature">
-        <div class="feature-icon" aria-hidden="true">
-          <svg viewBox="0 0 24 24" width="22" height="22"><path fill="currentColor" d="M16 8.5V4l5 5h-4.5a.5.5 0 0 1-.5-.5zM4 4h10v6h6v10H4z M7 13h10v2H7zM7 16h10v2H7z"/></svg>
-        </div>
-        <h3>Save · Copy · Pin</h3>
-        <p>Save as PNG / JPG / BMP, copy straight to clipboard, or pin a borderless top-most window anywhere on your desktop. Optional watermark on saved images.</p>
-      </div>
-
-      <div class="feature">
-        <div class="feature-icon" aria-hidden="true">
-          <svg viewBox="0 0 24 24" width="22" height="22"><path fill="currentColor" d="M3 7l3-4h12l3 4v13a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1zm3 0h12l-1.5-2h-9z"/></svg>
-        </div>
-        <h3>Lightweight, native, free</h3>
-        <p>~10 MB native binary on Linux and macOS. ~30 MB self-contained on Windows. No Electron. No Wine. No accounts, no telemetry, no upsell. Open source on GitHub.</p>
-      </div>
+      <p class="sign">— <a href="https://github.com/singhpratech" target="_blank" rel="noopener">PrateekSingh</a> <span class="sign-tag">// OPERATOR</span></p>
     </div>
   </section>
 
-  <section id="download" class="download">
-    <h2>Download Kashot</h2>
-    <p class="section-sub">Native binaries for every platform. No installers required, no runtime to chase down.</p>
+  <!-- ── Sticky scrollytelling showcase (Apple-style) ───────────────────── -->
+  <!-- Layout: two-column grid. The LEFT column (frame) is `position: sticky`
+       on its own; the RIGHT column (steps) scrolls naturally. Each step has
+       roughly one viewport of breathing room so the sticky frame stays
+       visible while the user reads it. `data-step` lives on the shell and
+       drives the SVG annotation reveal. -->
+  <section id="showcase" class="showcase">
+    <div class="showcase-shell" data-step="1">
+      <div class="showcase-screen-col">
+        <div class="showcase-frame">
+            <div class="showcase-frame-bar">
+              <span class="frame-tag">// LIVE OVERLAY · KASHOT.OS</span>
+              <span class="frame-bar-dots"><i></i><i></i><i></i></span>
+            </div>
+            <div class="showcase-canvas">
+              <!-- minimal mock with selection that grows on scroll -->
+              <svg viewBox="0 0 800 500" preserveAspectRatio="xMidYMid slice">
+                <rect width="800" height="500" fill="#040806"/>
+                <g stroke="rgba(0,255,149,0.18)" stroke-width="1" fill="none">
+                  <path d="M0 100 L800 100"/>
+                  <path d="M0 200 L800 200"/>
+                  <path d="M0 300 L800 300"/>
+                  <path d="M0 400 L800 400"/>
+                  <path d="M100 0 L100 500"/>
+                  <path d="M250 0 L250 500"/>
+                  <path d="M400 0 L400 500"/>
+                  <path d="M550 0 L550 500"/>
+                  <path d="M700 0 L700 500"/>
+                </g>
+                <rect class="showcase-sel" x="180" y="120" width="440" height="260"
+                      fill="rgba(0,255,149,0.05)" stroke="#00ff95" stroke-width="2"
+                      style="filter: drop-shadow(0 0 8px #00ff95)"/>
 
-    <div class="download-grid">
+                <g class="showcase-anno an-1">
+                  <rect x="220" y="150" width="160" height="40" fill="none" stroke="#ffe600" stroke-width="3" style="filter: drop-shadow(0 0 4px #ffe600)"/>
+                </g>
+                <g class="showcase-anno an-2">
+                  <line x1="430" y1="200" x2="540" y2="290" stroke="#ffe600" stroke-width="3" stroke-linecap="round" style="filter: drop-shadow(0 0 4px #ffe600)"/>
+                  <polygon points="540,290 528,282 528,300" fill="#ffe600"/>
+                </g>
+                <g class="showcase-anno an-3">
+                  <circle cx="280" cy="320" r="16" fill="#000" stroke="#00e6c0" stroke-width="2.5" style="filter: drop-shadow(0 0 4px #00e6c0)"/>
+                  <text x="280" y="326" text-anchor="middle" font-family="JetBrains Mono" font-size="14" font-weight="700" fill="#00e6c0">1</text>
+                </g>
+                <g class="showcase-anno an-4">
+                  <circle cx="335" cy="320" r="16" fill="#000" stroke="#00e6c0" stroke-width="2.5" style="filter: drop-shadow(0 0 4px #00e6c0)"/>
+                  <text x="335" y="326" text-anchor="middle" font-family="JetBrains Mono" font-size="14" font-weight="700" fill="#00e6c0">2</text>
+                </g>
 
-      <article class="dl-card dl-card-active">
+                <!-- Animated cursor that walks through the drag-and-annotate
+                     flow, driven by the showcase-shell[data-step] CSS in
+                     styles.css. Position transitions feel hand-driven (no
+                     ease-in-out on the long traverse, faint glow trailing). -->
+                <g class="showcase-cursor" aria-hidden="true">
+                  <!-- Crosshair: ring + cardinal ticks + center dot. -->
+                  <circle r="14" fill="none" stroke="#00ff95" stroke-width="2" style="filter: drop-shadow(0 0 6px #00ff95)"/>
+                  <line x1="-22" y1="0" x2="-8" y2="0" stroke="#00ff95" stroke-width="2"/>
+                  <line x1="22"  y1="0" x2="8"  y2="0" stroke="#00ff95" stroke-width="2"/>
+                  <line x1="0" y1="-22" x2="0" y2="-8" stroke="#00ff95" stroke-width="2"/>
+                  <line x1="0" y1="22"  x2="0" y2="8"  stroke="#00ff95" stroke-width="2"/>
+                  <circle r="2.5" fill="#00ff95"/>
+                </g>
+
+                <!-- Caption strip — one short instruction per step, all
+                     anchored at the same SVG coordinates. CSS toggles
+                     visibility based on `.showcase-shell[data-step]`. -->
+                <g class="showcase-caption">
+                  <rect class="caption-bg" x="40" y="442" width="250" height="32" fill="rgba(4,8,6,0.85)" stroke="#00ff95" stroke-width="1" style="filter: drop-shadow(0 0 6px rgba(0,255,149,0.4))"/>
+                  <text class="cap cap-1" x="50" y="463" font-family="JetBrains Mono, monospace" font-size="13" font-weight="700" fill="#00ff95">[01]  PRESS PRINTSCREEN</text>
+                  <text class="cap cap-2" x="50" y="463" font-family="JetBrains Mono, monospace" font-size="13" font-weight="700" fill="#00ff95">[02]  DRAG TO SELECT</text>
+                  <text class="cap cap-3" x="50" y="463" font-family="JetBrains Mono, monospace" font-size="13" font-weight="700" fill="#00ff95">[03]  ANNOTATE</text>
+                  <text class="cap cap-4" x="50" y="463" font-family="JetBrains Mono, monospace" font-size="13" font-weight="700" fill="#00ff95">[04]  SAVE · COPY · PIN</text>
+                </g>
+              </svg>
+            </div>
+          </div>
+        </div>
+
+        <aside class="showcase-side">
+          <span class="eyebrow">// LIVE</span>
+          <h2 class="showcase-h2">Watch it work.</h2>
+          <p class="showcase-sub">Scroll. The frame stays put; the steps roll past.</p>
+
+          <ol class="showcase-steps">
+            <li class="showcase-step active" data-step="1">
+              <span class="showcase-step-tag">[01]</span>
+              <h3>Press the hotkey.</h3>
+              <p>Default <kbd>PrintScreen</kbd>. The overlay covers every monitor in 50 ms.</p>
+            </li>
+            <li class="showcase-step" data-step="2">
+              <span class="showcase-step-tag">[02]</span>
+              <h3>Drag the region.</h3>
+              <p>Pixel-accurate selection with a 4× live magnifier. Drag any edge to resize, <kbd>Alt</kbd>-drag to move.</p>
+            </li>
+            <li class="showcase-step" data-step="3">
+              <span class="showcase-step-tag">[03]</span>
+              <h3>Annotate.</h3>
+              <p>Nine tools, four palettes, sixteen swatches each. One key per tool. Undo / redo always one stroke away.</p>
+            </li>
+            <li class="showcase-step" data-step="4">
+              <span class="showcase-step-tag">[04]</span>
+              <h3>Save · Copy · Pin.</h3>
+              <p>PNG / JPG / BMP, clipboard, or a borderless top-most pin window anywhere on your desktop. Done.</p>
+            </li>
+          </ol>
+        </aside>
+    </div>
+  </section>
+
+  <!-- ── Modules / features ──────────────────────────────────────────── -->
+  <section id="modules" class="modules section">
+    <div class="section-head reveal">
+      <span class="eyebrow">// MODULES</span>
+      <h2>Six on the grid.</h2>
+      <p class="section-sub">Built for speed, sized to disappear.</p>
+    </div>
+
+    <div class="module-grid">
+
+      <article class="module reveal">
+        <div class="module-head">
+          <span class="module-tag">[01]</span>
+          <h3>TRAY-RESIDENT</h3>
+        </div>
+        <p>Lives in your system tray. One global hotkey (default <kbd>PrintScreen</kbd>) pulls up the capture overlay across every monitor.</p>
+        <span class="module-corner" aria-hidden="true"></span>
+      </article>
+
+      <article class="module reveal">
+        <div class="module-head">
+          <span class="module-tag">[02]</span>
+          <h3>NINE TOOLS</h3>
+        </div>
+        <p>Pen, line, arrow, rectangle, ellipse, marker, text, numbered steps, and pixelate / blur. Single-key shortcut on every tool. Undo / redo always one stroke away.</p>
+        <span class="module-corner" aria-hidden="true"></span>
+      </article>
+
+      <article class="module reveal">
+        <div class="module-head">
+          <span class="module-tag">[03]</span>
+          <h3>FOUR PALETTES</h3>
+        </div>
+        <p>Vivid · Highlighter · Pastel · Pro. Sixteen swatches each, plus a custom color picker. Cycle thickness with one click — your choices persist across sessions.</p>
+        <span class="module-corner" aria-hidden="true"></span>
+      </article>
+
+      <article class="module reveal">
+        <div class="module-head">
+          <span class="module-tag">[04]</span>
+          <h3>PIXEL-LOCK</h3>
+        </div>
+        <p>Live magnifier with 4× zoom and pixel coordinates. Drag any edge or corner to resize. Hold <kbd>Alt</kbd> and drag to reposition the whole selection.</p>
+        <span class="module-corner" aria-hidden="true"></span>
+      </article>
+
+      <article class="module reveal">
+        <div class="module-head">
+          <span class="module-tag">[05]</span>
+          <h3>SAVE · COPY · PIN</h3>
+        </div>
+        <p>PNG / JPG / BMP. Copy straight to clipboard. Or pin a borderless top-most window anywhere on your desktop. Optional watermark on saved images.</p>
+        <span class="module-corner" aria-hidden="true"></span>
+      </article>
+
+      <article class="module reveal">
+        <div class="module-head">
+          <span class="module-tag">[06]</span>
+          <h3>OPEN ON THE GRID</h3>
+        </div>
+        <p>~10 MB native binary on Linux and macOS. ~30 MB self-contained on Windows. No Electron. No Wine. No accounts, no telemetry. MIT-licensed, source on GitHub.</p>
+        <span class="module-corner" aria-hidden="true"></span>
+      </article>
+
+    </div>
+  </section>
+
+  <!-- ── Acquire / download ──────────────────────────────────────────── -->
+  <section id="acquire" class="acquire section">
+    <div class="section-head reveal">
+      <span class="eyebrow">// ACQUIRE</span>
+      <h2>Get on the grid.</h2>
+      <p class="section-sub">Native binaries for every platform. No installers required, no runtime to chase down.</p>
+    </div>
+
+    <div class="acquire-grid">
+
+      <article class="dl-card dl-card-active reveal">
         <header>
-          <span class="dl-icon" aria-hidden="true">
-            <svg viewBox="0 0 24 24" width="32" height="32"><path fill="currentColor" d="M3 5l7-1v7H3zM11 3.9l10-1.4V11H11zM3 13h7v6.1l-7-1zM11 13h10v8.5l-10-1.4z"/></svg>
-          </span>
-          <h3>Windows</h3>
-          <span class="badge badge-good">Stable</span>
+          <span class="dl-tag">[01]</span>
+          <h3>WINDOWS</h3>
+          <span class="dl-status">// STABLE</span>
         </header>
         <p class="dl-desc">Windows 10 / 11 · 64-bit · self-contained. No .NET install required.</p>
 
         <div class="dl-options">
           <a class="btn btn-primary"
              href="https://github.com/singhpratech/kashot/releases/latest/download/Kashot.msi">
-            Installer (.msi)
+            <span class="btn-bracket">[</span>
+            <span>INSTALLER .MSI</span>
+            <span class="btn-bracket">]</span>
+            <span class="btn-sweep" aria-hidden="true"></span>
           </a>
           <a class="btn btn-ghost"
              href="https://github.com/singhpratech/kashot/releases/latest/download/Kashot.exe">
-            Standalone (.exe)
+            STANDALONE .EXE
           </a>
           <a class="btn btn-ghost"
              href="https://github.com/singhpratech/kashot/releases/latest/download/Kashot-portable.zip">
-            Portable (.zip)
+            PORTABLE .ZIP
           </a>
         </div>
 
         <details class="dl-more">
-          <summary>More ways to install</summary>
-          <pre><code># winget (coming soon)
+          <summary>// MORE INSTALL CHANNELS</summary>
+          <pre><code># winget   (queued)
 winget install singhpratech.Kashot
 
-# Chocolatey (coming soon)
+# chocolatey (queued)
 choco install kashot
 
-# Scoop (coming soon)
+# scoop    (queued)
 scoop install kashot</code></pre>
         </details>
 
         <a class="dl-link"
            href="https://github.com/singhpratech/kashot/releases/latest" target="_blank" rel="noopener">
-          View release notes →
+          VIEW RELEASE NOTES →
         </a>
       </article>
 
-      <article class="dl-card">
+      <article class="dl-card reveal">
         <header>
-          <span class="dl-icon" aria-hidden="true">
-            <svg viewBox="0 0 24 24" width="32" height="32"><path fill="currentColor" d="M12 3c1.7 0 3 1.6 3 3.5 0 .6-.1 1.2-.3 1.6.9.4 1.6 1.1 2 2 .8-.5 1.6-1 2.3-1 1.5 0 2 1.6 2 3 0 1.4-.6 2.5-1.4 3.4-.4 2.6-2.5 4.5-5.5 4.5h-4.2C7 20 4.9 18.1 4.4 15.5 3.6 14.6 3 13.5 3 12c0-1.4.5-3 2-3 .8 0 1.6.5 2.4 1 .4-.9 1.1-1.6 2-2-.2-.4-.4-1-.4-1.5C9 4.6 10.3 3 12 3z"/></svg>
-          </span>
-          <h3>Linux</h3>
-          <span class="badge badge-good">Native (Rust)</span>
+          <span class="dl-tag">[02]</span>
+          <h3>LINUX</h3>
+          <span class="dl-status">// NATIVE · RUST</span>
         </header>
         <p class="dl-desc">Native binary, x86_64. No Electron, no Wine. Single ~10 MB executable; tray + global hotkey + capture work today, full editor lands in a follow-up release.</p>
 
         <div class="dl-options">
           <a class="btn btn-primary"
              href="https://github.com/singhpratech/kashot/releases/latest/download/kashot-linux-x86_64.tar.gz">
-            Download .tar.gz
+            <span class="btn-bracket">[</span>
+            <span>DOWNLOAD .TAR.GZ</span>
+            <span class="btn-bracket">]</span>
+            <span class="btn-sweep" aria-hidden="true"></span>
           </a>
         </div>
 
         <details class="dl-more">
-          <summary>More ways to install</summary>
-          <pre><code># AppImage (planned)
+          <summary>// MORE INSTALL CHANNELS</summary>
+          <pre><code># AppImage (queued)
 chmod +x kashot-x86_64.AppImage
 ./kashot-x86_64.AppImage
 
-# Flatpak (planned)
+# Flatpak (queued)
 flatpak install flathub org.kashot.Kashot
 
-# AUR (planned)
+# AUR (queued)
 yay -S kashot</code></pre>
         </details>
 
         <a class="dl-link"
            href="https://github.com/singhpratech/kashot/releases/latest" target="_blank" rel="noopener">
-          View release notes →
+          VIEW RELEASE NOTES →
         </a>
       </article>
 
-      <article class="dl-card">
+      <article class="dl-card reveal">
         <header>
-          <span class="dl-icon" aria-hidden="true">
-            <svg viewBox="0 0 24 24" width="32" height="32"><path fill="currentColor" d="M16.4 12.5c0-2.7 2.2-4 2.3-4-1.3-1.8-3.2-2.1-3.9-2.1-1.7-.2-3.2 1-4 1-.8 0-2.1-1-3.5-1-1.8 0-3.5 1-4.4 2.7-1.9 3.3-.5 8.1 1.4 10.7.9 1.3 2 2.7 3.4 2.7 1.4-.1 1.9-.9 3.6-.9s2.1.9 3.6.9c1.5 0 2.4-1.3 3.3-2.6.7-1 1.2-2 1.6-3.1-.1-.1-3.4-1.3-3.4-4.3zM13.7 4.6c.7-.9 1.2-2.1 1.1-3.3-1 0-2.3.7-3 1.5-.6.7-1.2 1.9-1.1 3.1 1.1.1 2.2-.6 3-1.3z"/></svg>
-          </span>
-          <h3>macOS</h3>
-          <span class="badge badge-good">Native (Rust)</span>
+          <span class="dl-tag">[03]</span>
+          <h3>MACOS</h3>
+          <span class="dl-status">// NATIVE · RUST</span>
         </header>
-        <p class="dl-desc">Native binary on Apple Silicon and Intel. Tray + global hotkey + capture; full editor in a follow-up release. Notarized .dmg packaging coming next.</p>
+        <p class="dl-desc">Native binary on Apple Silicon and Intel. Tray + global hotkey + capture; full editor in a follow-up release. Notarized .dmg packaging is queued next.</p>
 
         <div class="dl-options">
           <a class="btn btn-primary"
              href="https://github.com/singhpratech/kashot/releases/latest/download/Kashot-macos-arm64">
-            Apple Silicon
+            <span class="btn-bracket">[</span>
+            <span>APPLE SILICON</span>
+            <span class="btn-bracket">]</span>
+            <span class="btn-sweep" aria-hidden="true"></span>
           </a>
           <a class="btn btn-ghost"
              href="https://github.com/singhpratech/kashot/releases/latest/download/Kashot-macos-x64">
-            Intel
+            INTEL
           </a>
         </div>
 
         <details class="dl-more">
-          <summary>More ways to install</summary>
-          <pre><code># Homebrew Cask (planned)
+          <summary>// MORE INSTALL CHANNELS</summary>
+          <pre><code># Homebrew Cask (queued)
 brew install --cask kashot</code></pre>
         </details>
 
         <a class="dl-link"
            href="https://github.com/singhpratech/kashot/releases/latest" target="_blank" rel="noopener">
-          View release notes →
+          VIEW RELEASE NOTES →
         </a>
       </article>
 
     </div>
   </section>
 
-  <section id="shortcuts" class="shortcuts">
-    <h2>Keyboard shortcuts</h2>
-    <p class="section-sub">Once a region is selected, every tool is one key away.</p>
+  <!-- ── Manual / shortcuts ──────────────────────────────────────────── -->
+  <section id="manual" class="manual section">
+    <div class="section-head reveal">
+      <span class="eyebrow">// MANUAL</span>
+      <h2>Operate in silence.</h2>
+      <p class="section-sub">Once a region is selected, every tool is one key away.</p>
+    </div>
 
-    <div class="shortcut-cols">
-      <div class="kbd-table">
-        <h3>Tools</h3>
+    <div class="manual-cols">
+      <div class="kbd-table reveal">
+        <h3>// TOOLS</h3>
         <dl>
           <div><dt><kbd>P</kbd></dt><dd>Pen</dd></div>
           <div><dt><kbd>L</kbd></dt><dd>Line</dd></div>
@@ -494,8 +873,8 @@ brew install --cask kashot</code></pre>
         </dl>
       </div>
 
-      <div class="kbd-table">
-        <h3>Actions</h3>
+      <div class="kbd-table reveal">
+        <h3>// ACTIONS</h3>
         <dl>
           <div><dt><kbd>Ctrl</kbd>+<kbd>Z</kbd></dt><dd>Undo</dd></div>
           <div><dt><kbd>Ctrl</kbd>+<kbd>Y</kbd></dt><dd>Redo</dd></div>
@@ -509,51 +888,56 @@ brew install --cask kashot</code></pre>
     </div>
   </section>
 
-  <section class="cta">
-    <h2>Get the latest Kashot</h2>
-    <p>Free. No account. No tracking.</p>
+  <!-- ── Final CTA ───────────────────────────────────────────────────── -->
+  <section class="cta section reveal">
+    <span class="cta-corner cc-tl" aria-hidden="true"></span>
+    <span class="cta-corner cc-tr" aria-hidden="true"></span>
+    <span class="cta-corner cc-bl" aria-hidden="true"></span>
+    <span class="cta-corner cc-br" aria-hidden="true"></span>
+
+    <span class="eyebrow">// JACK IN</span>
+    <h2>Get the latest Kashot.</h2>
+    <p>Free. No account. No tracking. MIT-licensed. Source on GitHub.</p>
+
     <a class="btn btn-primary btn-lg"
        href="https://github.com/singhpratech/kashot/releases/latest/download/Kashot.msi">
-      Download for Windows
+      <span class="btn-bracket">[</span>
+      <span class="btn-text">DOWNLOAD KASHOT</span>
+      <span class="btn-bracket">]</span>
+      <span class="btn-sweep" aria-hidden="true"></span>
     </a>
-    <p class="hero-meta">
-      <a href="https://github.com/singhpratech/kashot/releases" target="_blank" rel="noopener">All releases</a>
-      ·
-      <a href="https://github.com/singhpratech/kashot" target="_blank" rel="noopener">Source on GitHub</a>
+
+    <p class="cta-meta">
+      <a href="https://github.com/singhpratech/kashot/releases" target="_blank" rel="noopener">// ALL RELEASES</a>
+      <span class="sep">·</span>
+      <a href="https://github.com/singhpratech/kashot" target="_blank" rel="noopener">// SOURCE</a>
+      <span class="sep">·</span>
+      <a href="https://github.com/singhpratech/kashot/issues" target="_blank" rel="noopener">// REPORT BUG</a>
     </p>
   </section>
 
 </main>
 
 <footer class="footer">
+  <div class="footer-line">// END OF GRID</div>
+
   <div class="footer-inner">
     <span class="brand brand-sm">
-      <span class="brand-icon" aria-hidden="true">
-        <svg viewBox="0 0 64 64" width="22" height="22">
-          <defs>
-            <linearGradient id="footGrad" x1="0" y1="0" x2="1" y2="1">
-              <stop offset="0" stop-color="#ffe600"/>
-              <stop offset="1" stop-color="#00e6c0"/>
-            </linearGradient>
-          </defs>
-          <rect x="3" y="3" width="58" height="58" rx="13" fill="url(#footGrad)"/>
-          <g stroke="#fff" stroke-width="4.5" stroke-linecap="round" fill="none">
-            <path d="M16 22 L16 16 L22 16"/>
-            <path d="M48 22 L48 16 L42 16"/>
-            <path d="M16 42 L16 48 L22 48"/>
-            <path d="M48 42 L48 48 L42 48"/>
-          </g>
-          <circle cx="32" cy="32" r="3.4" fill="#fff"/>
-        </svg>
+      <span class="brand-mark" aria-hidden="true">
+        <img src="assets/kashot-64.png" alt="" width="22" height="22" />
       </span>
-      <span>Kashot</span>
+      <span>KASHOT</span>
     </span>
+
     <span class="footer-meta">
-      Made with <span aria-label="love">❤</span> by
-      <a href="https://github.com/singhpratech" target="_blank" rel="noopener">PrateekSingh</a>.
-      <a href="https://github.com/singhpratech/kashot" target="_blank" rel="noopener">Source</a>
-      ·
-      <a href="https://github.com/singhpratech/kashot/issues" target="_blank" rel="noopener">Report a bug</a>
+      Built with <span aria-label="love">❤</span> by
+      <a href="https://github.com/singhpratech" target="_blank" rel="noopener">PrateekSingh</a>
+      <span class="sep">·</span>
+      <a href="https://github.com/singhpratech/kashot" target="_blank" rel="noopener">SOURCE</a>
+      <span class="sep">·</span>
+      <a href="https://github.com/singhpratech/kashot/issues" target="_blank" rel="noopener">ISSUES</a>
+      <span class="sep">·</span>
+      MIT
     </span>
   </div>
 </footer>

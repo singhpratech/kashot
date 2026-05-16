@@ -1,47 +1,173 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 630">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 630" width="1200" height="630">
   <defs>
-    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0%"  stop-color="#0c0c0e"/>
-      <stop offset="100%" stop-color="#15151a"/>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%"  stop-color="#000000"/>
+      <stop offset="100%" stop-color="#03100a"/>
     </linearGradient>
-    <linearGradient id="ico" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0%"   stop-color="#ffe600"/>
-      <stop offset="55%"  stop-color="#7df0a8"/>
-      <stop offset="100%" stop-color="#00e6c0"/>
+    <linearGradient id="titleFill" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%"  stop-color="#ffffff"/>
+      <stop offset="55%" stop-color="#c8ffe0"/>
+      <stop offset="100%" stop-color="#4dffb0"/>
     </linearGradient>
-    <radialGradient id="glow" cx="0.5" cy="0.5" r="0.5">
-      <stop offset="0%"   stop-color="#7df0a8" stop-opacity="0.25"/>
-      <stop offset="100%" stop-color="#7df0a8" stop-opacity="0"/>
+    <linearGradient id="bottomGlow" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%"  stop-color="rgba(0,255,149,0)"/>
+      <stop offset="100%" stop-color="rgba(0,255,149,0.18)"/>
+    </linearGradient>
+    <linearGradient id="scanGrad" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%"   stop-color="#00ff95" stop-opacity="0"/>
+      <stop offset="50%"  stop-color="#00ff95" stop-opacity="1"/>
+      <stop offset="100%" stop-color="#00ff95" stop-opacity="0"/>
+    </linearGradient>
+    <radialGradient id="topGlow" cx="50%" cy="0%" r="60%">
+      <stop offset="0%"  stop-color="rgba(0,255,149,0.18)"/>
+      <stop offset="100%" stop-color="rgba(0,255,149,0)"/>
     </radialGradient>
+    <pattern id="dots" x="0" y="0" width="32" height="32" patternUnits="userSpaceOnUse">
+      <circle cx="1" cy="1" r="1" fill="rgba(0,255,149,0.18)"/>
+    </pattern>
   </defs>
 
   <rect width="1200" height="630" fill="url(#bg)"/>
-  <ellipse cx="600" cy="320" rx="520" ry="280" fill="url(#glow)"/>
+  <rect width="1200" height="630" fill="url(#topGlow)"/>
+  <rect width="1200" height="630" fill="url(#bottomGlow)"/>
 
-  <g transform="translate(420 130)">
-    <rect x="14" y="14" width="228" height="228" rx="52" fill="url(#ico)"/>
-    <g stroke="#fff" stroke-width="14" stroke-linecap="round" fill="none">
-      <path d="M70 92 L70 70 L92 70"/>
-      <path d="M186 92 L186 70 L164 70"/>
-      <path d="M70 164 L70 186 L92 186"/>
-      <path d="M186 164 L186 186 L164 186"/>
-    </g>
-    <circle cx="128" cy="128" r="11" fill="#fff"/>
+  <!-- horizontal grid lines (lower half, denser nearer bottom) -->
+  <g stroke="rgba(0,255,149,0.20)" fill="none">
+    <line x1="0" y1="370" x2="1200" y2="370" stroke-width="0.7"/>
+    <line x1="0" y1="410" x2="1200" y2="410" stroke-width="0.85"/>
+    <line x1="0" y1="455" x2="1200" y2="455" stroke-width="1"/>
+    <line x1="0" y1="505" x2="1200" y2="505" stroke-width="1.1"/>
+    <line x1="0" y1="560" x2="1200" y2="560" stroke-width="1.3"/>
+    <line x1="0" y1="618" x2="1200" y2="618" stroke-width="1.5"/>
+  </g>
+  <g stroke="rgba(0,255,149,0.15)" fill="none" stroke-width="0.7">
+    <line x1="50"   y1="350" x2="-110" y2="630"/>
+    <line x1="220"  y1="350" x2="170"  y2="630"/>
+    <line x1="400"  y1="350" x2="420"  y2="630"/>
+    <line x1="600"  y1="350" x2="600"  y2="630"/>
+    <line x1="800"  y1="350" x2="780"  y2="630"/>
+    <line x1="980"  y1="350" x2="1030" y2="630"/>
+    <line x1="1150" y1="350" x2="1310" y2="630"/>
+  </g>
+  <rect width="1200" height="350" fill="url(#dots)" opacity="0.5"/>
+
+  <!-- corner brackets framing the card -->
+  <g stroke="#00ff95" stroke-width="2.5" fill="none" stroke-linecap="square">
+    <path d="M40 90 L40 40 L90 40"/>
+    <path d="M1110 40 L1160 40 L1160 90"/>
+    <path d="M40 540 L40 590 L90 590"/>
+    <path d="M1160 540 L1160 590 L1110 590"/>
   </g>
 
-  <text x="600" y="450" text-anchor="middle"
-        font-family="-apple-system, Segoe UI, Roboto, sans-serif"
-        font-size="78" font-weight="800" fill="#f1f1f3" letter-spacing="-2">
-    Kashot
-  </text>
-  <text x="600" y="500" text-anchor="middle"
-        font-family="-apple-system, Segoe UI, Roboto, sans-serif"
-        font-size="24" font-weight="500" fill="#a0a0aa">
-    Fast screenshots with a real annotation editor.
-  </text>
-  <text x="600" y="555" text-anchor="middle"
-        font-family="-apple-system, Segoe UI, Roboto, sans-serif"
-        font-size="20" font-weight="600" fill="#7df0a8">
-    Native on Windows · kashot.org
-  </text>
+  <!-- top status bar -->
+  <g font-family="JetBrains Mono, monospace" font-size="14" letter-spacing="3" font-weight="500">
+    <circle cx="100" cy="74" r="4" fill="#00ff95"/>
+    <text x="116" y="79" fill="#00ff95">SYS::ONLINE</text>
+    <text x="240" y="79" fill="#4f8268">·</text>
+    <text x="258" y="79" fill="#88c2a4">GRID::03</text>
+    <text x="350" y="79" fill="#4f8268">·</text>
+    <text x="368" y="79" fill="#88c2a4">UPLINK::SECURE</text>
+
+    <text x="1100" y="79" text-anchor="end" fill="#88c2a4">KASHOT.ORG</text>
+    <circle cx="1116" cy="74" r="4" fill="#00e6c0"/>
+    <text x="1124" y="79" fill="#88c2a4">v0.1</text>
+  </g>
+
+  <!-- eyebrow chip -->
+  <g transform="translate(80, 138)">
+    <rect width="220" height="32" fill="rgba(0,255,149,0.05)" stroke="rgba(0,255,149,0.32)" stroke-width="1"/>
+    <text x="14" y="22" font-family="JetBrains Mono, monospace" font-size="13"
+          letter-spacing="3.5" fill="#00ff95" font-weight="600">// KASHOT v0.1</text>
+  </g>
+
+  <!-- KASHOT wordmark with chromatic ghosts -->
+  <g transform="translate(80, 200)">
+    <text x="0" y="170" font-family="Space Grotesk, system-ui, -apple-system, sans-serif"
+          font-size="180" font-weight="700" letter-spacing="-7"
+          fill="#00e6c0" opacity="0.55" transform="translate(-3, 1)">KASHOT</text>
+    <text x="0" y="170" font-family="Space Grotesk, system-ui, -apple-system, sans-serif"
+          font-size="180" font-weight="700" letter-spacing="-7"
+          fill="#ffe600" opacity="0.55" transform="translate(3, -1)">KASHOT</text>
+    <text x="0" y="170" font-family="Space Grotesk, system-ui, -apple-system, sans-serif"
+          font-size="180" font-weight="700" letter-spacing="-7"
+          fill="url(#titleFill)">KASHOT</text>
+  </g>
+
+  <!-- tagline -->
+  <g transform="translate(80, 425)">
+    <text x="0" y="0" font-family="Space Grotesk, system-ui, -apple-system, sans-serif"
+          font-size="26" font-weight="500" fill="#d8ffe8">
+      The lightweight screenshot tool for every grid.
+    </text>
+    <text x="0" y="32" font-family="JetBrains Mono, monospace"
+          font-size="14" letter-spacing="3.5" fill="#88c2a4" font-weight="500">
+      DRAG  ·  ANNOTATE  ·  SAVE  ·  COPY  ·  PIN
+    </text>
+  </g>
+
+  <!-- capture reticle on the right -->
+  <g transform="translate(820, 175)">
+    <circle cx="140" cy="140" r="158" fill="none"
+            stroke="rgba(0,255,149,0.32)" stroke-width="1"
+            stroke-dasharray="6 6"/>
+    <circle cx="-18" cy="140" r="5" fill="#00ff95"/>
+    <circle cx="298" cy="140" r="5" fill="#00e6c0"/>
+
+    <g stroke="rgba(0,255,149,0.30)" stroke-width="1" fill="none">
+      <line x1="140" y1="20"  x2="140" y2="40"/>
+      <line x1="140" y1="240" x2="140" y2="260"/>
+      <line x1="20"  y1="140" x2="40"  y2="140"/>
+      <line x1="240" y1="140" x2="260" y2="140"/>
+    </g>
+
+    <g stroke="#00ff95" stroke-width="3" fill="none" stroke-linecap="square">
+      <path d="M55 80 L55 55 L80 55"/>
+      <path d="M200 55 L225 55 L225 80"/>
+      <path d="M55 200 L55 225 L80 225"/>
+      <path d="M225 200 L225 225 L200 225"/>
+    </g>
+
+    <g stroke="#00ff95" stroke-width="1.2" opacity="0.6">
+      <line x1="140" y1="75"  x2="140" y2="125"/>
+      <line x1="140" y1="155" x2="140" y2="205"/>
+      <line x1="75"  y1="140" x2="125" y2="140"/>
+      <line x1="155" y1="140" x2="205" y2="140"/>
+    </g>
+
+    <circle cx="140" cy="140" r="22" fill="none" stroke="#00ff95" stroke-width="1" opacity="0.45"/>
+    <circle cx="140" cy="140" r="12" fill="none" stroke="#00ff95" stroke-width="1.4"/>
+    <circle cx="140" cy="140" r="4"  fill="#00ff95"/>
+
+    <g fill="#ffe600">
+      <rect x="53" y="53" width="3" height="3"/>
+      <rect x="224" y="53" width="3" height="3"/>
+      <rect x="53" y="224" width="3" height="3"/>
+      <rect x="224" y="224" width="3" height="3"/>
+    </g>
+
+    <line x1="58" y1="190" x2="222" y2="190"
+          stroke="url(#scanGrad)" stroke-width="2"/>
+
+    <text x="55" y="265" font-family="JetBrains Mono, monospace"
+          font-size="12" letter-spacing="2" fill="#4dffb0" opacity="0.9">540 × 320</text>
+    <text x="225" y="265" text-anchor="end" font-family="JetBrains Mono, monospace"
+          font-size="12" letter-spacing="2" fill="#4dffb0" opacity="0.9">LIVE</text>
+    <text x="140" y="38" text-anchor="middle" font-family="JetBrains Mono, monospace"
+          font-size="11" letter-spacing="3" fill="#4dffb0" opacity="0.75">// REGION SELECTED</text>
+  </g>
+
+  <!-- bottom laser line + footer meta -->
+  <line x1="80" y1="540" x2="1120" y2="540" stroke="rgba(0,255,149,0.32)" stroke-width="1"/>
+
+  <g font-family="JetBrains Mono, monospace" font-size="14" letter-spacing="3" font-weight="500">
+    <text x="80" y="568" fill="#d8ffe8" font-weight="600">kashot.org</text>
+    <text x="184" y="568" fill="#4f8268">·</text>
+    <text x="200" y="568" fill="#88c2a4">WINDOWS</text>
+    <text x="298" y="568" fill="#4f8268">·</text>
+    <text x="314" y="568" fill="#88c2a4">LINUX</text>
+    <text x="386" y="568" fill="#4f8268">·</text>
+    <text x="402" y="568" fill="#88c2a4">MACOS</text>
+
+    <text x="1120" y="568" text-anchor="end" fill="#00ff95">// FREE · NO TELEMETRY · MIT</text>
+  </g>
 </svg>
