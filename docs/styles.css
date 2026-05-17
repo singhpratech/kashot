@@ -631,12 +631,29 @@ body.booted .boot { opacity: 0; visibility: hidden; }
   letter-spacing: 0.2em;
   color: var(--text-mid);
   border-right: 1px solid var(--border);
+  cursor: pointer;
+  user-select: none;
   transition:
     background  .25s ease,
     color       .25s ease,
     border-color .25s ease,
     box-shadow  .25s ease,
     transform   .25s ease;
+}
+.platform:hover:not(.is-detected) {
+  color: var(--text);
+  background: rgba(0,255,149,0.05);
+  box-shadow: inset 0 0 0 1px var(--laser-mid);
+}
+.platform:hover:not(.is-detected) .platform-glyph {
+  color: var(--laser-mid);
+  filter: drop-shadow(0 0 5px var(--laser-fog));
+}
+.platform:focus-visible {
+  outline: none;
+  box-shadow:
+    inset 0 0 0 1px var(--laser),
+    0 0 14px var(--laser-fog);
 }
 .platform:last-child { border-right: 0; }
 .platform strong { color: var(--text); font-weight: 600; }
@@ -1385,6 +1402,45 @@ h2 {
   margin-bottom: 16px;
 }
 .dl-options .btn { width: 100%; padding: 11px 16px; font-size: 12px; }
+
+/* One-liner install snippet shown under every dl-card. The pre block uses
+   the same void background as .dl-more's pre so the eye reads them as the
+   same family of code surfaces, but the dl-pipe sits flush in the card to
+   give the install command equal visual weight to the download button. */
+.dl-oneliner {
+  margin: 8px 0 4px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.24em;
+  color: var(--text-dim);
+}
+.dl-pipe {
+  margin: 0 0 14px;
+  padding: 12px 14px;
+  background: var(--void);
+  border: 1px solid var(--laser-mid);
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--laser);
+  overflow-x: auto;
+  line-height: 1.4;
+  user-select: all;
+  cursor: copy;
+}
+.dl-pipe code { color: inherit; }
+
+/* The dl-card header becomes a click target when app.js wires it up so the
+   user can switch the spotlit OS card by clicking the OS name. The buttons
+   inside .dl-options keep their native click behaviour because the click
+   listener is scoped to <header>, not the whole card. */
+.dl-card header[role="button"] {
+  cursor: pointer;
+  transition: color .2s ease, text-shadow .2s ease;
+}
+.dl-card header[role="button"]:hover h3 {
+  color: var(--laser);
+  text-shadow: 0 0 10px var(--laser-glow);
+}
 
 .dl-more { margin-bottom: 16px; }
 .dl-more summary {

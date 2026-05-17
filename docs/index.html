@@ -54,7 +54,7 @@
   <span class="topbar-cell">UPLINK::SECURE</span>
   <span class="topbar-cell topbar-spacer"></span>
   <span class="topbar-cell">KASHOT.ORG</span>
-  <span class="topbar-cell"><span class="dot"></span> v0.1</span>
+  <span class="topbar-cell"><span class="dot"></span> <span data-version>v0.2.0</span></span>
 </div>
 
 <header class="nav">
@@ -63,7 +63,7 @@
       <img src="assets/kashot-64.png" alt="" width="32" height="32" />
     </span>
     <span class="brand-text">KASHOT</span>
-    <span class="brand-tag">_v0.1</span>
+    <span class="brand-tag">_<span data-version>v0.2.0</span></span>
   </a>
 
   <nav class="nav-links" aria-label="Primary">
@@ -185,12 +185,12 @@
     <div class="hero-cta reveal">
       <a id="download-btn"
          class="btn btn-primary"
-         href="https://github.com/singhpratech/kashot/releases/latest/download/Kashot.msi"
+         href="https://github.com/singhpratech/kashot/releases/latest/download/kashot-windows-x86_64.zip"
          data-fallback="https://github.com/singhpratech/kashot/releases/latest">
         <span class="btn-bracket">[</span>
         <span class="btn-text">
           <span class="btn-line">DOWNLOAD KASHOT</span>
-          <span class="btn-sub" id="download-sub">v0.1 · WINDOWS · MSI</span>
+          <span class="btn-sub" id="download-sub">v0.2.0 · WINDOWS · ZIP</span>
         </span>
         <span class="btn-bracket">]</span>
         <span class="btn-sweep" aria-hidden="true"></span>
@@ -735,31 +735,30 @@
         <header>
           <span class="dl-tag">[01]</span>
           <h3>WINDOWS</h3>
-          <span class="dl-status">// STABLE</span>
+          <span class="dl-status">// NATIVE · RUST</span>
         </header>
-        <p class="dl-desc">Windows 10 / 11 · 64-bit · self-contained. No .NET install required.</p>
+        <p class="dl-desc">Windows 10 / 11 · 64-bit · self-contained. Same Rust binary that ships on Linux and macOS.</p>
 
         <div class="dl-options">
           <a class="btn btn-primary"
-             href="https://github.com/singhpratech/kashot/releases/latest/download/Kashot.msi">
+             href="https://github.com/singhpratech/kashot/releases/latest/download/kashot-windows-x86_64.zip">
             <span class="btn-bracket">[</span>
-            <span>INSTALLER .MSI</span>
+            <span>DOWNLOAD .ZIP</span>
             <span class="btn-bracket">]</span>
             <span class="btn-sweep" aria-hidden="true"></span>
           </a>
-          <a class="btn btn-ghost"
-             href="https://github.com/singhpratech/kashot/releases/latest/download/Kashot.exe">
-            STANDALONE .EXE
-          </a>
-          <a class="btn btn-ghost"
-             href="https://github.com/singhpratech/kashot/releases/latest/download/Kashot-portable.zip">
-            PORTABLE .ZIP
-          </a>
         </div>
+
+        <p class="dl-oneliner">// ONE-LINER · PowerShell</p>
+        <pre class="dl-pipe"><code>iwr -useb https://kashot.org/install.ps1 | iex</code></pre>
 
         <details class="dl-more">
           <summary>// MORE INSTALL CHANNELS</summary>
-          <pre><code># winget   (queued)
+          <pre><code># legacy WiX installer (kept as CI artifact on
+# the "Build C# (Windows, legacy)" workflow run):
+#   https://github.com/singhpratech/kashot/actions/workflows/build-csharp.yml
+
+# winget   (queued)
 winget install singhpratech.Kashot
 
 # chocolatey (queued)
@@ -781,7 +780,7 @@ scoop install kashot</code></pre>
           <h3>LINUX</h3>
           <span class="dl-status">// NATIVE · RUST</span>
         </header>
-        <p class="dl-desc">Native binary, x86_64. No Electron, no Wine. Single ~10 MB executable; tray + global hotkey + capture work today, full editor lands in a follow-up release.</p>
+        <p class="dl-desc">Native x86_64 binary. No Electron, no Wine. Tray + hotkey + capture + annotation editor + recording + format conversion — same Rust binary as Windows and macOS.</p>
 
         <div class="dl-options">
           <a class="btn btn-primary"
@@ -792,6 +791,9 @@ scoop install kashot</code></pre>
             <span class="btn-sweep" aria-hidden="true"></span>
           </a>
         </div>
+
+        <p class="dl-oneliner">// ONE-LINER · sh</p>
+        <pre class="dl-pipe"><code>curl -fsSL https://kashot.org/install.sh | sh</code></pre>
 
         <details class="dl-more">
           <summary>// MORE INSTALL CHANNELS</summary>
@@ -818,7 +820,7 @@ yay -S kashot</code></pre>
           <h3>MACOS</h3>
           <span class="dl-status">// NATIVE · RUST</span>
         </header>
-        <p class="dl-desc">Native binary on Apple Silicon and Intel. Tray + global hotkey + capture; full editor in a follow-up release. Notarized .dmg packaging is queued next.</p>
+        <p class="dl-desc">Native on Apple Silicon and Intel. Same Rust binary as Windows and Linux. Notarized .dmg packaging is queued next.</p>
 
         <div class="dl-options">
           <a class="btn btn-primary"
@@ -833,6 +835,9 @@ yay -S kashot</code></pre>
             INTEL
           </a>
         </div>
+
+        <p class="dl-oneliner">// ONE-LINER · sh</p>
+        <pre class="dl-pipe"><code>curl -fsSL https://kashot.org/install.sh | sh</code></pre>
 
         <details class="dl-more">
           <summary>// MORE INSTALL CHANNELS</summary>
@@ -900,7 +905,7 @@ brew install --cask kashot</code></pre>
     <p>Free. No account. No tracking. MIT-licensed. Source on GitHub.</p>
 
     <a class="btn btn-primary btn-lg"
-       href="https://github.com/singhpratech/kashot/releases/latest/download/Kashot.msi">
+       href="https://github.com/singhpratech/kashot/releases/latest">
       <span class="btn-bracket">[</span>
       <span class="btn-text">DOWNLOAD KASHOT</span>
       <span class="btn-bracket">]</span>
