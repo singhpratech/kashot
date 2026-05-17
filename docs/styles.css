@@ -217,6 +217,42 @@ body.booted .boot { opacity: 0; visibility: hidden; }
 .topbar-cell { display: inline-flex; align-items: center; gap: 8px; }
 .topbar-spacer { flex: 1; }
 
+/* Audio toggle in the topbar. Looks like a topbar-cell at rest, lights up
+   in laser-green when active. Procedurally generates a Tron-style ambient
+   pad in the Web Audio API — no file, no copyright surface. */
+.topbar-btn {
+  background: transparent;
+  border: 0;
+  font: inherit;
+  letter-spacing: inherit;
+  color: inherit;
+  cursor: pointer;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  transition: color .2s ease, text-shadow .2s ease;
+}
+.topbar-btn:hover,
+.topbar-btn:focus-visible {
+  color: var(--laser);
+  outline: none;
+}
+.topbar-btn[aria-pressed="true"] {
+  color: var(--laser);
+  text-shadow: 0 0 6px var(--laser-glow);
+}
+.dot-audio { background: var(--laser-mid); }
+.topbar-btn[aria-pressed="true"] .dot-audio {
+  background: var(--laser);
+  box-shadow: 0 0 8px var(--laser-glow);
+  animation: audio-pulse 1.6s ease-in-out infinite;
+}
+@keyframes audio-pulse {
+  0%, 100% { transform: scale(1);   opacity: 1;   }
+  50%      { transform: scale(1.4); opacity: 0.55; }
+}
+
 .dot {
   display: inline-block;
   width: 6px; height: 6px;
@@ -1390,16 +1426,26 @@ h2 {
   border: 1px solid var(--border-mid);
 }
 
+/* Reserve the same vertical space across all three dl-cards so the primary
+   download button lines up exactly. Without these min-heights, a shorter
+   description on one card pulls the button up and the row reads as
+   misaligned. */
 .dl-desc {
   margin: 0 0 20px;
   font-size: 14px;
   color: var(--text-mid);
   line-height: 1.6;
+  min-height: calc(1.6em * 4); /* ~4 lines reserved */
 }
 
 .dl-options {
   display: flex; flex-direction: column; gap: 8px;
   margin-bottom: 16px;
+  min-height: calc((11px * 2 + 12px * 2) + 8px); /* not load-bearing; the
+     real fix is the wrap below */
+  min-height: 102px; /* 2 buttons × ~47px + 8px gap — matches macOS's
+     Apple-Silicon + Intel stack so Windows/Linux's single button row
+     reserves the same vertical space */
 }
 .dl-options .btn { width: 100%; padding: 11px 16px; font-size: 12px; }
 
@@ -1414,9 +1460,16 @@ h2 {
   letter-spacing: 0.24em;
   color: var(--text-dim);
 }
-.dl-pipe {
+/* Wrap holds <pre.dl-pipe> + <button.dl-pipe-copy> so the COPY button can
+   absolute-position over the top-right of the code block without affecting
+   .dl-pipe's flow / scroll behaviour. */
+.dl-pipe-wrap {
+  position: relative;
   margin: 0 0 14px;
-  padding: 12px 14px;
+}
+.dl-pipe {
+  margin: 0;
+  padding: 12px 64px 12px 14px; /* right padding leaves room for COPY */
   background: var(--void);
   border: 1px solid var(--laser-mid);
   font-family: var(--font-mono);
@@ -1426,8 +1479,43 @@ h2 {
   line-height: 1.4;
   user-select: all;
   cursor: copy;
+  white-space: nowrap; /* keep the command on one line; let it scroll */
 }
 .dl-pipe code { color: inherit; }
+
+/* COPY button — one-click clipboard. Sits in the top-right corner of every
+   dl-pipe and flashes "COPIED" for 1.4s on successful write. The button
+   inherits laser-green theme but goes softer at rest so it doesn't fight
+   the actual command for attention. */
+.dl-pipe-copy {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.22em;
+  color: var(--laser-mid);
+  background: rgba(0, 16, 8, 0.85);
+  border: 1px solid var(--laser-mid);
+  padding: 4px 8px;
+  cursor: pointer;
+  opacity: 0.85;
+  transition: opacity .2s ease, color .2s ease, border-color .2s ease,
+              box-shadow .2s ease;
+}
+.dl-pipe-copy:hover,
+.dl-pipe-copy:focus-visible {
+  outline: none;
+  opacity: 1;
+  color: var(--laser);
+  border-color: var(--laser);
+  box-shadow: 0 0 10px var(--laser-fog);
+}
+.dl-pipe-copy.is-copied {
+  color: var(--text);
+  border-color: var(--text);
+  box-shadow: 0 0 12px var(--laser-glow);
+}
 
 /* The dl-card header becomes a click target when app.js wires it up so the
    user can switch the spotlit OS card by clicking the OS name. The buttons
