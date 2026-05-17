@@ -1,0 +1,139 @@
+<?xml version='1.0' encoding='utf-8'?>
+<!--
+  Kashot Windows installer (WiX 3.x schema, fed by `cargo wix`).
+
+  This file was bootstrapped by `cargo wix init` (cargo-wix v0.3+) and then
+  tweaked by hand. To regenerate from scratch, delete this file and re-run
+  `cargo wix init` on Windows with WiX 3.x on PATH — but prefer manual
+  edits so the UpgradeCode GUID and ProductCode stay stable across builds
+  (winget + chocolatey both pin to a fixed UpgradeCode/ProductCode pair).
+
+  Inputs at build time:
+    - $(var.CargoTargetBinDir)\kashot.exe       built by `cargo build` (release profile)
+    - $(var.CargoProjectName) == "kashot-app"   — supplied by `cargo wix`
+    - License.rtf in this directory             — shown in the install wizard
+
+  Outputs:
+    - target\wix\Kashot.msi  (renamed to Kashot.msi for the GitHub Release)
+
+  Notes:
+    - Scope is per-machine; install dir is %ProgramFiles%\Kashot.
+    - Adds a Start Menu shortcut; NO auto-start (the app exposes that in
+      its own Settings dialog — keeping installer + in-app preference from
+      fighting each other).
+    - The icon is the same Kashot.ico shipped in the repo root under
+      icons/Kashot.ico; copied into kashot-rs/wix/Kashot.ico by CI so the
+      bind path resolves on the runner.
+-->
+<Wix xmlns='http://schemas.microsoft.com/wix/2006/wi'>
+
+    <Product
+        Id='*'
+        Name='Kashot'
+        UpgradeCode='4D6C8E2A-5B7F-4E9A-8C1B-2F3D4E5A6B7C'
+        Manufacturer='Prateek Singh'
+        Language='1033'
+        Codepage='1252'
+        Version='$(var.Version)'>
+
+        <Package Id='*'
+            Keywords='Installer'
+            Description='Kashot — fast screenshots with annotations'
+            Manufacturer='Prateek Singh'
+            InstallerVersion='450'
+            Languages='1033'
+            Compressed='yes'
+            InstallScope='perMachine'
+            SummaryCodepage='1252' />
+
+        <MajorUpgrade
+            Schedule='afterInstallInitialize'
+            DowngradeErrorMessage='A newer version of [ProductName] is already installed. Setup will now exit.' />
+
+        <Media Id='1' Cabinet='media1.cab' EmbedCab='yes' DiskPrompt='CD-ROM #1' />
+        <Property Id='DiskPrompt' Value='Kashot Installation' />
+
+        <Directory Id='TARGETDIR' Name='SourceDir'>
+            <Directory Id='ProgramFiles64Folder' Name='PFiles'>
+                <Directory Id='APPLICATIONFOLDER' Name='Kashot'>
+                    <Component Id='License' Guid='*' Win64='yes'>
+                        <File Id='LicenseFile'
+                              Name='License.rtf'
+                              DiskId='1'
+                              Source='$(sys.SOURCEFILEDIR)License.rtf'
+                              KeyPath='yes' />
+                    </Component>
+
+                    <Component Id='binary0' Guid='*' Win64='yes'>
+                        <File
+                            Id='exe0'
+                            Name='kashot.exe'
+                            DiskId='1'
+                            Source='$(var.CargoTargetBinDir)\kashot.exe'
+                            KeyPath='yes' />
+                    </Component>
+                </Directory>
+            </Directory>
+
+            <Directory Id='ProgramMenuFolder'>
+                <Directory Id='ApplicationProgramsFolder' Name='Kashot'>
+                    <Component Id='StartMenuShortcut' Guid='6A29F2E1-4E8B-4B5A-9C2E-1A8B3F9D2C4E' Win64='yes'>
+                        <Shortcut Id='KashotStartMenuShortcut'
+                                  Name='Kashot'
+                                  Description='Fast screenshots with annotations'
+                                  Target='[APPLICATIONFOLDER]kashot.exe'
+                                  WorkingDirectory='APPLICATIONFOLDER'
+                                  Icon='ProductIcon.ico' />
+                        <RemoveFolder Id='RemoveApplicationProgramsFolder'
+                                      Directory='ApplicationProgramsFolder'
+                                      On='uninstall' />
+                        <RegistryValue Root='HKCU'
+                                       Key='Software\Kashot\Kashot'
+                                       Name='installed'
+                                       Type='integer'
+                                       Value='1'
+                                       KeyPath='yes' />
+                    </Component>
+                </Directory>
+            </Directory>
+        </Directory>
+
+        <Feature
+            Id='Binaries'
+            Title='Application'
+            Description='Installs the Kashot binary.'
+            Level='1'
+            ConfigurableDirectory='APPLICATIONFOLDER'
+            AllowAdvertise='no'
+            Display='expand'
+            Absent='disallow'>
+
+            <ComponentRef Id='License' />
+            <ComponentRef Id='binary0' />
+            <ComponentRef Id='StartMenuShortcut' />
+        </Feature>
+
+        <!-- Add/Remove Programs entries. -->
+        <Icon Id='ProductIcon.ico' SourceFile='$(sys.SOURCEFILEDIR)Kashot.ico' />
+        <Property Id='ARPPRODUCTICON' Value='ProductIcon.ico' />
+        <Property Id='ARPHELPLINK' Value='https://kashot.org' />
+        <Property Id='ARPURLINFOABOUT' Value='https://kashot.org' />
+        <Property Id='ARPNOREPAIR' Value='1' />
+        <!-- ARPNOMODIFY is declared by WixUI_InstallDir; redeclaring it
+             trips LGHT0091 "Duplicate symbol 'Property:ARPNOMODIFY'"
+             at link time. Leave it to the UI extension. -->
+
+        <!--
+          Wizard UI: WixUI_InstallDir gives the user a chance to pick an
+          alternate install location, which matches what users expect from
+          a per-machine MSI. Pages: License, InstallDir, Confirm.
+        -->
+        <UI>
+            <UIRef Id='WixUI_InstallDir' />
+        </UI>
+        <Property Id='WIXUI_INSTALLDIR' Value='APPLICATIONFOLDER' />
+        <WixVariable Id='WixUILicenseRtf' Value='$(sys.SOURCEFILEDIR)License.rtf' />
+
+    </Product>
+
+</Wix>

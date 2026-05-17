@@ -4,9 +4,12 @@
 # behaviour, one workflow.
 #
 # Outputs (uploaded to the GitHub Release on tag push):
-#   Windows : kashot-windows-x86_64.zip
-#   Linux   : kashot-linux-x86_64.tar.gz, kashot-linux-arm64.tar.gz
-#   macOS   : Kashot-macos-arm64, Kashot-macos-x64
+#   Windows : kashot-windows-x86_64.zip, Kashot.msi
+#   Linux   : kashot-linux-x86_64.tar.gz, kashot-linux-arm64.tar.gz,
+#             kashot-x86_64.AppImage
+#   macOS   : Kashot-macos-arm64, Kashot-macos-x64,
+#             Kashot-macos-arm64.dmg, Kashot-macos-x64.dmg
+#   Verify  : SHA256SUMS (sha256 of every asset in the release)
 name: Build Rust
 
 on:
@@ -183,6 +186,50 @@ jobs:
           path: kashot-rs/dist/kashot-windows-x86_64.zip
           if-no-files-found: error
 
+      # ── MSI installer (cargo-wix) ────────────────────────────────────────
+      # Re-introduces the installer-style asset that the legacy C# build
+      # used to ship (`Installer/build.ps1` → `Kashot.msi`, removed in
+      # PR #9). winget + chocolatey both expect `.msi`, not the `.zip`.
+      #
+      # WiX 3.x ships preinstalled on the `windows-latest` GitHub-hosted
+      # runner image at `C:\Program Files (x86)\WiX Toolset v3.*\bin\`.
+      # `cargo-wix` finds it via the WIX env var; we set it explicitly
+      # to insulate ourselves from image upgrades that rename the dir.
+      - name: Install cargo-wix
+        shell: pwsh
+        run: cargo install cargo-wix --locked --version 0.3.9
+
+      - name: Locate WiX 3.x toolset
+        shell: pwsh
+        run: |
+          $wixDir = Get-ChildItem 'C:\Program Files (x86)\' -Directory `
+            | Where-Object { $_.Name -like 'WiX Toolset v3*' } `
+            | Select-Object -First 1
+          if (-not $wixDir) { throw "WiX 3.x toolset not found on runner image." }
+          $wixBin = Join-Path $wixDir.FullName 'bin'
+          echo "WIX=$($wixDir.FullName)\" >> $env:GITHUB_ENV
+          echo "$wixBin" >> $env:GITHUB_PATH
+
+      - name: Build Kashot.msi
+        shell: pwsh
+        # `cargo wix` re-uses the already-built kashot.exe under
+        # target/release/. `--nocapture` lets us see candle/light output
+        # in the GitHub Actions log; `--no-build` skips a redundant
+        # `cargo build` (we ran it above).
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          cargo wix --package kashot-app `
+                    --no-build `
+                    --nocapture `
+                    --include wix\main.wxs `
+                    --output dist\Kashot.msi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Kashot-msi
+          path: kashot-rs/dist/Kashot.msi
+          if-no-files-found: error
+
   # ── 4. macOS universal build (arm64 + x86_64 → one .app, two .dmg) ─────────
   build-macos:
     name: macOS ${{ matrix.target }}
@@ -226,6 +273,109 @@ jobs:
         with:
           name: Kashot-macos-${{ matrix.label }}
           path: kashot-rs/dist/Kashot-macos-${{ matrix.label }}
+          if-no-files-found: error
+
+      # ── .app bundle + .dmg ──────────────────────────────────────────────
+      # Additive packaging: the raw binary above still ships unchanged
+      # (anyone scripting against the old asset name keeps working). On
+      # top of that we wrap it in a minimal `Kashot.app` bundle and let
+      # `create-dmg` produce a drag-to-Applications installer.
+      #
+      # The .icns is built on the fly from the existing PNG iconset
+      # under icons/macos_iconset/Kashot.iconset/ via `iconutil`, which
+      # ships with the macOS runner image.
+      - name: Install create-dmg
+        run: brew install create-dmg
+
+      - name: Derive version string
+        id: ver
+        shell: bash
+        # On tag pushes this is the version (e.g. v0.3.0 → 0.3.0).
+        # On non-tag runs we still produce a DMG for sanity-checking;
+        # use 0.0.0 so CFBundleShortVersionString is well-formed.
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            v="${GITHUB_REF_NAME#v}"
+          else
+            v="0.0.0"
+          fi
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+
+      - name: Build Kashot.icns from existing iconset
+        working-directory: .
+        # The iconset directory already lives in the repo at
+        # icons/macos_iconset/Kashot.iconset/; iconutil takes it
+        # straight to .icns with no extra tooling.
+        run: |
+          iconutil -c icns \
+            -o kashot-rs/dist/Kashot.icns \
+            icons/macos_iconset/Kashot.iconset
+
+      - name: Assemble Kashot.app bundle
+        run: |
+          set -eux
+          APP="dist/Kashot.app"
+          rm -rf "$APP"
+          mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
+          # Binary inside the bundle is always named `kashot` (matches
+          # CFBundleExecutable below + the Info.plist contract).
+          cp target/${{ matrix.target }}/release/kashot "$APP/Contents/MacOS/kashot"
+          chmod +x "$APP/Contents/MacOS/kashot"
+          cp dist/Kashot.icns "$APP/Contents/Resources/kashot.icns"
+
+          cat > "$APP/Contents/Info.plist" <<PLIST
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+                                  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>CFBundleName</key>            <string>Kashot</string>
+            <key>CFBundleDisplayName</key>     <string>Kashot</string>
+            <key>CFBundleIdentifier</key>      <string>org.kashot.Kashot</string>
+            <key>CFBundleVersion</key>         <string>${{ steps.ver.outputs.version }}</string>
+            <key>CFBundleShortVersionString</key><string>${{ steps.ver.outputs.version }}</string>
+            <key>CFBundleExecutable</key>      <string>kashot</string>
+            <key>CFBundleIconFile</key>        <string>kashot</string>
+            <key>CFBundlePackageType</key>     <string>APPL</string>
+            <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
+            <key>LSMinimumSystemVersion</key>  <string>11.0</string>
+            <key>LSUIElement</key>             <true/>
+            <key>NSHighResolutionCapable</key> <true/>
+          </dict>
+          </plist>
+          PLIST
+
+      - name: Build Kashot-macos-${{ matrix.label }}.dmg
+        # Drag-to-Applications layout: 500x320 window with the .app icon
+        # on the left (125,125) and the /Applications drop-link on the
+        # right (375,125). Gatekeeper quarantine is stripped by the user
+        # on first launch (`xattr -dr com.apple.quarantine`); we aren't
+        # codesigning in CI today.
+        #
+        # create-dmg returns 0 on success and 2 on the recoverable
+        # "couldn't detach hdiutil" warning that happens on hosted
+        # runners. Treat 2 as success.
+        run: |
+          set +e
+          create-dmg \
+            --volname "Kashot" \
+            --window-size 500 320 \
+            --icon-size 96 \
+            --icon "Kashot.app" 125 125 \
+            --app-drop-link 375 125 \
+            "dist/Kashot-macos-${{ matrix.label }}.dmg" \
+            "dist/Kashot.app"
+          rc=$?
+          if [ "$rc" -ne 0 ] && [ "$rc" -ne 2 ]; then
+            echo "create-dmg failed with exit $rc"
+            exit "$rc"
+          fi
+          test -f "dist/Kashot-macos-${{ matrix.label }}.dmg"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Kashot-macos-${{ matrix.label }}-dmg
+          path: kashot-rs/dist/Kashot-macos-${{ matrix.label }}.dmg
           if-no-files-found: error
 
   # ── 4b. Wrap the Linux x86_64 tarball into an AppImage ────────────────────
@@ -315,6 +465,25 @@ jobs:
 
       - name: Show what we're shipping
         run: ls -lh artifacts/
+
+      # ── SHA256SUMS ──────────────────────────────────────────────────────
+      # One line per file in `<hash>  <filename>` form (the standard
+      # `sha256sum -b *` output). The in-app self-updater (`feat/self-
+      # updater` branch) fetches this from the release alongside the
+      # platform asset and verifies the downloaded payload against the
+      # listed hash before launching the replacement binary.
+      #
+      # We generate it AFTER all per-OS artifacts land so the hash list
+      # covers every shipping file in one place.
+      - name: Generate SHA256SUMS
+        run: |
+          cd artifacts
+          # `--binary` matches the `*` star-marker convention; sort by
+          # filename so the file is stable across re-runs of the same
+          # tag (helps `diff` it during release dry-runs).
+          sha256sum --binary $(ls | sort) > SHA256SUMS
+          echo "--- SHA256SUMS ---"
+          cat SHA256SUMS
 
       - name: Attach to release
         uses: softprops/action-gh-release@v2
