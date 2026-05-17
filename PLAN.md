@@ -2,19 +2,14 @@
 
 **Status legend:** ✅ shipped · 🔨 in progress (code partially landed) · 📋 backlog · ⏳ long-term · ❄ frozen
 
-The project lives in two implementations side-by-side:
+The project lives in a single Rust workspace under `kashot-rs/`
+(`kashot-core`, `kashot-platform`, `kashot-app`), targeting Windows +
+Linux + macOS from one codebase. **Canonical build as of v0.3.0** —
+ships every release artifact on all three platforms.
 
-- **`kashot-rs/`** — Rust workspace (`kashot-core`, `kashot-platform`,
-  `kashot-app`) targeting Windows + Linux + macOS from one codebase.
-  **Canonical build as of v0.2.0** — ships every release artifact on all
-  three platforms.
-- **`Kashot/`** — C# / .NET 8 / WinForms build. Windows-only. Original
-  reference implementation; retained as a PR compile-check and CI
-  artifact (legacy WiX MSI for users who prefer an installer-style
-  package), but no longer attaches to releases.
-
-Both share **brand, settings JSON format, hotkey wire format, tool shortcuts,
-and color palettes**. See § "Architecture invariants" at the bottom.
+The original C# / .NET 8 / WinForms build (`Kashot/`, `Installer/`,
+`build-csharp.yml`) was retired in v0.3.0 once the Rust port covered
+all three platforms. Git history retains it if you need to look back.
 
 ---
 
