@@ -1400,6 +1400,12 @@ h2 {
   border: 1px solid var(--border);
   padding: 28px 26px;
   display: flex; flex-direction: column;
+  /* min-width: 0 is critical — without it, this grid item defaults to
+     min-width: auto (= its min-content), which equals the install
+     command's full nowrap width. That made the rightmost card overflow
+     the page width. Letting the card shrink lets the inner dl-pipe's
+     own min-width: 0 + overflow-x: auto do their job. */
+  min-width: 0;
   transition: border-color .25s ease, transform .25s ease, box-shadow .25s ease;
 }
 .dl-card:hover {
@@ -1470,13 +1476,35 @@ h2 {
 }
 
 .dl-options {
-  display: flex; flex-direction: column; gap: 8px;
+  display: flex; flex-direction: column; gap: 10px;
   margin-bottom: 16px;
-  min-height: 102px; /* 2 buttons × ~47px + 8px gap — matches macOS's
-     Apple-Silicon + Intel stack so Windows/Linux's single button row
-     reserves the same vertical space at narrow widths */
+  min-width: 0;
+  /* On wide screens subgrid stretches this row to the tallest card so
+     no min-height is needed; on narrow screens we still want all 3
+     cards to read with the same option-block height. macOS's primary
+     button + alt-link is taller than a single button on Windows/Linux,
+     so the min-height matches that. */
+  min-height: 72px;
 }
-.dl-options .btn { width: 100%; padding: 11px 16px; font-size: 12px; }
+.dl-options .btn {
+  width: 100%;
+  padding: 11px 16px;
+  font-size: 12px;
+  min-width: 0;
+}
+.dl-alt {
+  margin: 2px 0 0;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.12em;
+  color: var(--text-dim);
+  text-align: center;
+}
+.dl-alt a {
+  color: var(--laser-soft);
+  white-space: nowrap;
+}
+.dl-alt a:hover { color: var(--laser); text-shadow: 0 0 6px var(--laser-glow); }
 
 /* One-liner install snippet shown under every dl-card. The pre block uses
    the same void background as .dl-more's pre so the eye reads them as the
@@ -1503,6 +1531,12 @@ h2 {
   margin: 0 0 14px;
   border: 1px solid var(--laser-mid);
   background: var(--void);
+  /* Belt-and-suspenders: even though .dl-pipe sets min-width: 0, the
+     wrap itself must also be allowed to shrink as a flex item of the
+     dl-card. Without it the install command's nowrap min-content could
+     still inflate the wrap. */
+  min-width: 0;
+  overflow: hidden;
 }
 .dl-pipe {
   flex: 1 1 auto;
