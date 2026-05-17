@@ -64,4 +64,4 @@ The repository has the following hardening in place:
 - **Dependabot vulnerability alerts** + **automated security updates** enabled.
 - **Secret scanning** + **push protection** enabled (blocks pushes containing detected secrets).
 - **Private vulnerability reporting** enabled.
-- **CodeQL** scans C# + Rust + Actions workflows on every PR and push to `main`.
+- **CodeQL** scans the GitHub Actions workflows on every PR and push to `main`, plus a weekly safety run. (CodeQL Rust support is still in preview and is intentionally not enabled yet; C# was dropped when the legacy WinForms build was retired in v0.3.0.)

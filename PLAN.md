@@ -15,20 +15,27 @@ all three platforms. Git history retains it if you need to look back.
 
 ## ✅ Shipped (on `main`)
 
-### Capture core (C#)
+> The first four subsections below describe the v0.1 Windows-only C# /
+> WinForms build, which **was retired in v0.3.0**. The same features
+> (capture / annotation / output / settings) all ship today in the Rust
+> port — see **Cross-platform foundation (Rust)** further down. The C#
+> sections are kept as a historical reference of what each shipped surface
+> covered before the port.
+
+### Capture core (v0.1 — C#, retired)
 - Tray-resident Windows app, single-instance mutex, registers global hotkey
 - Multi-monitor virtual-screen capture
 - Selection rectangle with magnifier + crosshair
 - Selection resize (drag edges/corners) + move (Alt+drag)
 
-### Annotation editor (C#)
+### Annotation editor (v0.1 — C#, retired)
 - Tools: pen, line, arrow, rectangle, ellipse, marker, text, numbered step, blur/pixelate
 - Tool keyboard shortcuts: P / L / A / R / E / M / T / N / B
 - 4 color palettes (Vivid / Highlighter / Pastel / Pro), 16 colors each
 - Custom color picker, thickness cycle (1 / 2 / 3 / 5 / 8 px)
 - Undo (Ctrl+Z) / Redo (Ctrl+Y)
 
-### Output (C#)
+### Output (v0.1 — C#, retired)
 - Save to PNG / JPEG / BMP
 - Copy to clipboard
 - Pin to screen (always-on-top draggable window)
@@ -43,14 +50,14 @@ all three platforms. Git history retains it if you need to look back.
   leak across long tray sessions
 - **Save / clipboard failures show a balloon** instead of crashing the overlay
 
-### Distribution (C#, Windows)
+### Distribution (v0.1 — C# Windows, retired)
 - Self-contained single-file `Kashot.exe` (~68 MB) for win-x64
 - WiX 7 MSI installer (`Kashot.msi`, ~62 MB) with Start Menu + Desktop shortcuts
 - `Kashot-portable.zip` — extract-and-run, no install
 - All three artifacts produced by `Installer/build.ps1` in one run
 
 ### Cross-platform foundation (Rust) — `kashot-rs/`
-- **`kashot-rs/` workspace** — `kashot-core` (logic, **9 unit tests pass on
+- **`kashot-rs/` workspace** — `kashot-core` (logic, **17 unit tests pass on
   Linux + Windows + macOS**), `kashot-platform` (capture / hotkey / tray /
   clipboard / recorder via xcap, global-hotkey, tray-icon, arboard, ffmpeg
   / screencapture shell-out), `kashot-app` (winit + softbuffer overlay,
@@ -95,11 +102,13 @@ all three platforms. Git history retains it if you need to look back.
   CNAME). Hero with the brand icon, three-platform download cards,
   features, keyboard shortcut reference. ~76 KB total, no framework.
 - **CI workflows** (`.github/workflows/`):
-  - `build-csharp.yml` — Windows runner builds and uploads MSI / EXE / ZIP
-    on tag push
   - `build-rust.yml` — matrix tests `kashot-core` on Ubuntu / Windows /
-    macOS, release builds on each, attaches all artifacts to the GitHub
-    Release on tag push
+    macOS, release builds on each (Linux x86_64 + arm64, Windows x86_64,
+    macOS arm64 + x64), wraps the Linux tarball into an AppImage, and
+    attaches every artifact to the GitHub Release on tag push
+  - `codeql.yml` — CodeQL static analysis over the workflow YAML
+    (Rust CodeQL support is in preview; C# was dropped with the legacy
+    WinForms build in v0.3.0)
 
 ---
 
@@ -109,13 +118,13 @@ all three platforms. Git history retains it if you need to look back.
 |---|---|---|---|
 | R1 | Brand-stamped "KA" icon | Drawn-bow + camera + viewfinder vector landed, multi-resolution `.ico` built | Replace with image-model-generated master once delivered |
 | R2 | OCR (text from image) | `Kashot/OcrService.cs` ✅ — Tesseract 5.2.0 wrapper, lazy-downloads `eng.traineddata` to AppData on first use | Tray menu item "Extract text…" + result popup with copy-to-clipboard |
-| R3 | Screen recording | `Kashot/ScreenRecorder.cs` ✅ — `KashotRecorder` wraps ScreenRecorderLib 6.6.0, MP4 H.264 + AAC, mic + system loopback toggles | Tray "Record Screen" toggle, save dialog for output path, hotkey support, optional pre-recording region selector |
+| R3 | Screen recording | ✅ **shipped** in Rust (v0.3.0) on Linux X11 (`ffmpeg -f x11grab` + PulseAudio mic + monitor source), Windows (`ffmpeg -f gdigrab` + DirectShow mic — system-audio loopback queued), and macOS (built-in `screencapture -v`; AVFoundation audio queued). Floating REC indicator with STOP. | Wayland capture via `xdg-desktop-portal` (ashpd); WASAPI loopback on Windows; AVFoundation on macOS for mic + system. |
 | R4 | Meme text annotation | `MemeAnnotation` in `Annotations.cs` ✅ — Impact-style font, white fill + black outline, uppercase auto | Wire `Tool.Meme` into `OverlayForm`: keyboard shortcut **K**, toolbar entry, `StartTextInput(meme: true)` path |
 | R5 | PDF export | `PdfSharp` 6.2.4 added | `*.pdf` filter in `SaveToFile` dialog + single-page export path |
 | R6 | Image resize presets | (planned) | New `Resize…` action button → popup with 100 / 75 / 50 / 25 % + Max-1920 / Max-1280 / Max-640 + custom W×H. Apply to `GetFinalImage` output before save/copy/pin |
 | R7 | Rust editor port | ✅ **shipped** (PR #1 + PR #2 + PR #3) — winit + softbuffer overlay, all 9 annotation tools, region selector, edge resize, color palette popup with 4 palettes, thickness cycle, undo/redo, Save/Copy/Pin action panel, Pin window, magnifier, tooltips, dimension chip, watermark, mic-audio recording on Linux | — |
-| R8 | Native Settings dialog (Rust) | Settings entry point opens `settings.json` in default editor (every key editable) + quick save-folder picker | Custom widget-based form with hotkey rebinder + theme combo + watermark fields. Needs the iced UI port to land first |
-| R9 | Video format conversion / export | Screen recordings ship as MP4 H.264 only | Add a "Convert recording…" tray action: pick source MP4, choose target format (WebM / GIF / MOV), shell to ffmpeg with the right transcoding args, drop result next to source |
+| R8 | Native Settings dialog (Rust) | ✅ **shipped** — themed dialog with save-folder picker, watermark text + opacity, marker opacity slider, and a live hotkey **REBIND** widget (PR #14). Edit-as-JSON button kept as an escape hatch. | Theme combo (when the shared `kashot-core::theme` extraction lands). |
+| R9 | Video format conversion / export | ✅ **shipped** — `convert_video_form.rs` tray action: pick source MP4, choose target (MOV / WebM / MKV / GIF), shell to bundled ffmpeg, drop result next to source. Companion `convert_image_form.rs` handles PNG ↔ JPG / BMP / WEBP. | — |
 | R10 | Bundled Wayland support | Linux X11 only via `xcap` + `x11rb`; Wayland sessions fall back to a portal-based capture (queued) | Wire `xdg-desktop-portal` Screenshot + ScreenCast portals through `ashpd` so kashot works on GNOME-on-Wayland / KDE-on-Wayland out of the box |
 
 ---
@@ -145,9 +154,9 @@ all three platforms. Git history retains it if you need to look back.
 - **Per-monitor DPI tuning** — verify cleanup-pass on 4K + scaling combinations
 
 ### Distribution channels (Notepad++-style)
-- **Windows**: winget (`winget install singhpratech.Kashot`), Chocolatey, Scoop, Microsoft Store
-- **Linux**: AppImage, Flatpak, `.deb` (Debian/Ubuntu), `.rpm` (Fedora/RHEL), AUR
-- **macOS**: Homebrew Cask (`brew install --cask kashot`), notarized signed `.dmg`
+- **Windows**: winget (`winget install singhpratech.Kashot`), Chocolatey, Scoop, Microsoft Store, MSI installer (in flight)
+- **Linux**: AppImage (✅ built in CI; bundle is uploaded on every tag), Flatpak, `.deb` (Debian/Ubuntu), `.rpm` (Fedora/RHEL — spec lives in `dist/rpm/`, COPR submission pending), Snap (`dist/snap/snapcraft.yaml` buildable, store upload pending), AUR
+- **macOS**: Homebrew Cask (`brew install --cask kashot`), notarized signed `.dmg` (in flight)
 
 ---
 
@@ -249,4 +258,4 @@ These cross-cut both implementations; if you change one, change both.
 
 ---
 
-*Last updated: 2026-04-30. Maintained by [@singhpratech](https://github.com/singhpratech).*
+*Last updated: 2026-05-17 (post-v0.3.0 freshness sweep). Maintained by [@singhpratech](https://github.com/singhpratech).*

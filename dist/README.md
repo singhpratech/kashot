@@ -25,13 +25,14 @@ new version + sha256.
 
 > **Note on asset-name mismatches.** As of v0.3.0, the canonical Windows
 > artifact on the Release is `kashot-windows-x86_64.zip` (built by
-> `build-rust.yml`). The `winget/` and `chocolatey/` manifests still target
-> `Kashot.msi` — the MSI now ships as a CI artifact on the
-> `Build C# (Windows, legacy)` workflow run rather than on the Release.
-> Before activating either channel, either (a) re-attach the MSI to the
-> Release in `build-csharp.yml`, or (b) flip the manifest to a zip-style
-> install pointing at `kashot-windows-x86_64.zip`. `scoop/` still targets
-> the legacy `Kashot-portable.zip` for the same reason.
+> `build-rust.yml`). The legacy C# build (and its `build-csharp.yml`
+> workflow) was retired in v0.3.0, so no MSI / portable-zip is produced
+> any more. A Rust-side MSI installer is in flight in a separate CI track;
+> until it lands, the `winget/` and `chocolatey/` manifests still target
+> the legacy `Kashot.msi` and `scoop/` still targets `Kashot-portable.zip`.
+> Before activating any of those three channels, flip the manifest to a
+> zip-style install pointing at `kashot-windows-x86_64.zip` (or wait for
+> the new MSI artifact to start shipping on the Release).
 
 > **Linux broad packaging.** `rpm/kashot.spec` and `snap/snapcraft.yaml`
 > are buildable as-is against the v0.3.0 release tarball, but neither is
