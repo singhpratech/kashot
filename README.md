@@ -13,7 +13,7 @@
 &nbsp;·&nbsp; [Roadmap](PLAN.md)
 &nbsp;·&nbsp; [Architecture](CLAUDE.md)
 
-[![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-22c55e.svg)](LICENSE)
+[![License](https://img.shields.io/badge/license-Apache--2.0-22c55e.svg)](LICENSE)
 ![Platform](https://img.shields.io/badge/platforms-Windows%20%7C%20Linux%20%7C%20macOS-0ea5e9)
 ![Binary](https://img.shields.io/badge/binary-~7MB%20stripped-eab308)
 ![No telemetry](https://img.shields.io/badge/telemetry-none-ec4899)
@@ -153,7 +153,7 @@ brew install --cask kashot
 | ⏱️ | **Delayed capture** — 3 s / 5 s / 10 s countdown with tray indicator |
 | 🖥️ | **Multi-monitor** — single virtual-desktop capture, no per-screen switching |
 | 🌗 | **Themed dialogs** — Settings · About · Updates · Convert — same laser-green skin everywhere |
-| 🔒 | **No accounts. No telemetry. No upsell.** Free, open source (MIT OR Apache-2.0) |
+| 🔒 | **No accounts. No telemetry. No upsell.** Free, open source (Apache-2.0) |
 
 </div>
 
@@ -265,14 +265,11 @@ icons/                 branded icon pack (every platform size, one source PNG)
 
 ## License
 
-Dual-licensed under either of:
+Licensed under the **Apache License, Version 2.0** — see [`LICENSE`](LICENSE).
 
-- **MIT** — see [`LICENSE-MIT`](LICENSE-MIT)
-- **Apache-2.0** — see [`LICENSE-APACHE`](LICENSE-APACHE)
+`SPDX-License-Identifier: Apache-2.0`.
 
-at your option. `SPDX-License-Identifier: MIT OR Apache-2.0`.
-
-Contributions are accepted under the same dual-license terms (Apache-2.0 §5).
+Contributions are accepted under the same Apache-2.0 terms (Apache-2.0 §5).
 
 ## Credits
 
