@@ -1364,6 +1364,36 @@ h2 {
   gap: 20px;
 }
 
+/* On wide viewports, switch the grid to fixed 3 columns + 7 row tracks
+   and have each card inherit those tracks via `grid-template-rows: subgrid`.
+   Result: every row (header / desc / options / oneliner-label / pipe /
+   details / link) is forced to the tallest member's height across all
+   three cards, so the primary download buttons always align row-for-row.
+   "Get on the grid" — literally.
+   Falls back to natural flow + per-section min-heights on narrower screens
+   where the cards stack. */
+@media (min-width: 1024px) {
+  .acquire-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    grid-template-rows: repeat(7, auto);
+  }
+  .dl-card {
+    display: grid !important;
+    grid-template-rows: subgrid;
+    grid-row: span 7;
+    row-gap: 16px;
+  }
+  /* Drop the explicit margin-bottoms so subgrid's row-gap controls spacing */
+  .dl-card header,
+  .dl-card .dl-desc,
+  .dl-card .dl-options,
+  .dl-card .dl-oneliner,
+  .dl-card .dl-pipe-wrap,
+  .dl-card .dl-more {
+    margin-bottom: 0;
+  }
+}
+
 .dl-card {
   position: relative;
   background: var(--deep);
@@ -1426,26 +1456,25 @@ h2 {
   border: 1px solid var(--border-mid);
 }
 
-/* Reserve the same vertical space across all three dl-cards so the primary
-   download button lines up exactly. Without these min-heights, a shorter
-   description on one card pulls the button up and the row reads as
-   misaligned. */
+/* On wide viewports, subgrid handles row alignment automatically (every
+   row stretches to the tallest member across the 3 cards). On narrow
+   viewports the cards stack, so subgrid no longer applies — fall back
+   to min-heights so individual cards still read consistently when seen
+   in isolation as the user scrolls. */
 .dl-desc {
   margin: 0 0 20px;
   font-size: 14px;
   color: var(--text-mid);
   line-height: 1.6;
-  min-height: calc(1.6em * 4); /* ~4 lines reserved */
+  min-height: calc(1.6em * 3); /* ~3 lines reserved at narrow widths */
 }
 
 .dl-options {
   display: flex; flex-direction: column; gap: 8px;
   margin-bottom: 16px;
-  min-height: calc((11px * 2 + 12px * 2) + 8px); /* not load-bearing; the
-     real fix is the wrap below */
   min-height: 102px; /* 2 buttons × ~47px + 8px gap — matches macOS's
      Apple-Silicon + Intel stack so Windows/Linux's single button row
-     reserves the same vertical space */
+     reserves the same vertical space at narrow widths */
 }
 .dl-options .btn { width: 100%; padding: 11px 16px; font-size: 12px; }
 
@@ -1460,18 +1489,28 @@ h2 {
   letter-spacing: 0.24em;
   color: var(--text-dim);
 }
-/* Wrap holds <pre.dl-pipe> + <button.dl-pipe-copy> so the COPY button can
-   absolute-position over the top-right of the code block without affecting
-   .dl-pipe's flow / scroll behaviour. */
+/* Wrap is a side-by-side flex container: `pre.dl-pipe` on the left
+   (flex: 1, scrolls if too long), `button.dl-pipe-copy` on the right
+   (flex: 0 0 auto, fixed width). Previously the COPY button was
+   absolute-positioned and the install command flowed *under* it, so the
+   right-most characters of long URLs got hidden behind COPY. Side-by-side
+   flex eliminates that — text can scroll cleanly without ever colliding
+   with the button. Outer border lives on the wrap so the inner cells
+   share one continuous box. */
 .dl-pipe-wrap {
-  position: relative;
+  display: flex;
+  align-items: stretch;
   margin: 0 0 14px;
+  border: 1px solid var(--laser-mid);
+  background: var(--void);
 }
 .dl-pipe {
+  flex: 1 1 auto;
+  min-width: 0;  /* allow flex shrink so long URLs scroll, not push COPY off-card */
   margin: 0;
-  padding: 12px 64px 12px 14px; /* right padding leaves room for COPY */
-  background: var(--void);
-  border: 1px solid var(--laser-mid);
+  padding: 12px 14px;
+  background: transparent;
+  border: 0;
   font-family: var(--font-mono);
   font-size: 11.5px;
   color: var(--laser);
@@ -1479,42 +1518,37 @@ h2 {
   line-height: 1.4;
   user-select: all;
   cursor: copy;
-  white-space: nowrap; /* keep the command on one line; let it scroll */
+  white-space: nowrap;
 }
 .dl-pipe code { color: inherit; }
 
-/* COPY button — one-click clipboard. Sits in the top-right corner of every
-   dl-pipe and flashes "COPIED" for 1.4s on successful write. The button
-   inherits laser-green theme but goes softer at rest so it doesn't fight
-   the actual command for attention. */
+/* COPY button — one-click clipboard. Sits next to .dl-pipe inside the
+   wrap, separated by a vertical laser-green divider. Flashes "COPIED"
+   for 1.4s on success. */
 .dl-pipe-copy {
-  position: absolute;
-  top: 6px;
-  right: 6px;
+  flex: 0 0 auto;
   font-family: var(--font-mono);
   font-size: 10px;
   letter-spacing: 0.22em;
   color: var(--laser-mid);
-  background: rgba(0, 16, 8, 0.85);
-  border: 1px solid var(--laser-mid);
-  padding: 4px 8px;
+  background: transparent;
+  border: 0;
+  border-left: 1px solid var(--laser-mid);
+  padding: 0 14px;
   cursor: pointer;
-  opacity: 0.85;
-  transition: opacity .2s ease, color .2s ease, border-color .2s ease,
-              box-shadow .2s ease;
+  transition: color .2s ease, background .2s ease, box-shadow .2s ease;
 }
 .dl-pipe-copy:hover,
 .dl-pipe-copy:focus-visible {
   outline: none;
-  opacity: 1;
   color: var(--laser);
-  border-color: var(--laser);
-  box-shadow: 0 0 10px var(--laser-fog);
+  background: rgba(0, 255, 149, 0.08);
+  box-shadow: inset 0 0 10px var(--laser-fog);
 }
 .dl-pipe-copy.is-copied {
   color: var(--text);
-  border-color: var(--text);
-  box-shadow: 0 0 12px var(--laser-glow);
+  background: rgba(0, 255, 149, 0.16);
+  box-shadow: inset 0 0 12px var(--laser-glow);
 }
 
 /* The dl-card header becomes a click target when app.js wires it up so the
