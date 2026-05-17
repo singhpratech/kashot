@@ -31,7 +31,7 @@ description: |
 
 grade: stable
 confinement: strict
-license: MIT
+license: MIT OR Apache-2.0
 icon: ../../icons/linux_hicolor/256x256/apps/kashot.png
 
 architectures:
