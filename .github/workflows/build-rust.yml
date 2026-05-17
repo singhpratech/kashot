@@ -1,10 +1,12 @@
-# Build & test the Rust workspace on every push, and produce signed
-# release artifacts for Windows + Linux + macOS when a tag is pushed.
+# Build & test the Rust workspace on every push, and produce release
+# artifacts for Windows + Linux + macOS when a tag is pushed. The Rust
+# binary is the canonical build on every platform — same source, same
+# behaviour, one workflow.
 #
 # Outputs (uploaded to the GitHub Release on tag push):
-#   Windows : Kashot-windows-x64.exe, Kashot-windows-x64.msi
-#   Linux   : kashot-linux-x86_64.tar.gz, kashot-x86_64.AppImage
-#   macOS   : Kashot-macos-arm64.dmg, Kashot-macos-x64.dmg
+#   Windows : kashot-windows-x86_64.zip
+#   Linux   : kashot-linux-x86_64.tar.gz
+#   macOS   : Kashot-macos-arm64, Kashot-macos-x64
 name: Build Rust
 
 on:
@@ -85,15 +87,13 @@ jobs:
           path: kashot-rs/dist/kashot-linux-x86_64.tar.gz
           if-no-files-found: error
 
-  # ── 3. Windows compile-check (no artifact upload) ──────────────────────────
-  # The Rust Windows build is kept as a parity invariant — same source must
-  # compile on every platform. We do NOT attach the binary to the release
-  # though: the C# build (build-csharp.yml) is the canonical Windows path
-  # while the Rust port catches up to the editor. Once the Rust editor
-  # reaches feature parity, this job will start uploading too and the C#
-  # workflow can be retired.
+  # ── 3. Windows native build ────────────────────────────────────────────────
+  # Ships the same Rust binary as Linux + macOS — one source, one editor,
+  # one feature set, three OSes. The legacy C# build (build-csharp.yml) is
+  # retained as a PR compile-check for reference but no longer attaches to
+  # the GitHub Release.
   build-windows:
-    name: Windows x64 (compile-check)
+    name: Windows x86_64
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -105,6 +105,19 @@ jobs:
 
       - name: Run full workspace tests
         run: cargo test --workspace --release
+
+      - name: Stage zip
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist\kashot | Out-Null
+          Copy-Item target\release\kashot.exe dist\kashot\
+          Compress-Archive -Path dist\kashot\* -DestinationPath dist\kashot-windows-x86_64.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: kashot-windows-x86_64
+          path: kashot-rs/dist/kashot-windows-x86_64.zip
+          if-no-files-found: error
 
   # ── 4. macOS universal build (arm64 + x86_64 → one .app, two .dmg) ─────────
   build-macos:
