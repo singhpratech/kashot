@@ -567,7 +567,7 @@
   }
 
   function saveAudioPref(on) {
-    try { localStorage.setItem('kashot.audio', on ? '1' : '0'); } catch (_) {}
+    try { localStorage.setItem('kashot.audio.v2', on ? '1' : '0'); } catch (_) {}
   }
 
   function muteAudio() {
@@ -608,7 +608,7 @@
   // Browsers require a user gesture before AudioContext can produce
   // sound, so we arm the first gesture to autostart instantly.
   let storedPref = null;
-  try { storedPref = localStorage.getItem('kashot.audio'); } catch (_) {}
+  try { storedPref = localStorage.getItem('kashot.audio.v2'); } catch (_) {}
   const wantAudio = storedPref === null ? true : storedPref === '1';
   setAudioUI(wantAudio);
 
