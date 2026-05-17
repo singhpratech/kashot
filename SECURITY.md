@@ -49,7 +49,7 @@ Security fixes land on the latest minor; older minor releases are not back-porte
 Release artifacts are produced by GitHub-hosted runners running `build-rust.yml` on tag push. The full build log is public — every release is reproducible from the tagged commit:
 
 ```sh
-git checkout v0.3.2
+git checkout v0.3.3
 cd kashot-rs
 cargo build --release --bin kashot
 ```
