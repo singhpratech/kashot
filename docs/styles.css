@@ -1364,6 +1364,36 @@ h2 {
   gap: 20px;
 }
 
+/* On wide viewports, switch the grid to fixed 3 columns + 7 row tracks
+   and have each card inherit those tracks via `grid-template-rows: subgrid`.
+   Result: every row (header / desc / options / oneliner-label / pipe /
+   details / link) is forced to the tallest member's height across all
+   three cards, so the primary download buttons always align row-for-row.
+   "Get on the grid" — literally.
+   Falls back to natural flow + per-section min-heights on narrower screens
+   where the cards stack. */
+@media (min-width: 1024px) {
+  .acquire-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    grid-template-rows: repeat(7, auto);
+  }
+  .dl-card {
+    display: grid !important;
+    grid-template-rows: subgrid;
+    grid-row: span 7;
+    row-gap: 16px;
+  }
+  /* Drop the explicit margin-bottoms so subgrid's row-gap controls spacing */
+  .dl-card header,
+  .dl-card .dl-desc,
+  .dl-card .dl-options,
+  .dl-card .dl-oneliner,
+  .dl-card .dl-pipe-wrap,
+  .dl-card .dl-more {
+    margin-bottom: 0;
+  }
+}
+
 .dl-card {
   position: relative;
   background: var(--deep);
@@ -1426,26 +1456,25 @@ h2 {
   border: 1px solid var(--border-mid);
 }
 
-/* Reserve the same vertical space across all three dl-cards so the primary
-   download button lines up exactly. Without these min-heights, a shorter
-   description on one card pulls the button up and the row reads as
-   misaligned. */
+/* On wide viewports, subgrid handles row alignment automatically (every
+   row stretches to the tallest member across the 3 cards). On narrow
+   viewports the cards stack, so subgrid no longer applies — fall back
+   to min-heights so individual cards still read consistently when seen
+   in isolation as the user scrolls. */
 .dl-desc {
   margin: 0 0 20px;
   font-size: 14px;
   color: var(--text-mid);
   line-height: 1.6;
-  min-height: calc(1.6em * 4); /* ~4 lines reserved */
+  min-height: calc(1.6em * 3); /* ~3 lines reserved at narrow widths */
 }
 
 .dl-options {
   display: flex; flex-direction: column; gap: 8px;
   margin-bottom: 16px;
-  min-height: calc((11px * 2 + 12px * 2) + 8px); /* not load-bearing; the
-     real fix is the wrap below */
   min-height: 102px; /* 2 buttons × ~47px + 8px gap — matches macOS's
      Apple-Silicon + Intel stack so Windows/Linux's single button row
-     reserves the same vertical space */
+     reserves the same vertical space at narrow widths */
 }
 .dl-options .btn { width: 100%; padding: 11px 16px; font-size: 12px; }
 
