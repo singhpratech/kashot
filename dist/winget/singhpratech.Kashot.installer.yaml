@@ -6,7 +6,10 @@
 # release and update version to match.
 PackageIdentifier: singhpratech.Kashot
 PackageVersion: 0.3.0
-InstallerType: wix
+# `msi` (not `wix`) — winget treats both as MSI installers, but `msi` is
+# the canonical value once the manifest is published and is what winget's
+# validation pipeline expects for a hand-rolled WiX-generated .msi.
+InstallerType: msi
 Scope: machine
 InstallerLocale: en-US
 
@@ -14,7 +17,13 @@ Installers:
   - Architecture: x64
     InstallerUrl:    https://github.com/singhpratech/kashot/releases/download/v0.3.0/Kashot.msi
     InstallerSha256: REPLACE_WITH_ACTUAL_SHA256_AT_RELEASE_TIME
-    ProductCode:     '{94810024-659B-4781-A523-F60C707AF83A}'
+    # ProductCode is auto-generated per-build by WiX (Product/@Id='*'
+    # in kashot-rs/wix/main.wxs). Read it out of the published MSI with:
+    #   wix msi extract Kashot.msi   # or  msiexec /q /i Kashot.msi ...
+    # and paste the resulting `{GUID}` here at release time. The
+    # UpgradeCode in main.wxs ({4D6C8E2A-...}) is stable across builds
+    # so winget's upgrade flow keeps working even when ProductCode rolls.
+    ProductCode:     '{REPLACE_WITH_PRODUCT_CODE_FROM_MSI}'
     UpgradeBehavior: install
     InstallModes:
       - interactive
