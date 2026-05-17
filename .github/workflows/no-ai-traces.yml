@@ -24,6 +24,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Need the base..head range for the PR commit-message scan below.
+          fetch-depth: 0
 
       - name: Grep tracked files for AI-tool markers
         # The pattern intentionally excludes the .gitignore line that

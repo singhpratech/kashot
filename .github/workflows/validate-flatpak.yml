@@ -30,8 +30,9 @@ jobs:
             flatpak-builder appstream
 
       - name: Validate AppStream metainfo
-        run: appstreamcli validate --pedantic --explain \
-               dist/flatpak/org.kashot.Kashot.metainfo.xml
+        run: |
+          appstreamcli validate --pedantic --explain \
+            dist/flatpak/org.kashot.Kashot.metainfo.xml
 
       - name: Validate desktop entry
         run: |
@@ -42,5 +43,6 @@ jobs:
         # `flatpak-builder --show-manifest` parses the YAML and prints
         # the resolved JSON form, which catches YAML schema errors
         # without needing the runtime + SDK extensions installed.
-        run: flatpak-builder --show-manifest dist/flatpak/org.kashot.Kashot.yaml \
-               | head -60
+        run: |
+          flatpak-builder --show-manifest \
+            dist/flatpak/org.kashot.Kashot.yaml | head -60
