@@ -179,7 +179,7 @@ pub fn run() -> Result<()> {
             std::thread::sleep(Duration::from_millis(250));
 
             match capture_all_screens() {
-                Ok(shot) => match Overlay::new(loop_target, shot.bitmap) {
+                Ok(shot) => match Overlay::new(loop_target, shot.bitmap, self.settings.clone()) {
                     Ok(ov) => self.overlay = Some(ov),
                     Err(e) => eprintln!("Overlay open failed: {e}"),
                 },
@@ -532,7 +532,17 @@ pub fn run() -> Result<()> {
                 Target::Unknown => {}
             }
 
-            if drop_overlay { self.overlay = None; }
+            if drop_overlay {
+                // Pull back any per-tool slider values the editor mutated
+                // (currently just `marker_opacity`) so the next capture
+                // session opens with the same value. The editor already
+                // persisted it to settings.json on mouseup; this keeps the
+                // tray's in-memory copy aligned.
+                if let Some(ov) = self.overlay.as_ref() {
+                    self.settings.marker_opacity = ov.settings().marker_opacity;
+                }
+                self.overlay = None;
+            }
             if let Some(i) = drop_pin { self.pinned.swap_remove(i); }
             if let Some(img) = accepted { self.save_final(img); }
             if let Some(img) = copied   { self.copy_final(img); }

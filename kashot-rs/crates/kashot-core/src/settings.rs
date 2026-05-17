@@ -94,6 +94,12 @@ pub struct AppSettings {
 
     #[serde(rename = "Theme", default = "default_theme")]
     pub theme: String,
+
+    /// Alpha (0..=255) applied to the Marker (highlighter) stroke. Default
+    /// `0xC8` (200, ≈78 %) preserves the historical look; the editor's
+    /// per-tool slider mutates this and persists it on mouseup.
+    #[serde(rename = "MarkerOpacity", default = "default_marker_opacity")]
+    pub marker_opacity: u8,
 }
 
 impl Default for AppSettings {
@@ -113,6 +119,7 @@ impl Default for AppSettings {
             watermark_position:  default_watermark_position(),
             palette_index:       0,
             theme:               default_theme(),
+            marker_opacity:      default_marker_opacity(),
         }
     }
 }
@@ -126,6 +133,7 @@ fn default_watermark()   -> String  { "KAShot".to_owned() }
 fn default_theme()       -> String  { "Light".to_owned() }
 fn default_watermark_opacity() -> f32 { 0.85 }
 fn default_watermark_position() -> String { "BottomRight".to_owned() }
+fn default_marker_opacity() -> u8 { 0xC8 }
 
 /// Anchor for the watermark inside the saved frame. JSON values are case-
 /// insensitive `TopLeft` / `TopRight` / `BottomLeft` / `BottomRight`.
@@ -223,5 +231,29 @@ mod tests {
         let m = Modifiers::CONTROL | Modifiers::SHIFT;
         let bits: u32 = serde_json::from_str(&serde_json::to_string(&m).unwrap()).unwrap();
         assert_eq!(bits, 0x0002 | 0x0004);
+    }
+
+    #[test]
+    fn marker_opacity_default_preserves_legacy_alpha() {
+        // 0xC8 (200/255 ≈ 78 %) is the historical hardcoded marker alpha;
+        // any drift here silently changes how every existing user's
+        // highlighter strokes look on the next launch.
+        assert_eq!(AppSettings::default().marker_opacity, 0xC8);
+    }
+
+    #[test]
+    fn marker_opacity_round_trips_through_json() {
+        let mut s = AppSettings::default();
+        s.marker_opacity = 0x40;
+        let txt = serde_json::to_string(&s).unwrap();
+        assert!(txt.contains("\"MarkerOpacity\""), "JSON key should be MarkerOpacity: {txt}");
+        let s2: AppSettings = serde_json::from_str(&txt).unwrap();
+        assert_eq!(s2.marker_opacity, 0x40);
+    }
+
+    #[test]
+    fn marker_opacity_missing_key_falls_back_to_default() {
+        let s: AppSettings = serde_json::from_str("{}").unwrap();
+        assert_eq!(s.marker_opacity, 0xC8);
     }
 }
