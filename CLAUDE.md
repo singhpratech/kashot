@@ -2,115 +2,76 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-## Two implementations side-by-side
+## What this is
 
-Kashot lives in **two parallel codebases**:
+**Kashot** — a tray-resident screenshot + screen-recording tool with an in-place annotation editor, format conversion, and watermarking. Ships the **same Rust binary** on Windows, Linux, and macOS as of v0.2.0.
 
-- **`kashot-rs/`** — Rust workspace, **canonical build on Windows + Linux + macOS**
-  from one codebase as of v0.2.0. Ships every release artifact (`.zip` on Windows,
-  `.tar.gz` on Linux, raw binary on macOS).
-- **`Kashot/`** — original C# / .NET 8 / WinForms build, Windows-only. Retained
-  as a reference implementation and PR compile-check; no longer attaches to
-  releases. The legacy WiX MSI is still produced as a CI artifact for anyone
-  who needs the installer flavour.
-
-Both share **brand, settings JSON format, hotkey wire format, tool shortcuts,
-and color palettes**. See `PLAN.md` § "Architecture invariants" for the list of
-cross-cutting decisions that stay aligned between the two.
-
-Don't delete the C# code — it's the reference implementation, and the WiX
-installer is still useful for users who prefer an MSI install path.
+The repo previously carried a parallel C# / .NET 8 / WinForms build (`Kashot/`, `Installer/`, `build-csharp.yml`) — that's been retired now the Rust port covers all three platforms. Git history retains it if you need to look back.
 
 ## Naming
 
-Project, namespace, assembly, binary, and every user-visible string are all `Kashot`. The project lives in `Kashot/Kashot.csproj`. The outer parent folder on disk happens to still be named `LightCapture` for historical reasons (originally the project was called LightCapture, then PratShot, now Kashot) — that name doesn't appear in code or any user-facing surface and you can ignore it.
+Project, namespace, assembly, binary, and every user-visible string are `Kashot` (technical identifier) or `KAShot` (user-visible brand). See [[feedback-author-attribution-vs-brand]] for the rule on which spelling goes where. The outer parent folder on disk happens to still be named `LightCapture` for historical reasons (originally LightCapture → PratShot → Kashot) — that name doesn't appear in code or any user-facing surface and you can ignore it.
 
 ## Build / Run
 
-### C# (`Kashot/`) — Windows only
-
-There is no `.sln` — operate on the `.csproj` directly.
-
-```sh
-dotnet build Kashot/Kashot.csproj          # debug build
-dotnet run   --project Kashot/Kashot.csproj
-dotnet publish Kashot/Kashot.csproj -c Release
-```
-
-Target framework is `net8.0-windows` with `UseWindowsForms=true`, so this **only builds and runs on Windows**. No tests, no linter, no formatter configured.
-
-Artifacts: `Installer/build.ps1` produces `Kashot.msi` + `Kashot.exe` + `Kashot-portable.zip` at the repo root in one shot.
-
-### Rust (`kashot-rs/`) — Windows / Linux / macOS
-
-Cargo workspace with three crates:
+Cargo workspace under `kashot-rs/` with three crates:
 
 | Crate              | Role                                                                  |
 |--------------------|-----------------------------------------------------------------------|
 | `kashot-core`      | Pure logic: `Tool`, `Annotation`, `AppSettings`, theme, state machine |
-| `kashot-platform`  | OS shims: capture (xcap), hotkey (global-hotkey), tray, clipboard     |
-| `kashot-app`       | Tray-resident binary; current entry is `winit` event loop, iced lands with the editor port |
+| `kashot-platform`  | OS shims: capture (xcap), hotkey (global-hotkey), tray, clipboard, recorder |
+| `kashot-app`       | Tray-resident binary; winit event loop, themed dialogs, editor       |
 
 ```sh
 cd kashot-rs
-cargo test  -p kashot-core         # 9 tests, no system deps
-cargo build --release --bin kashot # full build; needs system deps on Linux
+cargo test  -p kashot-core            # pure-logic tests, no system deps
+cargo test  --workspace --release     # full tests on Linux/macOS/Windows
+cargo build --release --bin kashot    # ~7 MB stripped binary
 ```
 
 Linux build deps (CI installs these — see `.github/workflows/build-rust.yml`):
-`libwayland-dev libxkbcommon-dev libxcb*-dev libgtk-3-dev libdbus-1-dev libayatana-appindicator3-dev libxdo-dev pkg-config`.
+`libwayland-dev libxkbcommon-dev libxcb*-dev libgtk-3-dev libdbus-1-dev libayatana-appindicator3-dev libpipewire-0.3-dev libgbm-dev libxdo-dev libssl-dev pkg-config`.
+
 Windows + macOS need no extra system packages.
 
-CI: tagged push to `v*` triggers both `build-csharp.yml` (Windows MSI/EXE/ZIP) and `build-rust.yml` (Linux tar.gz, Windows EXE, macOS arm64 + x64), all attached to the GitHub Release automatically.
+CI: tagged push to `v*` triggers `build-rust.yml` which produces and auto-attaches to the GitHub Release:
+- `kashot-linux-x86_64.tar.gz`
+- `kashot-linux-arm64.tar.gz` (queued in PR #7)
+- `kashot-windows-x86_64.zip`
+- `Kashot-macos-arm64`
+- `Kashot-macos-x64`
 
 ## Architecture
 
-Tray-resident screenshot tool with annotation editor. `Program.Main` runs a `TrayContext : ApplicationContext` — there's no main window.
+Tray-resident screenshot tool with an annotation editor. The `kashot-app` binary boots a `winit` event loop that owns a tray-icon, a global hotkey, and a per-purpose framebuffer window for each surface (overlay editor, settings, about, updates, convert-image, convert-video, pinned image, recording indicator).
 
-### File map
+### File map (`kashot-rs/crates/kashot-app/src/`)
 
 | File | Role |
 |---|---|
-| `Program.cs` | Entry point; runs `TrayContext`. |
-| `TrayContext.cs` | Tray icon, settings load, hotkey registration, owns the `OverlayForm` lifecycle. |
-| `OverlayForm.cs` | The full-screen capture/edit surface. ~1000 lines, the bulk of the app. |
-| `Annotations.cs` | `Tool` enum + polymorphic `Annotation` hierarchy. |
-| `Settings.cs` | `AppSettings` POCO + JSON load/save to `%APPDATA%/Kashot/settings.json`. |
-| `SettingsForm.cs` | Dialog for hotkey, save folder, start-with-Windows. Also defines `HotkeyTextBox`. |
-| `PinForm.cs` | Borderless `TopMost` window that pins a captured image to the screen, draggable. |
-| `StartupHelper.cs` | Toggles `HKCU\…\Run\Kashot` registry value. |
-| `NativeMethods.cs` | `RegisterHotKey`/`UnregisterHotKey` P/Invoke + `MOD_*` / `WM_HOTKEY` / `VK_SNAPSHOT` constants. |
+| `main.rs` | Entry. Boots `TrayLoop`, registers global hotkey, runs winit event loop. |
+| `tray_loop.rs` | Owns tray menu state, hotkey routing, lifetime of every window/dialog. The orchestrator. |
+| `editor.rs` | Capture surface + annotation editor. State machine: Idle / Selecting / Selected / Drawing / TextInput / Resizing / Moving. |
+| `painter.rs` | tiny-skia + softbuffer wrapper. The shared rendering layer every dialog uses. |
+| `settings_form.rs` | Themed Settings dialog (paths, watermark, appearance). Edit-as-JSON button for hotkey rebinding (no rebind widget yet). |
+| `about_form.rs` | Themed About dialog. |
+| `updates_form.rs` | Themed Update-check dialog. Background `curl` to `api.github.com/repos/singhpratech/kashot/releases/latest`. |
+| `convert_image_form.rs` | PNG ↔ JPG / BMP / WEBP (the `image` crate must have `webp` feature for the last one). |
+| `convert_video_form.rs` | MP4 → MOV / WEBM / MKV / GIF. Spawns bundled ffmpeg. |
+| `recording_indicator.rs` | 220×56 floating window with flashing REC dot, MM:SS timer, STOP button. |
+| `pin.rs` | Pinned-to-screen image window (drag-to-move). |
+| `brand_icon.rs` | Shared brand-PNG decoded once into a `winit::Icon`. |
+| `build.rs` | Copies an `ffmpeg` binary next to the kashot release binary if `KASHOT_FFMPEG` is set or one is on PATH; otherwise emits a warning. |
 
-### Capture trigger flow (`TrayContext.cs`)
+### Cross-cutting
 
-- `TrayContext` loads `AppSettings`, syncs the start-with-Windows registry value, builds the tray menu (Capture / Settings… / Exit), and creates a `HotkeyWindow`.
-- `HotkeyWindow` is a `NativeWindow` whose `WndProc` listens for `WM_HOTKEY`; `Register(mods, vk)` and `Unregister()` thinly wrap `RegisterHotKey`/`UnregisterHotKey`. The settings dialog calls `Unregister()` while open so the user can rebind without their own keypress firing the existing hotkey.
-- Both the hotkey and the tray menu route to `StartCapture()`, which closes the tray context menu, sends two `ESC` keys to dismiss the system tray flyout, waits **500ms**, and only then constructs the `OverlayForm`. The delay is load-bearing — without it the menu/flyout ends up in the screenshot. Don't shorten it without testing on a real tray.
-- A real `.ico` is generated and cached at `%APPDATA%/Kashot/icon.ico` on first run via `Icon.Save(Stream)` (the standard ICO writer); subsequent launches load from disk. The original GDI+ drawing routine still lives in `CreateIcon()` as the source of truth — the cached file is regenerated if you delete it.
-
-### Capture surface (`OverlayForm.cs`)
-
-- On construction, the form takes an `AppSettings` and restores the user's last tool / color / thickness from it. It snapshots `SystemInformation.VirtualScreen` (the union of all monitors) into `_screenshot` and sizes itself to cover that virtual bounds. Form coordinates are virtual-screen coordinates, not single-screen.
-- Form is borderless, `TopMost`, `KeyPreview`, double-buffered. `CreateParams` adds `WS_EX_COMPOSITED` (`0x02000000`) to kill flicker — keep it.
-- All rendering goes through one `OnPaint`: draws screenshot → dim overlay → "punches a hole" by redrawing the screenshot inside the selection → border → annotations clipped to the selection → resize handles → dimension label → crosshair + magnifier (idle/selecting only). `OnPaintBackground` is intentionally empty.
-- **State machine**: `State { Idle, Selecting, Selected, Drawing, TextInput, Resizing, Moving }`. `OnMouseDown/Move/Up` and `OnKeyDown` all branch on `_state`. Right-click semantics are state-dependent: cancels the active annotation while `Drawing`, cancels the textbox while `TextInput`, otherwise closes the overlay. Read the existing `switch (_state)` blocks before adding new input handling — new behavior almost always belongs as another case there, not as a new event handler.
-- **Selection editing**: in `Selected` state, `HitTestEdge` returns one of the 8 `Edge` values when the cursor is within `EdgeThreshold` (8px) of the selection's edges/corners; that switches the cursor to a size cursor and a click enters `Resizing`. Holding `Alt` and dragging inside the selection enters `Moving`. Both states call `PositionToolbars` on each move so the floating panels track the selection.
-- **Annotations** (`Annotations.cs`) are a polymorphic hierarchy. The `Tool` enum is **public** and lives here, not in `OverlayForm`. Adding a new tool means: (1) new `Annotation` subclass with `Draw(Graphics)`, (2) new entry in the `Tool` enum, (3) case in `StartDrawing` (and `UpdateDrawing` if it's a drag-shape), (4) entry in the `tools[]` array in `CreateToolPanel` with an icon-drawing delegate, (5) keyboard-shortcut entry in the `OnKeyDown` tool-switch `switch`. There are no image assets — every toolbar icon is procedurally drawn by an `IconXxx` static method using GDI+.
-- **Click-to-place vs drag-to-shape**: `StepAnnotation` is finalized on `MouseDown` (one click → numbered circle) instead of going through the `Drawing` state. `StartDrawing` short-circuits for `Tool.Step`. `TextAnnotation` uses its own `TextInput` state with a child `TextBox`. All other tools follow the standard down→drag→up flow.
-- **Pixelate** redacts via `PixelateAnnotation`, which holds a reference to `_screenshot` and on `Draw` downsamples the rect with bilinear and upsamples with `NearestNeighbor`. It always re-pixelates the **original** screenshot, ignoring annotations underneath — that's the desired behavior, but means draw-order matters (always pixelate first, annotate over it).
-- **Undo/redo**: `_annotations` is the live list, `_redoStack` holds undone items. Adding any new annotation must clear `_redoStack` (use the `AddAnnotation` helper or `FinalizeDrawing`).
-- Toolbars are torn down and rebuilt every time the selection changes (`HideToolbars` / `ShowToolbars`) and re-positioned relative to the selection rect (`PositionToolbars` flips them to the opposite side when they'd fall off-screen). `CycleThickness` rebuilds the entire toolbar to refresh the thickness icon — that's by design, not laziness.
-- `GetFinalImage()` is what produces the saved / copied / pinned bitmap: it crops `_screenshot` to `_selection`, then translates the graphics origin by `-_selection.X/Y` so the existing annotations (whose coordinates are in form/virtual-screen space) draw correctly into the cropped bitmap. Any new "save" or "share" action should funnel through `GetFinalImage()` rather than re-implement the compositing. The pin button hands the bitmap off to `PinForm`, which takes ownership and disposes it on close.
-
-### Settings flow
-
-- `AppSettings.Load()` reads `%APPDATA%/Kashot/settings.json`, returning defaults silently on missing/malformed JSON. `AppSettings.Save()` is idempotent and swallows IO errors — the app should never crash because of settings persistence.
-- `OverlayForm` saves the latest tool/color/thickness in `OnFormClosed` regardless of how the user exited (Esc, Save, Copy, Pin, Close). The save dir is updated in `SaveToFile` after a successful save, so subsequent saves remember the last-used folder.
-- The `SettingsForm` writes back into the same `AppSettings` instance and calls `_settings.Save()` + `StartupHelper.SetEnabled` directly. After `ShowDialog` returns, `TrayContext` re-registers the hotkey and refreshes the tray tooltip.
+- **Settings** persist to `ProjectDirs::from("org", "kashot", "Kashot").config_dir()` (`~/.config/kashot/settings.json` on Linux).
+- **Theme colors** — each dialog currently re-declares its laser-green palette as private constants. Promoting to a shared `kashot-core/src/theme.rs` is a deferred cleanup item ([[feedback-release-gate]] fact-check, claim 13).
+- **Recording**: Linux X11 via `ffmpeg -f x11grab`; PulseAudio mic + monitor source. **Wayland, Windows, macOS audio: not wired yet** (`recorder.rs:125-228`). Don't claim recording works on those without qualifying.
 
 ## Keyboard shortcuts
 
-In the `Selected` state with no modifiers, single-letter keys switch tools:
+Once a region is selected, single-letter keys switch tools:
 
 | Key | Tool |
 |---|---|
@@ -125,11 +86,10 @@ In the `Selected` state with no modifiers, single-letter keys switch tools:
 | B | Blur / pixelate |
 
 Plus:
-
-- `Esc` — cancel text input / cancel active draw / close overlay (state-dependent)
+- `Esc` — cancel text input / cancel active draw / close overlay
 - `Ctrl+Z` — undo
 - `Ctrl+Y` or `Ctrl+Shift+Z` — redo
-- `Ctrl+C` — copy final image to clipboard (only in `Selected`)
-- `Ctrl+S` — save final image via `SaveFileDialog` (only in `Selected`)
-- `Alt`+drag inside selection — move the whole selection
+- `Ctrl+C` — copy final image to clipboard
+- `Ctrl+S` — save final image via file picker
+- `Alt`+drag — move the selection
 - Drag selection edges/corners — resize
