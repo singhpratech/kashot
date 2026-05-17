@@ -54,6 +54,7 @@ directories = { workspace = true }
 rfd         = { workspace = true }
 softbuffer  = { workspace = true }
 tiny-skia   = { workspace = true }
+sha2        = { workspace = true }
 winit       = "0.30"
 
 # X11 keyboard focus + grab — winit's `focus_window()` sends
@@ -66,6 +67,7 @@ x11rb = "0.13"
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.62", features = [
     "Win32_Foundation",
+    "Win32_Storage_FileSystem", # MoveFileExW for the self-updater rename-trick
     "Win32_System_Registry",
     "Win32_UI_Shell",
 ] }

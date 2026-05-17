@@ -23,6 +23,7 @@ mod convert_image_form;
 mod convert_video_form;
 mod pin;
 mod recording_indicator;
+mod self_updater;
 mod settings_form;
 mod tray_loop;
 mod updates_form;
@@ -30,5 +31,9 @@ mod updates_form;
 use anyhow::Result;
 
 fn main() -> Result<()> {
+    // After a self-update on Windows the previous .exe was renamed to
+    // `<current_exe>.old` and couldn't be deleted until our PID exited.
+    // We're that new PID now — clean it up. No-op on Linux / macOS.
+    self_updater::cleanup_stale_old_binary();
     tray_loop::run()
 }
