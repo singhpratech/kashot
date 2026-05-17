@@ -104,6 +104,38 @@ echo "  source:     ${URL}"
 echo "  install:    ${DIR}/kashot"
 echo
 
+# ── Stop & clean any existing install ───────────────────────────────────────
+# Reinstalls must replace the binary atomically. If the previous kashot is
+# still running, kill it first so the new binary is what actually launches
+# next; otherwise the old in-memory process keeps serving the tray icon.
+if pgrep -x kashot >/dev/null 2>&1; then
+  echo 'kashot: stopping running instance...' >&2
+  pkill -TERM -x kashot 2>/dev/null || true
+  for _ in 1 2 3 4 5; do
+    pgrep -x kashot >/dev/null 2>&1 || break
+    sleep 0.4
+  done
+  pgrep -x kashot >/dev/null 2>&1 && pkill -KILL -x kashot 2>/dev/null || true
+fi
+
+# Remove the old binary at our target path so the install never appends to
+# or partially overwrites a stale file. Other kashot binaries elsewhere on
+# PATH are flagged below but not auto-deleted (we don't own those paths).
+if [ -e "${DIR}/kashot" ]; then
+  echo "kashot: removing previous binary at ${DIR}/kashot" >&2
+  rm -f "${DIR}/kashot"
+fi
+
+# Warn if another kashot lives elsewhere on PATH — PATH precedence might
+# resolve `kashot` to the older copy after this install. Surface it loudly
+# rather than silently shadowing.
+OTHER=$(command -v kashot 2>/dev/null || true)
+if [ -n "$OTHER" ] && [ "$OTHER" != "${DIR}/kashot" ]; then
+  echo "kashot: heads up — another kashot is on your PATH at $OTHER" >&2
+  echo "  remove it with: rm '$OTHER'" >&2
+  echo "  (or ensure ${DIR} comes first in PATH so the new install wins)" >&2
+fi
+
 # ── Download + extract ───────────────────────────────────────────────────────
 mkdir -p "$DIR"
 TMP=$(mktemp -d 2>/dev/null || mktemp -d -t kashot)

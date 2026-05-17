@@ -50,6 +50,30 @@ Write-Host "   source:     $($asset.browser_download_url)"
 Write-Host "   install:    $InstallDir\kashot.exe"
 Write-Host ''
 
+# ── Stop & clean any existing install ─────────────────────────────────────────
+# Kill the running kashot.exe (if any) so the new file can replace the old
+# one — Windows will refuse to overwrite a locked exe. Then remove the old
+# binary at the target path so the install never partially overwrites.
+$running = Get-Process -Name kashot -ErrorAction SilentlyContinue
+if ($running) {
+    Write-Host '   stopping running kashot.exe...'
+    $running | Stop-Process -Force -ErrorAction SilentlyContinue
+    Start-Sleep -Milliseconds 600
+}
+
+$existing = Join-Path $InstallDir 'kashot.exe'
+if (Test-Path $existing) {
+    Write-Host "   removing previous binary at $existing"
+    Remove-Item $existing -Force -ErrorAction SilentlyContinue
+}
+
+# Warn if another kashot.exe is reachable on PATH from a different dir.
+$onPath = (Get-Command kashot -ErrorAction SilentlyContinue).Source
+if ($onPath -and $onPath -ne $existing) {
+    Write-Host "   heads up: another kashot.exe is on your PATH at $onPath"
+    Write-Host "     remove it with: Remove-Item '$onPath'"
+}
+
 # ── Download + extract ────────────────────────────────────────────────────────
 $tmp = Join-Path ([System.IO.Path]::GetTempPath()) "kashot-$([guid]::NewGuid())"
 New-Item -ItemType Directory -Force -Path $tmp | Out-Null
