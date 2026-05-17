@@ -5,7 +5,7 @@
 #
 # Outputs (uploaded to the GitHub Release on tag push):
 #   Windows : kashot-windows-x86_64.zip
-#   Linux   : kashot-linux-x86_64.tar.gz
+#   Linux   : kashot-linux-x86_64.tar.gz, kashot-linux-arm64.tar.gz
 #   macOS   : Kashot-macos-arm64, Kashot-macos-x64
 name: Build Rust
 
@@ -90,6 +90,50 @@ jobs:
         with:
           name: kashot-linux-x86_64
           path: kashot-rs/dist/kashot-linux-x86_64.tar.gz
+          if-no-files-found: error
+
+  # ── 2b. Linux arm64 native build ───────────────────────────────────────────
+  # Native build on GitHub's free `ubuntu-24.04-arm` hosted runner (available
+  # to public repos with no opt-in). Mirrors `build-linux` step-for-step —
+  # same system deps, same staging shape, just a different runner + artifact
+  # name. No cross-compile, no qemu.
+  build-linux-arm64:
+    name: Linux arm64
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with: { workspaces: kashot-rs }
+
+      - name: Install system dev libs
+        # Same package set as build-linux — all libs are available in the
+        # arm64 Ubuntu archives.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libwayland-dev libxkbcommon-dev \
+            libxcb1-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev \
+            libxcb-composite0-dev libxcb-randr0-dev libxcb-cursor-dev \
+            libxcb-keysyms1-dev libxcb-icccm4-dev \
+            libgtk-3-dev libdbus-1-dev libayatana-appindicator3-dev \
+            libpipewire-0.3-dev libgbm-dev libxdo-dev libssl-dev pkg-config
+
+      - run: cargo build --release --bin kashot
+
+      - name: Run full workspace tests
+        run: cargo test --workspace --release
+
+      - name: Stage tarball
+        run: |
+          mkdir -p dist/kashot
+          cp target/release/kashot dist/kashot/
+          cd dist && tar -czf kashot-linux-arm64.tar.gz kashot
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: kashot-linux-arm64
+          path: kashot-rs/dist/kashot-linux-arm64.tar.gz
           if-no-files-found: error
 
   # ── 3. Windows native build ────────────────────────────────────────────────
@@ -251,7 +295,7 @@ jobs:
   # ── 5. On tag push: collect all artifacts onto the GitHub Release ──────────
   release:
     name: Publish release
-    needs: [ build-linux, build-windows, build-macos, build-appimage ]
+    needs: [ build-linux, build-linux-arm64, build-windows, build-macos, build-appimage ]
     if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
     permissions:

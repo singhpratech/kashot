@@ -95,8 +95,16 @@ The legacy WiX MSI (`Kashot.msi`) is still available as a CI artifact on the `Bu
 <td valign="top">
 
 ```bash
-curl -L https://github.com/singhpratech/kashot/releases/latest/download/kashot-linux-x86_64.tar.gz \
-  | tar -xz
+curl -fsSL https://kashot.org/install.sh | sh
+```
+
+One-liner auto-detects **x86_64** and **arm64**, downloads the matching tarball, drops the binary in `~/.local/bin`. Or fetch the tarball directly:
+
+```bash
+# x86_64
+curl -L https://github.com/singhpratech/kashot/releases/latest/download/kashot-linux-x86_64.tar.gz | tar -xz
+# arm64 (Raspberry Pi 4/5, Ampere, Graviton, Asahi)
+curl -L https://github.com/singhpratech/kashot/releases/latest/download/kashot-linux-arm64.tar.gz | tar -xz
 ./kashot/kashot
 ```
 
