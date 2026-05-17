@@ -4,17 +4,17 @@
 
 The project lives in two implementations side-by-side:
 
-- **`Kashot/`** — C# / .NET 8 / WinForms build. Windows-only. The reference
-  implementation; this is what ships today.
 - **`kashot-rs/`** — Rust workspace (`kashot-core`, `kashot-platform`,
   `kashot-app`) targeting Windows + Linux + macOS from one codebase.
-  Foundation in place; catching up to feature parity on the `0.1.x` line.
+  **Canonical build as of v0.2.0** — ships every release artifact on all
+  three platforms.
+- **`Kashot/`** — C# / .NET 8 / WinForms build. Windows-only. Original
+  reference implementation; retained as a PR compile-check and CI
+  artifact (legacy WiX MSI for users who prefer an installer-style
+  package), but no longer attaches to releases.
 
 Both share **brand, settings JSON format, hotkey wire format, tool shortcuts,
 and color palettes**. See § "Architecture invariants" at the bottom.
-
-Everything stays on the `0.1.x` line — no `0.2`, no `1.0` — until the
-maintainer explicitly bumps.
 
 ---
 
@@ -223,19 +223,29 @@ These cross-cut both implementations; if you change one, change both.
 ## Build & ship procedure (per release)
 
 1. Bump version in:
-   - `Kashot/Kashot.csproj` (`<Version>`)
-   - `Kashot/AboutForm.cs` (label text)
-   - `Installer/Kashot.wxs` (`Version=`)
    - `kashot-rs/Cargo.toml` (`workspace.package.version`)
-2. Open a PR with the bumps; merge to `main`.
-3. Locally tag and push: `git tag v0.1.X && git push --tags`.
-4. CI fires:
-   - `build-csharp.yml` produces `Kashot.msi` · `Kashot.exe` · `Kashot-portable.zip`
-   - `build-rust.yml` produces `kashot-linux-x86_64.tar.gz` · `Kashot-windows-x64.exe`
-     · `Kashot-macos-arm64` · `Kashot-macos-x64`
-5. Edit the auto-generated GitHub Release: changelog notes, mark "latest".
-6. Confirm `https://kashot.org` download buttons resolve to the new files
-   (the page resolves `releases/latest/download/<asset>` automatically).
+   - `Kashot/Kashot.csproj` (`<Version>`)
+   - `Installer/Kashot.wxs` (`Version=`)
+   - `Kashot/AboutForm.cs` (label text)
+2. Run the **doc-freshness sweep** (see [`feedback-release-gate`] memory):
+   - `docs/assets/og.svg` — bump the two `v0.X` strings (social preview card)
+   - `dist/*` package-channel manifests — bump every release URL + clear
+     placeholder SHA256s if a channel is going live this round
+   - `Installer/build.ps1` example "tag release" hint
+   - This `PLAN.md` example tag in step 3 below
+3. Open a PR with the bumps; merge to `main`.
+4. Locally tag and push: `git tag vX.Y.Z && git push --tags`.
+5. CI fires:
+   - `build-rust.yml` produces `kashot-linux-x86_64.tar.gz` ·
+     `kashot-windows-x86_64.zip` · `Kashot-macos-arm64` · `Kashot-macos-x64`
+     (canonical — attaches to Release)
+   - `build-csharp.yml` produces `Kashot.msi` · `Kashot.exe` ·
+     `Kashot-portable.zip` (compile-check + CI artifact only; legacy)
+6. CI auto-attaches the four Rust artifacts to the GitHub Release with
+   generated notes; edit if you want a curated changelog.
+7. Confirm `https://kashot.org` download buttons resolve to the new files
+   (the page resolves `releases/latest/download/<asset>` automatically via
+   the GitHub API call in `docs/app.js`).
 
 ---
 
