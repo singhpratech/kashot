@@ -85,6 +85,6 @@ Show-Artifact $outZip
 
 Write-Host ""
 Write-Host "Next steps:" -ForegroundColor Yellow
-Write-Host "  - Tag release in GitHub UI (e.g. v0.1)"
+Write-Host "  - Tag release locally (e.g. git tag v0.2.0 ; git push --tags)"
 Write-Host "  - Attach all three files: Kashot.msi, Kashot.exe, Kashot-portable.zip"
 Write-Host "  - Publish; the kashot.org download buttons resolve immediately."
