@@ -165,6 +165,12 @@ pub struct AppSettings {
 
     #[serde(rename = "Theme", default = "default_theme")]
     pub theme: String,
+
+    /// Alpha (0..=255) applied to the Marker (highlighter) stroke. Default
+    /// `0xC8` (200, ≈78 %) preserves the historical look; the editor's
+    /// per-tool slider mutates this and persists it on mouseup.
+    #[serde(rename = "MarkerOpacity", default = "default_marker_opacity")]
+    pub marker_opacity: u8,
 }
 
 impl Default for AppSettings {
@@ -184,6 +190,7 @@ impl Default for AppSettings {
             watermark_position:  default_watermark_position(),
             palette_index:       0,
             theme:               default_theme(),
+            marker_opacity:      default_marker_opacity(),
         }
     }
 }
@@ -197,6 +204,7 @@ fn default_watermark()   -> String  { "KAShot".to_owned() }
 fn default_theme()       -> String  { "Light".to_owned() }
 fn default_watermark_opacity() -> f32 { 0.85 }
 fn default_watermark_position() -> String { "BottomRight".to_owned() }
+fn default_marker_opacity() -> u8 { 0xC8 }
 
 /// Anchor for the watermark inside the saved frame. JSON values are case-
 /// insensitive `TopLeft` / `TopRight` / `BottomLeft` / `BottomRight`.
@@ -296,10 +304,6 @@ mod tests {
         assert_eq!(bits, 0x0002 | 0x0004);
     }
 
-    /// The rebind widget builds a `Hotkey` in memory and the orchestrator
-    /// stores its bit-fields back into `AppSettings`. Lock in the wire format
-    /// so a `Ctrl+Shift+P` binding round-trips through JSON without
-    /// mangling the modifier mask or VK code.
     #[test]
     fn hotkey_ctrl_shift_p_round_trips() {
         let hk = Hotkey {
@@ -317,9 +321,6 @@ mod tests {
         assert_eq!(hk2.describe(), "Ctrl + Shift + P");
     }
 
-    /// PrintScreen with no modifiers is the documented default. The Settings
-    /// dialog renders this string in the HOTKEY row; pin the value so a
-    /// rename or default-change forces a deliberate update.
     #[test]
     fn default_hotkey_is_printscreen() {
         let s = AppSettings::default();
@@ -327,7 +328,6 @@ mod tests {
         assert_eq!(hk.modifiers, Modifiers::empty());
         assert_eq!(hk.virtual_key, 0x2C);
         assert_eq!(hk.describe(), "PrintScreen");
-        // And the standalone Hotkey default matches.
         assert_eq!(Hotkey::default(), hk);
     }
 
@@ -338,7 +338,27 @@ mod tests {
         assert_eq!(vk_label(0x70), Some("F1"));
         assert_eq!(vk_label(0x7B), Some("F12"));
         assert_eq!(vk_label(0x25), Some("Left"));
-        // Junk VK returns None so the UI can fall back to "(0xNN)".
         assert_eq!(vk_label(0xABCD), None);
+    }
+
+    #[test]
+    fn marker_opacity_default_preserves_legacy_alpha() {
+        assert_eq!(AppSettings::default().marker_opacity, 0xC8);
+    }
+
+    #[test]
+    fn marker_opacity_round_trips_through_json() {
+        let mut s = AppSettings::default();
+        s.marker_opacity = 0x40;
+        let txt = serde_json::to_string(&s).unwrap();
+        assert!(txt.contains("\"MarkerOpacity\""), "JSON key should be MarkerOpacity: {txt}");
+        let s2: AppSettings = serde_json::from_str(&txt).unwrap();
+        assert_eq!(s2.marker_opacity, 0x40);
+    }
+
+    #[test]
+    fn marker_opacity_missing_key_falls_back_to_default() {
+        let s: AppSettings = serde_json::from_str("{}").unwrap();
+        assert_eq!(s.marker_opacity, 0xC8);
     }
 }
