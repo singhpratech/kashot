@@ -33,8 +33,9 @@ jobs:
         run: |
           set -e
           pattern='\b(claude|anthropic|copilot|chatgpt|gpt-?[0-9]|gemini|llm[- ]assist|ai[- ]assist|ai[- ]generated|generated[- ]with[- ]ai)\b'
-          # Files we accept matches in (allowlist).
-          allow='^\.gitignore$'
+          # Files we accept matches in (allowlist). git grep output is
+          # "filename:line:content", so the prefix anchors the match.
+          allow='^\.gitignore:'
           matches=$(git grep -InEi "$pattern" -- ':(exclude).git' ':(exclude)target' \
                                                 ':(exclude)node_modules' \
                                                 ':(exclude).local' \
