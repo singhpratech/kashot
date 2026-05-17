@@ -1,0 +1,61 @@
+# CodeQL static-analysis scanning for kashot. Runs on every PR + every push
+# to main, plus a weekly safety scan. The default-setup REST endpoint
+# returns 404 for this account, so we use the advanced (workflow) path
+# documented at https://github.blog/changelog/2023-08-10-code-scanning-default-setup-now-available-for-self-hosted-repositories/
+#
+# Languages scanned:
+#   - csharp   — the legacy Kashot/ WinForms build
+#   - actions  — the workflow YAML in this directory
+#
+# Rust is intentionally excluded for now: CodeQL Rust support is still in
+# preview and tends to flag noise on workspaces with platform-shim crates
+# (kashot-platform). Revisit once GA.
+
+name: CodeQL
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  schedule:
+    # Weekly, Monday 09:00 UTC. Picks up new advisories that landed in the
+    # CodeQL queries since the last build.
+    - cron: '0 9 * * 1'
+
+permissions:
+  contents:        read
+  security-events: write
+  actions:         read
+
+jobs:
+  analyze:
+    name: Analyze (${{ matrix.language }})
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - language: csharp
+            build-mode: none
+          - language: actions
+            build-mode: none
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages:  ${{ matrix.language }}
+          build-mode: ${{ matrix.build-mode }}
+          # `security-extended` adds queries beyond the default suite without
+          # the noise of `security-and-quality`. Good fit for an OSS project
+          # that wants real findings but not 500 style nits.
+          queries:    security-extended
+
+      - name: Perform CodeQL analysis
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: '/language:${{ matrix.language }}'
