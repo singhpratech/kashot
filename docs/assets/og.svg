@@ -168,6 +168,6 @@
     <text x="386" y="568" fill="#4f8268">·</text>
     <text x="402" y="568" fill="#88c2a4">MACOS</text>
 
-    <text x="1120" y="568" text-anchor="end" fill="#00ff95">// FREE · NO TELEMETRY · MIT</text>
+    <text x="1120" y="568" text-anchor="end" fill="#00ff95">// FREE · NO TELEMETRY · APACHE-2.0</text>
   </g>
 </svg>
