@@ -31,7 +31,7 @@ A tray-resident screenshot + screen-recording tool that ships **the same binary 
 
 | Capture | Annotate | Save / Share |
 |:---:|:---:|:---:|
-| 🎯 Pixel-accurate region select with 4× live magnifier | ✏️ 9 tools, 4 palettes, 16 swatches each | 💾 PNG · JPG · BMP · clipboard · pin-to-screen |
+| 🎯 Pixel-accurate region select with 7× live magnifier | ✏️ 9 tools, 4 palettes, 16 swatches each | 💾 PNG · JPG · BMP · clipboard · pin-to-screen |
 | 🖥️ Spans every monitor, single virtual desktop | ⌨️ Single-key shortcuts for every tool | 🎬 Screen recording → MP4 with mic + system audio |
 | ⏱️ Capture-in-3s / 5s / 10s with tray countdown | 🔢 Numbered steps, blur / pixelate, free-text | 🔄 Convert image · MP4 → MOV/WEBM/MKV/GIF |
 
@@ -142,11 +142,11 @@ brew install --cask kashot
 
 |  | Feature |
 |:---:|:---|
-| 🎯 | **Pixel-accurate region select** — 4× live magnifier, drag any edge to resize, `Alt`+drag to move |
+| 🎯 | **Pixel-accurate region select** — 7× live magnifier, drag any edge to resize, `Alt`+drag to move |
 | ✏️ | **9 annotation tools** — pen, line, arrow, rectangle, ellipse, marker, text, numbered steps, blur / pixelate |
 | 🎨 | **4 palettes × 16 swatches** — Vivid · Highlighter · Pastel · Pro, plus a custom color picker |
 | 📌 | **Pin to screen** — borderless top-most window, drag anywhere on the desktop |
-| 🎬 | **Screen recording** — MP4 with optional mic + system audio, floating STOP control |
+| 🎬 | **Screen recording** — MP4 with optional mic + system audio, floating STOP control (Linux X11 today; Windows + macOS recording on the roadmap) |
 | 🔄 | **Format conversion** — PNG ↔ JPG / WEBP / BMP · MP4 → MOV / WEBM / MKV / GIF |
 | 🏷️ | **Watermark** — editable text, 4 anchors, 0–100 % opacity slider |
 | ⌨️ | **Global hotkey** — defaults to `PrintScreen`; remappable via settings |
