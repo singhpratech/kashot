@@ -1489,18 +1489,28 @@ h2 {
   letter-spacing: 0.24em;
   color: var(--text-dim);
 }
-/* Wrap holds <pre.dl-pipe> + <button.dl-pipe-copy> so the COPY button can
-   absolute-position over the top-right of the code block without affecting
-   .dl-pipe's flow / scroll behaviour. */
+/* Wrap is a side-by-side flex container: `pre.dl-pipe` on the left
+   (flex: 1, scrolls if too long), `button.dl-pipe-copy` on the right
+   (flex: 0 0 auto, fixed width). Previously the COPY button was
+   absolute-positioned and the install command flowed *under* it, so the
+   right-most characters of long URLs got hidden behind COPY. Side-by-side
+   flex eliminates that — text can scroll cleanly without ever colliding
+   with the button. Outer border lives on the wrap so the inner cells
+   share one continuous box. */
 .dl-pipe-wrap {
-  position: relative;
+  display: flex;
+  align-items: stretch;
   margin: 0 0 14px;
+  border: 1px solid var(--laser-mid);
+  background: var(--void);
 }
 .dl-pipe {
+  flex: 1 1 auto;
+  min-width: 0;  /* allow flex shrink so long URLs scroll, not push COPY off-card */
   margin: 0;
-  padding: 12px 64px 12px 14px; /* right padding leaves room for COPY */
-  background: var(--void);
-  border: 1px solid var(--laser-mid);
+  padding: 12px 14px;
+  background: transparent;
+  border: 0;
   font-family: var(--font-mono);
   font-size: 11.5px;
   color: var(--laser);
@@ -1508,42 +1518,37 @@ h2 {
   line-height: 1.4;
   user-select: all;
   cursor: copy;
-  white-space: nowrap; /* keep the command on one line; let it scroll */
+  white-space: nowrap;
 }
 .dl-pipe code { color: inherit; }
 
-/* COPY button — one-click clipboard. Sits in the top-right corner of every
-   dl-pipe and flashes "COPIED" for 1.4s on successful write. The button
-   inherits laser-green theme but goes softer at rest so it doesn't fight
-   the actual command for attention. */
+/* COPY button — one-click clipboard. Sits next to .dl-pipe inside the
+   wrap, separated by a vertical laser-green divider. Flashes "COPIED"
+   for 1.4s on success. */
 .dl-pipe-copy {
-  position: absolute;
-  top: 6px;
-  right: 6px;
+  flex: 0 0 auto;
   font-family: var(--font-mono);
   font-size: 10px;
   letter-spacing: 0.22em;
   color: var(--laser-mid);
-  background: rgba(0, 16, 8, 0.85);
-  border: 1px solid var(--laser-mid);
-  padding: 4px 8px;
+  background: transparent;
+  border: 0;
+  border-left: 1px solid var(--laser-mid);
+  padding: 0 14px;
   cursor: pointer;
-  opacity: 0.85;
-  transition: opacity .2s ease, color .2s ease, border-color .2s ease,
-              box-shadow .2s ease;
+  transition: color .2s ease, background .2s ease, box-shadow .2s ease;
 }
 .dl-pipe-copy:hover,
 .dl-pipe-copy:focus-visible {
   outline: none;
-  opacity: 1;
   color: var(--laser);
-  border-color: var(--laser);
-  box-shadow: 0 0 10px var(--laser-fog);
+  background: rgba(0, 255, 149, 0.08);
+  box-shadow: inset 0 0 10px var(--laser-fog);
 }
 .dl-pipe-copy.is-copied {
   color: var(--text);
-  border-color: var(--text);
-  box-shadow: 0 0 12px var(--laser-glow);
+  background: rgba(0, 255, 149, 0.16);
+  box-shadow: inset 0 0 12px var(--laser-glow);
 }
 
 /* The dl-card header becomes a click target when app.js wires it up so the
