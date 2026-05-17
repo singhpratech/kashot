@@ -83,13 +83,16 @@ That's KAShot. Lightweight. One workflow. Everywhere.
 Unzip → run `kashot.exe`. Same Rust binary that ships on Linux and macOS.
 
 ```powershell
+# one-liner
+iwr -useb https://kashot.org/install.ps1 | iex
+```
+
+```powershell
 # coming soon
 winget install singhpratech.Kashot
 choco  install kashot
 scoop  install kashot
 ```
-
-The legacy WiX MSI (`Kashot.msi`) is still available as a CI artifact on the `Build C# (Windows, legacy)` workflow run for anyone who needs an installer-style package.
 
 </td>
 <td valign="top">
@@ -146,7 +149,7 @@ brew install --cask kashot
 | ✏️ | **9 annotation tools** — pen, line, arrow, rectangle, ellipse, marker, text, numbered steps, blur / pixelate |
 | 🎨 | **4 palettes × 16 swatches** — Vivid · Highlighter · Pastel · Pro, plus a custom color picker |
 | 📌 | **Pin to screen** — borderless top-most window, drag anywhere on the desktop |
-| 🎬 | **Screen recording** — MP4 with optional mic + system audio, floating STOP control (Linux X11 today; Windows + macOS recording on the roadmap) |
+| 🎬 | **Screen recording** — MP4 with floating STOP control. Linux X11 (PulseAudio mic + monitor); Windows native (ffmpeg gdigrab + DirectShow mic — system audio is queued); macOS via built-in `screencapture` (no mic yet). Wayland capture is queued |
 | 🔄 | **Format conversion** — PNG ↔ JPG / WEBP / BMP · MP4 → MOV / WEBM / MKV / GIF |
 | 🏷️ | **Watermark** — editable text, 4 anchors, 0–100 % opacity slider |
 | ⌨️ | **Global hotkey** — defaults to `PrintScreen`; remappable via settings |
@@ -191,26 +194,19 @@ Once a region is selected:
 
 ## Build from source
 
-Two implementations live side-by-side in this repo:
+The Rust workspace under `kashot-rs/` is the canonical build for every
+platform — same source, same UX on Windows, Linux, and macOS:
 
-```text
-Kashot/        C# / .NET 8 / WinForms — Windows-only, the v0.1 reference build
-kashot-rs/     Rust workspace — cross-platform, ships the same UX natively
-```
-
-### Windows (C#)
-```powershell
-dotnet publish Kashot/Kashot.csproj -c Release
-./Installer/build.ps1     # → Kashot.msi + Kashot.exe + Kashot-portable.zip
-```
-
-### Cross-platform (Rust)
 ```sh
 cd kashot-rs
-cargo test  -p kashot-core               # 9 tests, no system deps
-cargo build --release --bin kashot       # 7 MB stripped binary
+cargo test  -p kashot-core               # pure-logic tests, no system deps
+cargo build --release --bin kashot       # ~7 MB stripped binary
 ./target/release/kashot
 ```
+
+> The v0.1 Windows-only C# / WinForms build was retired in v0.3.0 once the
+> Rust port covered all three platforms. Git history retains it if you need
+> to look back.
 
 Linux build deps:
 ```sh
@@ -234,15 +230,16 @@ Full architecture notes in [`CLAUDE.md`](CLAUDE.md).
 ## Project layout
 
 ```text
-Kashot/                C# / WinForms reference build (Windows)
-kashot-rs/             Rust workspace (cross-platform port)
+kashot-rs/             Rust workspace — canonical build on all 3 platforms
   crates/kashot-core      Tool · Annotation · AppSettings · ThemeColors — pure logic
   crates/kashot-platform  capture · hotkey · tray · recorder · clipboard
   crates/kashot-app       tray-resident binary + overlay editor + themed dialogs
 docs/                  kashot.org landing page (GitHub Pages)
-dist/                  package-channel metadata: winget, choco, scoop, brew, flatpak, AUR, deb
+dist/                  package-channel metadata: winget, choco, scoop, brew,
+                       flatpak, AUR, deb, rpm, snap, appimage
 icons/                 branded icon pack (every platform size, one source PNG)
-.github/workflows/     CI: matrix tests + multi-platform release builds
+.github/workflows/     CI: matrix tests + multi-platform release builds (Rust);
+                       CodeQL scan over the workflow YAML
 ```
 
 ---
@@ -254,12 +251,12 @@ icons/                 branded icon pack (every platform size, one source PNG)
 | Tray + global hotkey | ✅ | ✅ | ✅ |
 | Capture + 9-tool overlay editor | ✅ | ✅ | ✅ |
 | Save · Copy · Pin · Watermark | ✅ | ✅ | ✅ |
-| Screen recording (MP4 + audio) | ⏳ | ✅ | ⏳ |
+| Screen recording (MP4) | ✅ mic only | ✅ mic + system | ✅ no audio yet |
 | Themed Settings · About · Updates | ✅ | ✅ | ✅ |
 | Image + video format conversion | ✅ | ✅ | ✅ |
-| Release artifact | `.zip` | `.tar.gz` | raw binary (`.dmg` planned) |
+| Release artifact | `.zip` | `.tar.gz` (x86_64 + arm64) + AppImage | raw binary (`.dmg` queued) |
 
-**One Rust binary, three platforms.** Same source, same editor, same feature set — the `kashot-rs/` workspace is the canonical build on Windows, Linux, and macOS. The original C# WinForms version (`Kashot/`) is retained as a reference implementation and PR compile-check; it no longer attaches to releases. Both stay aligned on settings JSON shape and hotkey wire format — see [`PLAN.md`](PLAN.md) § "Architecture invariants".
+**One Rust binary, three platforms.** Same source, same editor, same feature set — the `kashot-rs/` workspace is the canonical build on Windows, Linux, and macOS as of v0.3.0. The original C# / WinForms build is retired (history retained in git). See [`PLAN.md`](PLAN.md) § "Architecture invariants" for the settings JSON shape and hotkey wire format.
 
 ---
 

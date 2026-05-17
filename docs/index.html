@@ -728,7 +728,7 @@
           <span class="module-tag">[06]</span>
           <h3>OPEN ON THE GRID</h3>
         </div>
-        <p>~10 MB native binary on Linux and macOS. ~30 MB self-contained on Windows. No Electron. No Wine. No accounts, no telemetry. Apache-2.0 licensed, source on GitHub.</p>
+        <p>~7 MB stripped native Rust binary on Windows, Linux, and macOS — same source on all three. No Electron. No Wine. No accounts, no telemetry. Apache-2.0 licensed, source on GitHub.</p>
         <span class="module-corner" aria-hidden="true"></span>
       </article>
 
@@ -771,9 +771,8 @@
 
         <details class="dl-more">
           <summary>// MORE INSTALL CHANNELS</summary>
-          <pre><code># legacy WiX installer (kept as CI artifact on
-# the "Build C# (Windows, legacy)" workflow run):
-#   https://github.com/singhpratech/kashot/actions/workflows/build-csharp.yml
+          <pre><code># MSI installer (queued — shipping in a future CI cycle;
+# until then, use the .zip above)
 
 # winget   (queued)
 winget install singhpratech.Kashot
@@ -797,7 +796,7 @@ scoop install kashot</code></pre>
           <h3>LINUX</h3>
           <span class="dl-status">// NATIVE · RUST</span>
         </header>
-        <p class="dl-desc">Native x86_64 binary. No Electron, no Wine. Tray + hotkey + capture + annotation editor + recording (X11 today) + format conversion — same Rust binary as Windows and macOS. Screen recording on Windows + macOS is on the roadmap.</p>
+        <p class="dl-desc">Native x86_64 and arm64 binaries. No Electron, no Wine. Tray + hotkey + capture + annotation editor + recording (X11 today; Wayland queued) + format conversion — same Rust binary as Windows and macOS. Windows now ships native recording too (mic-only); macOS records via the built-in screencapture utility.</p>
 
         <div class="dl-options">
           <a class="btn btn-primary"
