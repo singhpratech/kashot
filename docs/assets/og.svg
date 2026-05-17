@@ -70,14 +70,14 @@
 
     <text x="1100" y="79" text-anchor="end" fill="#88c2a4">KASHOT.ORG</text>
     <circle cx="1116" cy="74" r="4" fill="#00e6c0"/>
-    <text x="1124" y="79" fill="#88c2a4">v0.2</text>
+    <text x="1124" y="79" fill="#88c2a4">v0.3</text>
   </g>
 
   <!-- eyebrow chip -->
   <g transform="translate(80, 138)">
     <rect width="220" height="32" fill="rgba(0,255,149,0.05)" stroke="rgba(0,255,149,0.32)" stroke-width="1"/>
     <text x="14" y="22" font-family="JetBrains Mono, monospace" font-size="13"
-          letter-spacing="3.5" fill="#00ff95" font-weight="600">// KASHOT v0.2</text>
+          letter-spacing="3.5" fill="#00ff95" font-weight="600">// KASHOT v0.3</text>
   </g>
 
   <!-- KASHOT wordmark with chromatic ghosts -->
