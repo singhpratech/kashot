@@ -1,7 +1,7 @@
 # Distribution package metadata
 
 Each subfolder is a package manifest for a different distribution channel.
-Files reference `v0.1.0` and use placeholder `REPLACE_WITH_ACTUAL_SHA256_AT_RELEASE_TIME`
+Files reference `v0.2.0` and use placeholder `REPLACE_WITH_ACTUAL_SHA256_AT_RELEASE_TIME`
 strings — the CI workflow fills these in at tag time and submits the
 manifests via PRs to each registry.
 
@@ -20,3 +20,13 @@ Each first-time submission has its own gating process (winget reviews PRs,
 Flathub reviews submissions, Homebrew Cask requires a clean RFC checklist,
 etc.). After acceptance, the same manifest is bumped each release with the
 new version + sha256.
+
+> **Note on asset-name mismatches.** As of v0.2.0, the canonical Windows
+> artifact on the Release is `kashot-windows-x86_64.zip` (built by
+> `build-rust.yml`). The `winget/` and `chocolatey/` manifests still target
+> `Kashot.msi` — the MSI now ships as a CI artifact on the
+> `Build C# (Windows, legacy)` workflow run rather than on the Release.
+> Before activating either channel, either (a) re-attach the MSI to the
+> Release in `build-csharp.yml`, or (b) flip the manifest to a zip-style
+> install pointing at `kashot-windows-x86_64.zip`. `scoop/` still targets
+> the legacy `Kashot-portable.zip` for the same reason.

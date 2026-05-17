@@ -36,7 +36,7 @@
   <content_rating type="oars-1.1"/>
 
   <releases>
-    <release version="0.1.0" date="2026-04-30">
+    <release version="0.2.0" date="2026-04-30">
       <description><p>Initial release on the 0.1.x line.</p></description>
     </release>
   </releases>
