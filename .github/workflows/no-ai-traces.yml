@@ -1,0 +1,71 @@
+# Hard gate: nothing in the repo may name an AI/agent tool. Runs on
+# every push + PR and fails CI if any tracked file (or commit message
+# on the PR head) leaks an "ai-assisted development" marker.
+#
+# See feedback_no_ai_traces.md (maintainer memory) for the why: the
+# product positions as a hand-built solo-maintained tool, and every
+# leaked attribution erodes that positioning + risks store review
+# friction.
+#
+# False-positive watch: aiexplore369@gmail.com (the maintainer's
+# email) contains "ai" — patterns use \b anchors. "cursor" is allowed
+# only when it's a real X11 library name (libxcb-cursor-dev) or one
+# of the runtime cursor crates we depend on.
+name: No AI traces
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Grep tracked files for AI-tool markers
+        # The pattern intentionally excludes the .gitignore line that
+        # lists `.claude/` / `.cursor/` / `.aider*` / `.copilot/` as
+        # local-agent state directories — those bare paths are
+        # defensive hygiene, not evidence of use.
+        run: |
+          set -e
+          pattern='\b(claude|anthropic|copilot|chatgpt|gpt-?[0-9]|gemini|llm[- ]assist|ai[- ]assist|ai[- ]generated|generated[- ]with[- ]ai)\b'
+          # Files we accept matches in (allowlist).
+          allow='^\.gitignore$'
+          matches=$(git grep -InEi "$pattern" -- ':(exclude).git' ':(exclude)target' \
+                                                ':(exclude)node_modules' \
+                                                ':(exclude).local' \
+                                                ':(exclude)parts' \
+                                                ':(exclude)stage' \
+                                                ':(exclude)prime' \
+                                                ':(exclude).claude' \
+                                                ':(exclude)kashot-rs/Cargo.lock' \
+                                                ':(exclude)Cargo.lock' \
+                                                ':(exclude).github/workflows/no-ai-traces.yml' \
+                                                | grep -vE "$allow" || true)
+          if [ -n "$matches" ]; then
+            echo "::error::AI-tool references found in tracked files:"
+            echo "$matches"
+            exit 1
+          fi
+          echo "Repo scan clean: no AI-tool references in tracked files."
+
+      - name: Scan commit messages on the PR
+        if: github.event_name == 'pull_request'
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -e
+          pattern='(claude|anthropic|copilot|noreply@anthropic|co-authored-by:[^\n]*(claude|anthropic|ai-bot|gpt))'
+          msgs=$(git log --format='%H%n%an <%ae>%n%B%n---END---' "$BASE..$HEAD")
+          hits=$(echo "$msgs" | grep -iE "$pattern" || true)
+          if [ -n "$hits" ]; then
+            echo "::error::AI/agent attribution found in commit messages:"
+            echo "$hits"
+            exit 1
+          fi
+          echo "Commit-message scan clean."

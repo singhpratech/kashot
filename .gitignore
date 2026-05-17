@@ -21,6 +21,8 @@ publish/
 *.pdb
 *.msi
 *.wixpdb
+*.snap
+*.AppImage
 preview.png
 
 # OS
@@ -35,16 +37,18 @@ Thumbs.db
 *.log
 
 # Local-only files: deployment runbooks, DNS / domain notes,
-# anything specific to the maintainer's environment. Never push.
+# editor / agent session state, anything specific to the
+# maintainer's environment. Never push.
 .local/
 *.local
 *.local.*
+.claude/
+.cursor/
+.aider*
+.copilot/
 DEPLOY.md
 DEPLOY-*.md
 deploy.md
 SECRETS.md
 .env
 .env.*
-
-# Claude Code session config
-.claude/

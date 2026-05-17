@@ -1,0 +1,46 @@
+# Validate the Flatpak / Flathub manifest on every push + PR that
+# touches the manifest. Catches schema drift, sha256 mismatches,
+# AppStream metainfo lint issues — the things that block a Flathub
+# submission from being merged. Doesn't actually build the flatpak
+# (that's slow and needs runtime extensions); just runs the linters.
+name: Validate Flatpak
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'dist/flatpak/**'
+      - '.github/workflows/validate-flatpak.yml'
+  pull_request:
+    branches: [ main ]
+    paths:
+      - 'dist/flatpak/**'
+      - '.github/workflows/validate-flatpak.yml'
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install flatpak-builder + appstream tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            flatpak-builder appstream
+
+      - name: Validate AppStream metainfo
+        run: appstreamcli validate --pedantic --explain \
+               dist/flatpak/org.kashot.Kashot.metainfo.xml
+
+      - name: Validate desktop entry
+        run: |
+          sudo apt-get install -y --no-install-recommends desktop-file-utils
+          desktop-file-validate dist/flatpak/org.kashot.Kashot.desktop
+
+      - name: Show manifest summary
+        # `flatpak-builder --show-manifest` parses the YAML and prints
+        # the resolved JSON form, which catches YAML schema errors
+        # without needing the runtime + SDK extensions installed.
+        run: flatpak-builder --show-manifest dist/flatpak/org.kashot.Kashot.yaml \
+               | head -60

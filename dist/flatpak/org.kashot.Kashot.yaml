@@ -29,7 +29,7 @@ modules:
     sources:
       - type: archive
         url:    https://github.com/singhpratech/kashot/releases/download/v0.3.0/kashot-linux-x86_64.tar.gz
-        sha256: REPLACE_WITH_ACTUAL_SHA256_AT_RELEASE_TIME
+        sha256: 06bc93f84f6e290307768b5b0c50d10070c8f068b71632e45ae4619ba8920b9a
         strip-components: 1
       - type: file
         path: org.kashot.Kashot.desktop
