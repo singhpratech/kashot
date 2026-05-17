@@ -92,13 +92,14 @@ impl Annotation {
     pub fn ellipse(stroke: Stroke, a: Point2) -> Annotation {
         Annotation { kind: AnnotationKind::Ellipse { stroke, start: a, end: a } }
     }
-    pub fn marker(stroke: Stroke, p: Point2) -> Annotation {
-        // Marker thickness is 6× the configured thickness, with alpha pinned
-        // to 0xC8 so a vivid color reads as a highlighter regardless of which
-        // palette the user has active. Mirrors `Kashot/Annotations.cs::MarkerAnnotation`.
+    pub fn marker(stroke: Stroke, p: Point2, alpha: u8) -> Annotation {
+        // Marker thickness is 6× the configured thickness; alpha is the
+        // user-controlled value from `AppSettings::marker_opacity` (default
+        // `0xC8`). The editor's per-tool slider mutates that setting live
+        // and passes the current value in here on every new marker stroke.
         let stroke = Stroke {
             thickness: stroke.thickness * 6.0,
-            color:     stroke.color.with_alpha(0xC8),
+            color:     stroke.color.with_alpha(alpha),
         };
         Annotation { kind: AnnotationKind::Marker { stroke, points: vec![p] } }
     }
@@ -244,5 +245,42 @@ mod tests {
     #[test]
     fn palettes_have_16_colors_each() {
         for p in Palettes::ALL.iter() { assert_eq!(p.colors.len(), 16); }
+    }
+
+    #[test]
+    fn marker_alpha_param_overrides_stroke_alpha() {
+        // The slider passes the user-chosen alpha straight through. Whatever
+        // alpha the swatch color carried is replaced by the param; only the
+        // RGB triple survives. This is what makes the slider's live preview
+        // match the eventual painted stroke.
+        let opaque = Stroke {
+            color:     Rgba::new(255, 0, 0, 0xFF),
+            thickness: 4.0,
+        };
+        let a = Annotation::marker(opaque, Point2::new(10.0, 20.0), 0x80);
+        match a.kind {
+            AnnotationKind::Marker { stroke, points } => {
+                assert_eq!(stroke.color.a, 0x80, "alpha must come from the param, not the input swatch");
+                assert_eq!(stroke.color.r, 255);
+                assert_eq!(stroke.color.g, 0);
+                assert_eq!(stroke.color.b, 0);
+                assert_eq!(stroke.thickness, 24.0, "thickness multiplier is 6×, untouched by this change");
+                assert_eq!(points, vec![Point2::new(10.0, 20.0)]);
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn marker_alpha_param_min_and_max() {
+        let stroke = Stroke::default();
+        let p = Point2::new(0.0, 0.0);
+        for alpha in [0x00u8, 0x01, 0x7F, 0xC8, 0xFF] {
+            let a = Annotation::marker(stroke, p, alpha);
+            match a.kind {
+                AnnotationKind::Marker { stroke: s, .. } => assert_eq!(s.color.a, alpha),
+                _ => panic!("wrong variant"),
+            }
+        }
     }
 }

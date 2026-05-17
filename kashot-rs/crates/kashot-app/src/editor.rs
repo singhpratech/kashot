@@ -33,6 +33,7 @@ use std::rc::Rc;
 use anyhow::{anyhow, Result};
 use image::{ImageBuffer, Rgba};
 use kashot_core::annotation::{Annotation, Point2, Stroke};
+use kashot_core::settings::AppSettings;
 use kashot_core::state::{hit_test_edge, Edge};
 use kashot_core::tool::Tool;
 use softbuffer::{Context, Surface};
@@ -101,6 +102,20 @@ const PANEL_GROUP_GAP: i32 = 8;
 /// Stroke widths the thickness button cycles through. Default is index 1
 /// (4 px) — matches `Stroke::default().thickness` in kashot-core.
 const THICKNESSES: [f32; 3] = [2.0, 4.0, 8.0];
+
+// ── marker-opacity slider geometry ──────────────────────────────────────────
+// Tucked underneath the tool panel and only painted when `Tool::Marker` is
+// the active tool. Sized to comfortably fit a 140-px-wide track plus a "XX%"
+// readout without exceeding the available screen width on either side of the
+// selection. Anchored to the same X column as the tool panel so it feels
+// like a satellite of the Marker button rather than a free-floating widget.
+const MARKER_SLIDER_W:        i32 = 168;
+const MARKER_SLIDER_H:        i32 = 38;
+const MARKER_SLIDER_GAP:      i32 = 6;
+const MARKER_SLIDER_PAD:      i32 = 8;
+const MARKER_SLIDER_TRACK_H:  i32 = 16;
+const MARKER_SLIDER_KNOB_W:   i32 = 14;
+const MARKER_SLIDER_LABEL_W:  i32 = 34;
 
 /// Tool-panel button identities. The first 9 mirror `Tool::ALL`; the last 4
 /// (`Color`, `Thickness`, `Undo`, `Redo`) are buttons that don't pick a tool
@@ -206,6 +221,17 @@ pub struct Overlay {
     /// sequential orange-neon glow that cycles through every tool-panel
     /// button top-to-bottom (mirrors the website's tool-palette demo).
     opened_at: std::time::Instant,
+    /// Live `AppSettings` snapshot for the editor session. Most fields are
+    /// read-only from here; `marker_opacity` is mutated by the per-tool
+    /// slider below the panel and persisted on mouseup (and surfaced back
+    /// to `TrayApp` via `marker_opacity()` when the overlay closes so the
+    /// next capture session paints at the same alpha).
+    settings: AppSettings,
+    /// True while the user is left-dragging the Marker opacity knob. Same
+    /// pattern as `SettingsView::dragging_opacity`: we follow CursorMoved
+    /// until `MouseInput::Released` flips it off, at which point the new
+    /// value is flushed to `settings.json`.
+    dragging_marker_opacity: bool,
 }
 
 impl Drop for Overlay {
@@ -217,9 +243,17 @@ impl Drop for Overlay {
 
 impl Overlay {
     /// Open the fullscreen overlay window for the given screenshot.
+    ///
+    /// `settings` is taken by value so the editor can mutate its own copy
+    /// without racing the tray's `AppSettings`. Per-tool widgets (currently
+    /// just the Marker opacity slider) update the local copy live and call
+    /// `settings.save()` on commit; the tray reads `marker_opacity()` back
+    /// when the overlay closes to keep its in-memory copy in sync for the
+    /// next capture.
     pub fn new(
         loop_target: &ActiveEventLoop,
         screenshot: ImageBuffer<Rgba<u8>, Vec<u8>>,
+        settings: AppSettings,
     ) -> Result<Self> {
         // Plain borderless fullscreen — let the WM manage focus + stacking
         // normally. We tried `override_redirect=true` on X11 to layer above
@@ -296,7 +330,34 @@ impl Overlay {
             panel_pulse_started: None,
             last_was_selected:   false,
             opened_at:           std::time::Instant::now(),
+            settings,
+            dragging_marker_opacity: false,
         })
+    }
+
+    /// Read-only view of the editor's live settings — used by `tray_loop`
+    /// after the overlay closes to pull back any per-tool slider values
+    /// (currently just `marker_opacity`) the user changed mid-session.
+    pub fn settings(&self) -> &AppSettings { &self.settings }
+
+    /// Snap `settings.marker_opacity` to the cursor's X position inside the
+    /// slider track. Cursor X is clamped to the track so dragging past the
+    /// end pegs the value at 0 / 255 instead of wrapping. Step is 1 unit
+    /// out of 256 so every pixel of the track represents a distinct value.
+    fn set_marker_opacity_from_cursor(&mut self) {
+        let Some(sel) = self.selection else { return; };
+        let win_w = self.window.inner_size().width  as usize;
+        let win_h = self.window.inner_size().height as usize;
+        let Some(panel) = marker_slider_rect(win_w, win_h, sel) else { return; };
+        let (tx, _ty, tw, _th) = marker_slider_track(panel);
+        if tw <= 1 { return; }
+        let cx = self.cursor.0;
+        let mut t = (cx - tx) as f32 / (tw - 1) as f32;
+        if !t.is_finite() { t = 0.0; }
+        t = t.clamp(0.0, 1.0);
+        let v = (t * 255.0).round() as i32;
+        self.settings.marker_opacity = v.clamp(0, 255) as u8;
+        self.window.request_redraw();
     }
 
     pub fn window_id(&self) -> WindowId { self.window.id() }
@@ -316,6 +377,13 @@ impl Overlay {
 
             WindowEvent::CursorMoved { position: PhysicalPosition { x, y }, .. } => {
                 self.cursor = (x as i32, y as i32);
+                // Marker opacity drag takes priority over per-state cursor
+                // updates so the slider tracks the cursor smoothly even
+                // when the user drags well outside the slider's own rect.
+                if self.dragging_marker_opacity {
+                    self.set_marker_opacity_from_cursor();
+                    return OverlayOutcome::Continue;
+                }
                 match self.state {
                     State::Selecting => {
                         self.selection = Some(rect_from(self.anchor, self.cursor));
@@ -614,6 +682,21 @@ impl Overlay {
                         ActionButton::Close => OverlayOutcome::Cancelled,
                     };
                 }
+
+                // Marker opacity slider — only visible when Marker is the
+                // active tool. A click anywhere inside the panel jumps the
+                // value to the cursor X and arms drag-tracking until the
+                // user releases the mouse button (mirrors the watermark
+                // opacity slider in `settings_form.rs`).
+                if self.tool == Tool::Marker {
+                    if let Some(panel) = marker_slider_rect(win_w, win_h, sel) {
+                        if marker_slider_hit(panel, self.cursor) {
+                            self.dragging_marker_opacity = true;
+                            self.set_marker_opacity_from_cursor();
+                            return OverlayOutcome::Continue;
+                        }
+                    }
+                }
             }
         }
 
@@ -684,6 +767,16 @@ impl Overlay {
     }
 
     fn handle_left_release(&mut self) -> OverlayOutcome {
+        // End any active marker-opacity drag and persist the new value to
+        // disk so the next session paints at the same alpha. Best-effort:
+        // a save failure here is logged but never aborts the editor (same
+        // contract as `AppSettings::save` everywhere else).
+        if self.dragging_marker_opacity {
+            self.dragging_marker_opacity = false;
+            if let Err(e) = self.settings.save() {
+                eprintln!("kashot: marker opacity save failed: {e}");
+            }
+        }
         match self.state {
             State::Selecting => {
                 let r = rect_from(self.anchor, self.cursor);
@@ -774,6 +867,16 @@ impl Overlay {
             };
             return Some((label, self.cursor.0 + 14, self.cursor.1 + 14));
         }
+        // Marker-only opacity slider — only present when the Marker tool
+        // is active. Tooltip cues the user that the widget is a slider
+        // (some users may not recognise the chrome on first sight).
+        if self.tool == Tool::Marker {
+            if let Some(panel) = marker_slider_rect(win_w, win_h, sel) {
+                if marker_slider_hit(panel, self.cursor) {
+                    return Some(("Marker opacity", self.cursor.0 + 14, self.cursor.1 + 14));
+                }
+            }
+        }
         None
     }
 
@@ -808,7 +911,7 @@ impl Overlay {
             Tool::Rectangle => Annotation::rectangle(self.stroke, p),
             Tool::Ellipse   => Annotation::ellipse(self.stroke, p),
             Tool::Line      => Annotation::line(self.stroke, p),
-            Tool::Marker    => Annotation::marker(self.stroke, p),
+            Tool::Marker    => Annotation::marker(self.stroke, p, self.settings.marker_opacity),
             Tool::Pixelate  => Annotation::pixelate(p),
             // Step is handled inline at click site (no `Drawing` state).
             Tool::Step      => return None,
@@ -1064,6 +1167,18 @@ impl Overlay {
                     let tp_origin = tool_panel_origin(win_w, win_h, sel);
                     draw_palette_popup(&mut buf, win_w, win_h, tp_origin, self.stroke.color, self.palette_index);
                 }
+                // Marker opacity slider — appears only while the Marker
+                // tool is the active selection. The slider track shows the
+                // marker color at the chosen opacity so the user previews
+                // exactly what their next stroke will look like.
+                if self.tool == Tool::Marker {
+                    if let Some(panel) = marker_slider_rect(win_w, win_h, sel) {
+                        draw_marker_opacity_slider(
+                            &mut buf, win_w, win_h, panel,
+                            self.stroke.color, self.settings.marker_opacity,
+                        );
+                    }
+                }
             }
         }
 
@@ -1123,6 +1238,59 @@ fn tool_panel_origin(win_w: usize, win_h: usize, sel: (i32, i32, i32, i32)) -> (
     if ty + ph > win_h as i32 { ty = (win_h as i32) - ph; }
     let _ = sh;
     (tx.max(0), ty.max(0))
+}
+
+/// Origin + size of the Marker-only opacity slider panel. Sits directly
+/// below the tool panel sharing its X column. If the tool panel is on the
+/// RIGHT of the selection the slider hangs off its left edge so the wider
+/// slider doesn't push past the screen edge; on the LEFT it hangs off the
+/// right edge for the same reason. Returns `None` only if the slider would
+/// have to overflow horizontally on a screen narrower than ~180 px — in
+/// which case the caller silently skips drawing.
+fn marker_slider_rect(
+    win_w: usize,
+    win_h: usize,
+    sel:   (i32, i32, i32, i32),
+) -> Option<(i32, i32, i32, i32)> {
+    let (tp_x, tp_y) = tool_panel_origin(win_w, win_h, sel);
+    let (tp_w, tp_h) = tool_panel_dims();
+    let (sw, _sh) = (sel.2, sel.3);
+    // The tool panel sits to the RIGHT of the selection when it fits, LEFT
+    // otherwise. The slider extends in the direction with more room.
+    let panel_on_right = tp_x >= sel.0 + sw;
+    let sx = if panel_on_right {
+        // Right-of-selection panel — extend slider leftward so its right
+        // edge lines up with the panel's right edge.
+        tp_x + tp_w - MARKER_SLIDER_W
+    } else {
+        // Left-of-selection panel — extend slider rightward so its left
+        // edge lines up with the panel's left edge.
+        tp_x
+    };
+    let sy = tp_y + tp_h + MARKER_SLIDER_GAP;
+    // Clamp into screen bounds; if there's no room below the panel, hop
+    // above instead.
+    let sx = sx.max(0).min((win_w as i32 - MARKER_SLIDER_W).max(0));
+    let sy = if sy + MARKER_SLIDER_H > win_h as i32 {
+        (tp_y - MARKER_SLIDER_GAP - MARKER_SLIDER_H).max(0)
+    } else { sy };
+    Some((sx, sy, MARKER_SLIDER_W, MARKER_SLIDER_H))
+}
+
+/// Inside the slider panel, where the draggable track lives. Same source
+/// of truth for hit-testing and rendering so the knob always coincides
+/// with where the mouse clicks.
+fn marker_slider_track(panel: (i32, i32, i32, i32)) -> (i32, i32, i32, i32) {
+    let (px, py, pw, ph) = panel;
+    let tx = px + MARKER_SLIDER_PAD;
+    let tw = pw - MARKER_SLIDER_PAD * 2 - MARKER_SLIDER_LABEL_W - 6;
+    let ty = py + (ph - MARKER_SLIDER_TRACK_H) / 2;
+    (tx, ty, tw, MARKER_SLIDER_TRACK_H)
+}
+
+fn marker_slider_hit(panel: (i32, i32, i32, i32), (cx, cy): (i32, i32)) -> bool {
+    let (px, py, pw, ph) = panel;
+    cx >= px && cx < px + pw && cy >= py && cy < py + ph
 }
 
 fn action_panel_origin(win_w: usize, win_h: usize, sel: (i32, i32, i32, i32)) -> (i32, i32) {
@@ -1449,6 +1617,123 @@ fn draw_action_panel(
             ActionButton::Close => crate::icons::render_icon(buf, win_w, win_h, x0, y0, x1, y1, crate::icons::IconKind::Close, [232,232,236,255], None, 4.0),
         }
     }
+}
+
+/// Marker-only opacity slider. Drawn beneath the tool panel when Marker is
+/// the active tool. Track is a void-black groove framed in laser-green; the
+/// "filled" portion of the track is painted with the user's current marker
+/// color at the chosen opacity (alpha-blended over a checker so transparent
+/// values read as transparent rather than solid). Knob is a 14-px square
+/// rendered in the marker color (opaque) with a laser-green border so it
+/// stays visible against any underlying screenshot. A "XX%" readout to the
+/// right reports the alpha as a percentage of 255.
+fn draw_marker_opacity_slider(
+    buf:     &mut [u32],
+    win_w:   usize,
+    win_h:   usize,
+    panel:   (i32, i32, i32, i32),
+    color:   kashot_core::color::Rgba,
+    alpha:   u8,
+) {
+    // Palette aligned with the editor's existing dark chrome + laser-green
+    // accent. Kept local so they stay legible alongside the other panel
+    // helpers without dragging in the settings_form constants.
+    const BG:         u32 = 0x00_22_22_24;
+    const TRACK_BG:   u32 = 0x00_0A_0A_0E;        // void-black groove
+    const BORDER:     u32 = 0x00_00_FF_95;        // laser-green frame
+    const TICK:       u32 = 0x00_44_44_4A;
+    const TEXT_BR:    u32 = 0x00_E8_E8_EC;
+    const CHECKER_A:  u32 = 0x00_2A_2A_30;
+    const CHECKER_B:  u32 = 0x00_18_18_1C;
+
+    let (px, py, pw, ph) = panel;
+    // Panel background.
+    draw_rounded_rect(buf, win_w, win_h, px, py, px + pw, py + ph, PANEL_RADIUS, BG);
+    draw_rect_border(buf, win_w, win_h, px, py, px + pw, py + ph, BORDER);
+
+    let (tx, ty, tw, th) = marker_slider_track(panel);
+
+    // Checkerboard backdrop so the alpha-tinted fill reads honestly: at
+    // alpha 0 the track looks like a transparent grid; at alpha 255 the
+    // color hides the grid entirely.
+    let cell = 4;
+    let xa = tx.max(0) as usize;
+    let xb = ((tx + tw).min(win_w as i32) as usize).max(xa);
+    let ya = ty.max(0) as usize;
+    let yb = ((ty + th).min(win_h as i32) as usize).max(ya);
+    for y in ya..yb.min(win_h) {
+        for x in xa..xb.min(win_w) {
+            let cx = (x as i32 - tx) / cell;
+            let cy = (y as i32 - ty) / cell;
+            let on = (cx + cy) & 1 == 0;
+            buf[y * win_w + x] = if on { CHECKER_A } else { CHECKER_B };
+        }
+    }
+
+    // Color-at-current-alpha fill over the whole track. Source-over blend
+    // onto the checker so the user can see the transparency of the chosen
+    // value at a glance.
+    let cr = color.r as u32;
+    let cg = color.g as u32;
+    let cb = color.b as u32;
+    let a  = alpha as u32;
+    let inv = 255 - a;
+    for y in ya..yb.min(win_h) {
+        for x in xa..xb.min(win_w) {
+            let idx = y * win_w + x;
+            let cur = buf[idx];
+            let dr = (cur >> 16) & 0xFF;
+            let dg = (cur >>  8) & 0xFF;
+            let db =  cur        & 0xFF;
+            let nr = (cr * a + dr * inv + 127) / 255;
+            let ng = (cg * a + dg * inv + 127) / 255;
+            let nb = (cb * a + db * inv + 127) / 255;
+            buf[idx] = (nr << 16) | (ng << 8) | nb;
+        }
+    }
+
+    // Track frame.
+    draw_rect_border(buf, win_w, win_h, tx, ty, tx + tw, ty + th, BORDER);
+    let _ = TRACK_BG; // reserved for a later AA pass; keeps the constant declared.
+
+    // Tick marks at 0 / 25 / 50 / 75 / 100 % so the user has a visual
+    // reference for the common values.
+    for n in 1..4 {
+        let xn = tx + ((tw - 1) as f32 * n as f32 / 4.0).round() as i32;
+        for y in (ty + 1)..(ty + th - 1) {
+            if xn >= 0 && (xn as usize) < win_w && y >= 0 && (y as usize) < win_h {
+                buf[y as usize * win_w + xn as usize] = TICK;
+            }
+        }
+    }
+
+    // Knob — opaque square painted in the marker color so the user sees
+    // the underlying hue even at low alpha. Bordered in laser-green to
+    // match the track frame.
+    let t = (alpha as f32) / 255.0;
+    let kx = tx + ((tw - 1) as f32 * t).round() as i32 - MARKER_SLIDER_KNOB_W / 2;
+    let kx = kx.clamp(tx - 1, tx + tw - MARKER_SLIDER_KNOB_W + 1);
+    let knob_h = th + 6;
+    let ky = ty + (th - knob_h) / 2;
+    let knob_rgb = (cr << 16) | (cg << 8) | cb;
+    draw_filled_rect(buf, win_w, win_h, kx, ky, kx + MARKER_SLIDER_KNOB_W, ky + knob_h, knob_rgb);
+    draw_rect_border(buf, win_w, win_h, kx, ky, kx + MARKER_SLIDER_KNOB_W, ky + knob_h, BORDER);
+
+    // "XX%" readout to the right of the track.
+    let pct = ((alpha as i32) * 100 + 127) / 255;
+    let label = format!("{pct}%");
+    let lx = tx + tw + 6;
+    let ly = py + (ph - crate::bitmap_font::GLYPH_H) / 2;
+    let mut surf = crate::painter::U32Surface { buf, stride: win_w as i32, height: win_h as i32 };
+    crate::painter::draw_text(
+        &mut surf, lx, ly, 1, &label,
+        kashot_core::color::Rgba::new(
+            ((TEXT_BR >> 16) & 0xFF) as u8,
+            ((TEXT_BR >>  8) & 0xFF) as u8,
+            ( TEXT_BR        & 0xFF) as u8,
+            0xFF,
+        ),
+    );
 }
 
 fn draw_palette_popup(
