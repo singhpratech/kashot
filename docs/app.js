@@ -222,11 +222,15 @@
   // asset list in priority order; the first match wins. Fallback URLs match
   // the static `href` attribute already on the buttons in index.html so the
   // page degrades cleanly if the GitHub API call fails.
+  //
+  // Same Rust binary on all three platforms as of v0.2.0 — the picker order
+  // prefers the new canonical artifacts, with the legacy C# MSI/EXE/ZIP kept
+  // as fallback for the Windows acquire-card "INSTALLER" buttons.
   const OS_CONFIG = {
     windows: {
-      label:    'WINDOWS · MSI',
-      pickers:  [/\.msi$/i, /\.exe$/i, /-portable\.zip$/i],
-      fallback: 'https://github.com/singhpratech/kashot/releases/latest/download/Kashot.msi',
+      label:    'WINDOWS · ZIP',
+      pickers:  [/windows.*x86_64\.zip$/i, /\.msi$/i, /\.exe$/i, /-portable\.zip$/i],
+      fallback: 'https://github.com/singhpratech/kashot/releases/latest/download/kashot-windows-x86_64.zip',
       cardId:   'WINDOWS',
     },
     macos: {
@@ -243,50 +247,102 @@
     },
     other: {
       label:    'CHOOSE BUILD',
-      pickers:  [/\.msi$/i],
+      pickers:  [/windows.*x86_64\.zip$/i, /\.msi$/i],
       fallback: 'https://github.com/singhpratech/kashot/releases/latest',
       cardId:   null,
     },
   };
 
-  const cfg     = OS_CONFIG[detectedOS] || OS_CONFIG.other;
   const heroBtn = document.getElementById('download-btn');
   const sub     = document.getElementById('download-sub');
 
-  // Apply per-OS fallback immediately so the button works even if the
-  // GitHub API fetch below is slow / fails / is rate-limited.
-  if (heroBtn) heroBtn.href = cfg.fallback;
-  if (sub)     sub.textContent = `v0.1 · ${cfg.label}`;
+  // Latest GitHub Release payload cached here once the fetch returns, so a
+  // user clicking another OS gets the real asset URL too (not just the
+  // static fallback). Until the fetch completes we fall back to defaults.
+  let latestRelease = null;
+  let activeOS      = null;
 
-  // Spotlight the matching card in the acquire grid so the user lands on
-  // their OS's section visually. We clear the existing `.dl-card-active`
-  // class (statically set on the Windows card) before applying ours, so
-  // detected non-Windows OSes get exclusive highlight.
-  if (cfg.cardId) {
-    document.querySelectorAll('.dl-card-active').forEach(c => c.classList.remove('dl-card-active'));
-    document.querySelectorAll('.dl-card').forEach(card => {
-      const h3 = card.querySelector('h3');
-      if (h3 && h3.textContent.trim().toUpperCase() === cfg.cardId) {
-        card.classList.add('dl-card-active');
+  function applyOS(os) {
+    const cfg = OS_CONFIG[os] || OS_CONFIG.other;
+    activeOS  = os;
+
+    const tag = (latestRelease && (latestRelease.tag_name || latestRelease.name)) || 'v0.2';
+    let href  = cfg.fallback;
+
+    if (latestRelease && latestRelease.assets) {
+      for (const re of cfg.pickers) {
+        const hit = latestRelease.assets.find(a => re.test(a.name));
+        if (hit) { href = hit.browser_download_url; break; }
       }
+    }
+
+    if (heroBtn) heroBtn.href = href;
+    if (sub)     sub.textContent = `${tag} · ${cfg.label}`;
+
+    // Hero platforms strip — mark the active card.
+    document.querySelectorAll('.platform.is-detected').forEach(p => p.classList.remove('is-detected'));
+    if (['windows', 'linux', 'macos'].includes(os)) {
+      const match = document.querySelector(`.platform[data-os="${os}"]`);
+      if (match) match.classList.add('is-detected');
+    }
+
+    // Acquire grid — spotlight the matching dl-card.
+    if (cfg.cardId) {
+      document.querySelectorAll('.dl-card-active').forEach(c => c.classList.remove('dl-card-active'));
+      document.querySelectorAll('.dl-card').forEach(card => {
+        const h3 = card.querySelector('h3');
+        if (h3 && h3.textContent.trim().toUpperCase() === cfg.cardId) {
+          card.classList.add('dl-card-active');
+        }
+      });
+    }
+  }
+
+  // First paint uses auto-detect; the user can override by clicking any
+  // platform card in the hero strip or any dl-card in the acquire grid.
+  applyOS(detectedOS);
+
+  function wireClick(el, os) {
+    if (!el) return;
+    el.style.cursor = 'pointer';
+    el.setAttribute('role', 'button');
+    el.setAttribute('tabindex', '0');
+    el.setAttribute('aria-label', `Show ${os} install instructions`);
+    const handler = (ev) => {
+      ev.preventDefault();
+      applyOS(os);
+      // Scroll the acquire grid into view so the user sees the swap.
+      const acquire = document.getElementById('acquire');
+      if (acquire) acquire.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    };
+    el.addEventListener('click', handler);
+    el.addEventListener('keydown', (ev) => {
+      if (ev.key === 'Enter' || ev.key === ' ') handler(ev);
     });
   }
 
-  // Highlight the matching platform card in the hero platforms strip. The
-  // strip has three cards keyed by `data-os="windows|linux|macos"`; we
-  // flip `.is-detected` onto the one matching `detectedOS` so the user
-  // can see "yes, the site recognized me" at a glance. Mobile / unknown
-  // OSes leave the strip in its neutral state.
-  document.querySelectorAll('.platform.is-detected').forEach(p => p.classList.remove('is-detected'));
-  if (['windows', 'linux', 'macos'].includes(detectedOS)) {
-    const match = document.querySelector(`.platform[data-os="${detectedOS}"]`);
-    if (match) match.classList.add('is-detected');
-  }
+  // Hero strip — every platform card overrides the detected OS.
+  document.querySelectorAll('.platform[data-os]').forEach(p => {
+    const os = p.getAttribute('data-os');
+    if (['windows', 'linux', 'macos'].includes(os)) wireClick(p, os);
+  });
+
+  // Acquire grid — clicking the dl-card header (but not the buttons inside)
+  // also re-targets the active OS. We attach to the <header> so the actual
+  // download buttons keep their native click behaviour.
+  document.querySelectorAll('.dl-card').forEach(card => {
+    const h3 = card.querySelector('h3');
+    if (!h3) return;
+    const label = h3.textContent.trim().toLowerCase();
+    if (['windows', 'linux', 'macos'].includes(label)) {
+      wireClick(card.querySelector('header') || card, label);
+    }
+  });
 
   // ── GitHub release fetch ──────────────────────────────────────────────
   // Look up the real asset URL + version tag from the latest release. If
-  // the API call fails (rate limit / offline), the static fallback wired
-  // above keeps working as long as a release exists.
+  // the API call fails (rate limit / offline), the static fallbacks above
+  // keep working as long as a release exists.
   const REPO = 'singhpratech/kashot';
 
   fetch(`https://api.github.com/repos/${REPO}/releases/latest`, {
@@ -294,30 +350,29 @@
   })
     .then(r => r.ok ? r.json() : Promise.reject(r.status))
     .then(release => {
+      latestRelease = release;
+      const tag = release.tag_name || release.name || 'v0.2';
+
+      // Re-apply the active OS so the hero button + label update with the
+      // real release URL + tag, not just the static fallback.
+      applyOS(activeOS || detectedOS);
+
+      // Bump every static "v0.1 / v0.2" version label on the page to the
+      // real tag so the topbar and brand tag don't lie.
+      document.querySelectorAll('[data-version]').forEach(el => {
+        el.textContent = tag;
+      });
+
+      // Rewrite all `releases/latest/download/*` asset links to the actual
+      // tagged URLs, so download links keep working even after future
+      // releases shift "latest" to a tag that doesn't include this asset.
       const assets = release.assets || [];
-      const tag    = release.tag_name || release.name || 'v0.1';
-
-      // Walk pickers in priority order; first asset matching any picker wins.
-      let chosen = null;
-      for (const re of cfg.pickers) {
-        chosen = assets.find(a => re.test(a.name));
-        if (chosen) break;
-      }
-
-      if (sub) sub.textContent = `${tag} · ${cfg.label}`;
-
-      if (chosen && heroBtn) {
-        heroBtn.href = chosen.browser_download_url;
-      }
-
-      // Keep the legacy .msi-hardcoded links in the acquire grid working
-      // by rewriting any that point at the static fallback URL.
-      const msi = assets.find(a => /\.msi$/i.test(a.name));
-      if (msi) {
-        document.querySelectorAll('a[href*="releases/latest/download/Kashot.msi"]')
-          .forEach(a => { a.href = msi.browser_download_url; });
-      }
+      const byName = new Map(assets.map(a => [a.name, a.browser_download_url]));
+      document.querySelectorAll('a[href*="releases/latest/download/"]').forEach(a => {
+        const m = a.href.match(/releases\/latest\/download\/([^/?#]+)/);
+        if (m && byName.has(m[1])) a.href = byName.get(m[1]);
+      });
     })
-    .catch(() => { /* keep static fallback */ });
+    .catch(() => { /* keep static fallbacks */ });
 
 })();
