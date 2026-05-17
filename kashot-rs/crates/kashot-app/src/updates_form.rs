@@ -79,7 +79,19 @@ enum FetchState {
 pub enum UpdatesOutcome {
     Closed,
     OpenReleases,
+    /// User clicked the platform-aware Download button (the parallel UI PR
+    /// added this) — caller opens the asset URL in the system browser.
     OpenAsset(String),
+    /// User clicked "Download & install" — caller (tray_loop) hands the
+    /// asset URL + verified hash to `self_updater::download_and_install`
+    /// and shows progress while it runs. `expected_sha256 = None` is the
+    /// graceful-degradation path for releases that don't yet carry a
+    /// SHA256SUMS file (the `ci/installer-artifacts` PR adds it).
+    #[allow(dead_code)]
+    DownloadAndInstall {
+        asset_url:       String,
+        expected_sha256: Option<String>,
+    },
 }
 
 pub struct UpdatesView {
