@@ -4,7 +4,7 @@
   <name>Kashot</name>
   <summary>Fast screenshots with annotations</summary>
   <metadata_license>CC0-1.0</metadata_license>
-  <project_license>MIT</project_license>
+  <project_license>Apache-2.0</project_license>
 
   <description>
     <p>
@@ -37,7 +37,7 @@
 
   <releases>
     <release version="0.3.0" date="2026-05-17">
-      <description><p>Windows screen recording; marker opacity slider; hotkey rebind widget; Linux arm64 release; dual MIT OR Apache-2.0 license; C# build retired.</p></description>
+      <description><p>Windows screen recording; marker opacity slider; hotkey rebind widget; Linux arm64 release; Apache-2.0 license; C# build retired.</p></description>
     </release>
     <release version="0.2.0" date="2026-04-30">
       <description><p>Initial release on the 0.1.x line.</p></description>
