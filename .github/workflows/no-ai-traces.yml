@@ -62,13 +62,19 @@ jobs:
         env:
           BASE: ${{ github.event.pull_request.base.sha }}
           HEAD: ${{ github.event.pull_request.head.sha }}
+        # Targets *attribution* leakage only — Co-authored-by trailers,
+        # "Generated with X" footers, and noreply addresses from AI
+        # vendors. Bare mentions of "claude" / "anthropic" in commit-body
+        # prose are NOT flagged: descriptive lines like "renamed CLAUDE.md
+        # to ARCHITECTURE.md" or "add no-AI-traces gate (rejects claude /
+        # anthropic / copilot)" are legitimate, not attribution.
         run: |
           set -e
-          pattern='(claude|anthropic|copilot|noreply@anthropic|co-authored-by:[^\n]*(claude|anthropic|ai-bot|gpt))'
+          pattern='^(co-authored-by:[[:space:]].*|generated[[:space:]]with.*|.*noreply@anthropic.*)'
           msgs=$(git log --format='%H%n%an <%ae>%n%B%n---END---' "$BASE..$HEAD")
-          hits=$(echo "$msgs" | grep -iE "$pattern" || true)
+          hits=$(echo "$msgs" | grep -iE "$pattern" | grep -iE '(claude|anthropic|copilot|ai-bot|gpt|gemini)' || true)
           if [ -n "$hits" ]; then
-            echo "::error::AI/agent attribution found in commit messages:"
+            echo "::error::AI/agent attribution footer found in commit messages:"
             echo "$hits"
             exit 1
           fi
