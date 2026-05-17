@@ -119,7 +119,9 @@
         <Property Id='ARPHELPLINK' Value='https://kashot.org' />
         <Property Id='ARPURLINFOABOUT' Value='https://kashot.org' />
         <Property Id='ARPNOREPAIR' Value='1' />
-        <Property Id='ARPNOMODIFY' Value='1' />
+        <!-- ARPNOMODIFY is declared by WixUI_InstallDir; redeclaring it
+             trips LGHT0091 "Duplicate symbol 'Property:ARPNOMODIFY'"
+             at link time. Leave it to the UI extension. -->
 
         <!--
           Wizard UI: WixUI_InstallDir gives the user a chance to pick an
