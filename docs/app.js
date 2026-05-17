@@ -375,4 +375,144 @@
     })
     .catch(() => { /* keep static fallbacks */ });
 
+  // ── Copy buttons on .dl-pipe ──────────────────────────────────────────
+  // Each install-command code block has a COPY chip in the top-right.
+  // navigator.clipboard.writeText is the modern path; falls back to a
+  // Selection + execCommand('copy') for older browsers / non-https.
+  document.querySelectorAll('.dl-pipe-copy').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const wrap = btn.closest('.dl-pipe-wrap');
+      const pre  = wrap && wrap.querySelector('.dl-pipe');
+      if (!pre) return;
+      const text = pre.textContent.trim();
+      let ok = false;
+      try {
+        await navigator.clipboard.writeText(text);
+        ok = true;
+      } catch (_) {
+        try {
+          const range = document.createRange();
+          range.selectNode(pre);
+          const sel = window.getSelection();
+          sel.removeAllRanges();
+          sel.addRange(range);
+          ok = document.execCommand('copy');
+          sel.removeAllRanges();
+        } catch (__) { /* swallow */ }
+      }
+      if (!ok) return;
+      btn.textContent = 'COPIED';
+      btn.classList.add('is-copied');
+      clearTimeout(btn._copyTimer);
+      btn._copyTimer = setTimeout(() => {
+        btn.textContent = 'COPY';
+        btn.classList.remove('is-copied');
+      }, 1400);
+    });
+  });
+
+  // ── Ambient Tron-style audio (procedurally generated) ─────────────────
+  // No external audio file — pure Web Audio API. Four detuned saw-wave
+  // voices stacked into a power-chord pad, swept by a slow lowpass-LFO
+  // for the "digital grid breathing" feel.
+  // Off by default (browser autoplay policies require a user gesture);
+  // user clicks the topbar AUDIO toggle to start. Preference persisted
+  // in localStorage so a returning user with audio enabled needs only
+  // one click to re-arm.
+  const audioBtn   = document.getElementById('audio-toggle');
+  const audioState = document.getElementById('audio-state');
+  let audioCtx     = null;
+  let audioMaster  = null;
+  let audioStarted = false;
+
+  function startAudio() {
+    if (audioStarted) return;
+    const Ctor = window.AudioContext || window.webkitAudioContext;
+    if (!Ctor) return; // very old browser
+    audioStarted = true;
+    audioCtx = new Ctor();
+    audioMaster = audioCtx.createGain();
+    audioMaster.gain.value = 0;
+    audioMaster.connect(audioCtx.destination);
+
+    // Lowpass shapes the timbre — opens / closes via slow sine LFO.
+    const lpf = audioCtx.createBiquadFilter();
+    lpf.type = 'lowpass';
+    lpf.frequency.value = 500;
+    lpf.Q.value = 3;
+    lpf.connect(audioMaster);
+
+    // Slight high-shelf cut so the saw stack doesn't get harsh.
+    const hpf = audioCtx.createBiquadFilter();
+    hpf.type = 'highpass';
+    hpf.frequency.value = 40;
+    hpf.connect(lpf);
+
+    // Voice stack: A1 / E2 / A2 / C#3 — a Tron-flavoured A-minor power pad.
+    const baseFreqs = [55.00, 82.41, 110.00, 138.59];
+    baseFreqs.forEach((f, i) => {
+      ['sawtooth', 'sawtooth'].forEach((wave, j) => {
+        const osc = audioCtx.createOscillator();
+        osc.type = wave;
+        osc.frequency.value = f;
+        osc.detune.value = j === 0 ? -6 : +6; // beat for thickness
+        const g = audioCtx.createGain();
+        g.gain.value = 0.12 / Math.pow(i + 1, 0.7);
+        osc.connect(g);
+        g.connect(hpf);
+        osc.start();
+      });
+    });
+
+    // Slow filter LFO — gives the pad its "breath".
+    const lfo = audioCtx.createOscillator();
+    lfo.type = 'sine';
+    lfo.frequency.value = 0.06;
+    const lfoGain = audioCtx.createGain();
+    lfoGain.gain.value = 320;
+    lfo.connect(lfoGain);
+    lfoGain.connect(lpf.frequency);
+    lfo.start();
+
+    // Fade master in over 2.5s.
+    audioMaster.gain.cancelScheduledValues(audioCtx.currentTime);
+    audioMaster.gain.setValueAtTime(0, audioCtx.currentTime);
+    audioMaster.gain.linearRampToValueAtTime(0.22, audioCtx.currentTime + 2.5);
+  }
+
+  function setAudioUI(on) {
+    if (audioState) audioState.textContent = on ? 'ON' : 'OFF';
+    if (audioBtn)   audioBtn.setAttribute('aria-pressed', String(on));
+  }
+
+  function saveAudioPref(on) {
+    try { localStorage.setItem('kashot.audio', on ? '1' : '0'); } catch (_) {}
+  }
+
+  if (audioBtn) {
+    audioBtn.addEventListener('click', () => {
+      if (!audioStarted) {
+        startAudio();
+        setAudioUI(true);
+        saveAudioPref(true);
+        return;
+      }
+      // Toggle suspend/resume — keeps the graph alive so re-enable is instant.
+      if (audioCtx.state === 'running') {
+        audioMaster.gain.cancelScheduledValues(audioCtx.currentTime);
+        audioMaster.gain.linearRampToValueAtTime(0, audioCtx.currentTime + 0.4);
+        setTimeout(() => audioCtx.suspend(), 450);
+        setAudioUI(false);
+        saveAudioPref(false);
+      } else {
+        audioCtx.resume();
+        audioMaster.gain.cancelScheduledValues(audioCtx.currentTime);
+        audioMaster.gain.linearRampToValueAtTime(0.22, audioCtx.currentTime + 0.8);
+        setAudioUI(true);
+        saveAudioPref(true);
+      }
+    });
+    setAudioUI(false);
+  }
+
 })();
