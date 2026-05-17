@@ -36,6 +36,9 @@
   <content_rating type="oars-1.1"/>
 
   <releases>
+    <release version="0.3.1" date="2026-05-17">
+      <description><p>Windows MSI now bundles ffmpeg.exe (recording works on fresh installs); MSI-aware in-app self-updater (Updates dialog downloads Kashot.msi and runs msiexec MajorUpgrade when running from an MSI install); zip stager hard-fails when ffmpeg is missing.</p></description>
+    </release>
     <release version="0.3.0" date="2026-05-17">
       <description><p>Windows screen recording; marker opacity slider; hotkey rebind widget; Linux arm64 release; Apache-2.0 license; C# build retired.</p></description>
     </release>
