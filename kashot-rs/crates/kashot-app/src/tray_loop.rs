@@ -24,6 +24,7 @@ use crate::convert_video_form::{ConvertVideoOutcome, ConvertVideoView};
 use crate::editor::{Overlay, OverlayOutcome};
 use crate::pin::PinView;
 use crate::recording_indicator::RecordingIndicator;
+use crate::self_updater;
 use crate::settings_form::{SettingsOutcome, SettingsView};
 use crate::updates_form::{UpdatesOutcome, UpdatesView};
 use winit::application::ApplicationHandler;
@@ -85,6 +86,12 @@ pub fn run() -> Result<()> {
         convert_image_view: Option<ConvertImageView>,
         /// Themed Convert-video dialog (shells out to bundled ffmpeg).
         convert_video_view: Option<ConvertVideoView>,
+        /// In-flight self-update job, if the user clicked Download &
+        /// install in the Updates dialog. Polled from `poll()` every
+        /// tick — when it finishes we either log the error and carry on
+        /// or, on success, the worker will already have spawned the new
+        /// kashot.exe and called `exit(0)` so this thread never returns.
+        update_job: Option<std::thread::JoinHandle<Result<(), String>>>,
         last_tick:  Instant,
         capturing:  bool,
     }
@@ -133,6 +140,10 @@ pub fn run() -> Result<()> {
             // Drive the convert-video dialog so its background ffmpeg
             // result lands and the "encoding…" dots keep moving.
             if let Some(v) = self.convert_video_view.as_mut() { v.tick(); }
+            // Reap the self-update worker if it's done — surfaces any
+            // failure to the user (success exits the process from inside
+            // the worker, so we'd never see a successful join here).
+            self.poll_update_job();
         }
 
         fn capture(&mut self, loop_target: &ActiveEventLoop) {
@@ -430,6 +441,79 @@ pub fn run() -> Result<()> {
                 Err(e) => eprintln!("Convert-video dialog failed to open: {e}"),
             }
         }
+
+        /// Kick off the in-process self-updater. The actual work runs on
+        /// a worker thread spawned by `self_updater::download_and_install`;
+        /// we just stash the join handle and poll it from `poll()`. On
+        /// success the worker calls `exit(0)` so the new binary takes
+        /// over — control here only returns on failure.
+        ///
+        /// While the job runs we close the updates dialog so the user
+        /// gets a visible "something is happening" via stderr / the new
+        /// binary taking over the tray. A future PR can wire a progress
+        /// modal here using the `on_progress` callback.
+        fn start_self_update(&mut self, asset_url: String, expected_sha256: Option<String>) {
+            if self.update_job.is_some() {
+                eprintln!("self-updater: an update is already in progress");
+                return;
+            }
+            // Drop the updates dialog so the user sees the app idle while
+            // we work; the relaunched binary will pick up where we left off.
+            self.updates_view = None;
+
+            eprintln!(
+                "self-updater: downloading {asset_url} (verify_sha256 = {})",
+                if expected_sha256.is_some() { "yes" } else { "no — skipping" }
+            );
+
+            let job = self_updater::download_and_install(
+                asset_url,
+                expected_sha256,
+                |downloaded, total| {
+                    // Progress callback runs on the worker thread; we
+                    // can't touch winit state from here. Cheap stderr
+                    // line is enough until we add a transient modal.
+                    match total {
+                        Some(t) if t > 0 => {
+                            eprintln!("self-updater: {downloaded} / {t} bytes");
+                        }
+                        _ => eprintln!("self-updater: {downloaded} bytes"),
+                    }
+                },
+            );
+            self.update_job = Some(job);
+        }
+
+        /// Pump the update-job handle. If it's finished, take the result
+        /// — a success arm here actually means the worker thread *failed*
+        /// after the relaunch, because on a real success the worker
+        /// calls `exit(0)` and never lets the JoinHandle resolve.
+        fn poll_update_job(&mut self) {
+            let finished = self.update_job
+                .as_ref()
+                .map(|h| h.is_finished())
+                .unwrap_or(false);
+            if !finished { return; }
+            let job = self.update_job.take().unwrap();
+            match job.join() {
+                Ok(Ok(())) => {
+                    // Reachable only if `spawn_and_exit` was prevented from
+                    // exiting — shouldn't happen, but log instead of panic.
+                    eprintln!("self-updater: job returned Ok without exiting");
+                }
+                Ok(Err(msg)) => {
+                    eprintln!("self-updater: failed: {msg}");
+                    rfd::MessageDialog::new()
+                        .set_level(rfd::MessageLevel::Error)
+                        .set_title("KAShot — update failed")
+                        .set_description(msg)
+                        .show();
+                }
+                Err(_) => {
+                    eprintln!("self-updater: worker thread panicked");
+                }
+            }
+        }
     }
 
     impl ApplicationHandler for TrayApp {
@@ -527,6 +611,9 @@ pub fn run() -> Result<()> {
                             UpdatesOutcome::Closed => { self.updates_view = None; }
                             UpdatesOutcome::OpenReleases => open_url("https://github.com/singhpratech/kashot/releases"),
                             UpdatesOutcome::OpenAsset(url) => open_url(&url),
+                            UpdatesOutcome::DownloadAndInstall { asset_url, expected_sha256 } => {
+                                self.start_self_update(asset_url, expected_sha256);
+                            }
                         }
                     }
                 }
@@ -614,6 +701,7 @@ pub fn run() -> Result<()> {
         updates_view:   None,
         convert_image_view: None,
         convert_video_view: None,
+        update_job: None,
         last_tick: Instant::now(),
         capturing: false,
     };
