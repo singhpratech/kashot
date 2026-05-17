@@ -5,14 +5,14 @@
 # This is the installer manifest — fill in the actual SHA256 from the published
 # release and update version to match.
 PackageIdentifier: singhpratech.Kashot
-PackageVersion: 0.2.0
+PackageVersion: 0.3.0
 InstallerType: wix
 Scope: machine
 InstallerLocale: en-US
 
 Installers:
   - Architecture: x64
-    InstallerUrl:    https://github.com/singhpratech/kashot/releases/download/v0.2.0/Kashot.msi
+    InstallerUrl:    https://github.com/singhpratech/kashot/releases/download/v0.3.0/Kashot.msi
     InstallerSha256: REPLACE_WITH_ACTUAL_SHA256_AT_RELEASE_TIME
     ProductCode:     '{94810024-659B-4781-A523-F60C707AF83A}'
     UpgradeBehavior: install

@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-**Kashot** — a tray-resident screenshot + screen-recording tool with an in-place annotation editor, format conversion, and watermarking. Ships the **same Rust binary** on Windows, Linux, and macOS as of v0.2.0.
+**Kashot** — a tray-resident screenshot + screen-recording tool with an in-place annotation editor, format conversion, and watermarking. Ships the **same Rust binary** on Windows, Linux, and macOS as of v0.3.0.
 
 The repo previously carried a parallel C# / .NET 8 / WinForms build (`Kashot/`, `Installer/`, `build-csharp.yml`) — that's been retired now the Rust port covers all three platforms. Git history retains it if you need to look back.
 

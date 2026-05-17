@@ -1,7 +1,7 @@
 # Distribution package metadata
 
 Each subfolder is a package manifest for a different distribution channel.
-Files reference `v0.2.0` and use placeholder `REPLACE_WITH_ACTUAL_SHA256_AT_RELEASE_TIME`
+Files reference `v0.3.0` and use placeholder `REPLACE_WITH_ACTUAL_SHA256_AT_RELEASE_TIME`
 strings — the CI workflow fills these in at tag time and submits the
 manifests via PRs to each registry.
 
@@ -23,7 +23,7 @@ Flathub reviews submissions, Homebrew Cask requires a clean RFC checklist,
 etc.). After acceptance, the same manifest is bumped each release with the
 new version + sha256.
 
-> **Note on asset-name mismatches.** As of v0.2.0, the canonical Windows
+> **Note on asset-name mismatches.** As of v0.3.0, the canonical Windows
 > artifact on the Release is `kashot-windows-x86_64.zip` (built by
 > `build-rust.yml`). The `winget/` and `chocolatey/` manifests still target
 > `Kashot.msi` — the MSI now ships as a CI artifact on the
@@ -34,7 +34,7 @@ new version + sha256.
 > the legacy `Kashot-portable.zip` for the same reason.
 
 > **Linux broad packaging.** `rpm/kashot.spec` and `snap/snapcraft.yaml`
-> are buildable as-is against the v0.2.0 release tarball, but neither is
+> are buildable as-is against the v0.3.0 release tarball, but neither is
 > activated yet: the RPM still needs a one-time Fedora COPR project
 > submission before `dnf install kashot` works, and the snap needs a
 > first `snapcraft upload --release=stable`. Until then, Fedora/RHEL/
