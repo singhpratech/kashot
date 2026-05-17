@@ -15,6 +15,8 @@ manifests via PRs to each registry.
 | `flatpak/`   | Flathub                                         | `flatpak install flathub org.kashot.Kashot` |
 | `appimage/`  | AppImage (built by CI, attached to release)     | download + `chmod +x` + run |
 | `debian/`    | `.deb` packaging (Debian / Ubuntu)              | `sudo apt install ./kashot.deb` |
+| `rpm/`       | RPM SPEC for Fedora / RHEL / openSUSE (→ COPR)  | `sudo dnf install kashot` |
+| `snap/`      | Snap Store (all distros with `snapd`)           | `sudo snap install kashot` |
 
 Each first-time submission has its own gating process (winget reviews PRs,
 Flathub reviews submissions, Homebrew Cask requires a clean RFC checklist,
@@ -30,3 +32,11 @@ new version + sha256.
 > Release in `build-csharp.yml`, or (b) flip the manifest to a zip-style
 > install pointing at `kashot-windows-x86_64.zip`. `scoop/` still targets
 > the legacy `Kashot-portable.zip` for the same reason.
+
+> **Linux broad packaging.** `rpm/kashot.spec` and `snap/snapcraft.yaml`
+> are buildable as-is against the v0.2.0 release tarball, but neither is
+> activated yet: the RPM still needs a one-time Fedora COPR project
+> submission before `dnf install kashot` works, and the snap needs a
+> first `snapcraft upload --release=stable`. Until then, Fedora/RHEL/
+> openSUSE users get the tarball via `install.sh`, and Snap users build
+> locally with `snapcraft --use-lxd`.
