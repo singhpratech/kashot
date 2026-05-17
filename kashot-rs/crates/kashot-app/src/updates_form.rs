@@ -68,6 +68,12 @@ struct ReleaseInfo {
     has_update: bool,
     notes:      Vec<String>,
     asset_url:  Option<String>,
+    /// Hash for `asset_url`'s filename, parsed out of the release's
+    /// SHA256SUMS asset. `None` means the release didn't ship one (older
+    /// tags) or the file wasn't listed — the in-app installer logs a
+    /// warning and proceeds; the MSI's own signature check is the next
+    /// line of defense.
+    expected_sha256: Option<String>,
 }
 
 enum FetchState {
@@ -86,8 +92,7 @@ pub enum UpdatesOutcome {
     /// asset URL + verified hash to `self_updater::download_and_install`
     /// and shows progress while it runs. `expected_sha256 = None` is the
     /// graceful-degradation path for releases that don't yet carry a
-    /// SHA256SUMS file (the `ci/installer-artifacts` PR adds it).
-    #[allow(dead_code)]
+    /// SHA256SUMS file (older tags).
     DownloadAndInstall {
         asset_url:       String,
         expected_sha256: Option<String>,
@@ -183,12 +188,21 @@ impl UpdatesView {
                             self.notes_rect.2 - SCROLLBAR_W - 8,
                         );
                         let asset_url = pick_asset_url(&raw.assets);
+                        // Resolve SHA-256 for whichever asset we picked
+                        // by parsing the release's SHA256SUMS (when
+                        // present). Missing → expected_sha256 = None →
+                        // the installer logs a warning and proceeds.
+                        let expected_sha256 = asset_url.as_deref().and_then(|url| {
+                            let fname = url.rsplit('/').next()?.split('?').next()?;
+                            crate::self_updater::parse_sha256sums(&raw.sha256sums, fname)
+                        });
                         FetchState::Found(ReleaseInfo {
                             tag: raw.tag_name,
                             date,
                             has_update,
                             notes,
                             asset_url,
+                            expected_sha256,
                         })
                     }
                     Err(e) => FetchState::Error(e),
@@ -251,7 +265,23 @@ impl UpdatesView {
                         BtnKind::Download => {
                             if let FetchState::Found(info) = &self.state {
                                 if let Some(url) = &info.asset_url {
-                                    UpdatesOutcome::OpenAsset(url.clone())
+                                    // MSI-installed Windows users get the
+                                    // in-app msiexec handoff so the upgrade
+                                    // updates Add/Remove Programs properly.
+                                    // Everyone else keeps the browser-open
+                                    // behavior until the swap path has more
+                                    // mileage on non-Windows.
+                                    if cfg!(target_os = "windows")
+                                        && crate::self_updater::is_msi_install()
+                                        && url.to_ascii_lowercase().ends_with(".msi")
+                                    {
+                                        UpdatesOutcome::DownloadAndInstall {
+                                            asset_url: url.clone(),
+                                            expected_sha256: info.expected_sha256.clone(),
+                                        }
+                                    } else {
+                                        UpdatesOutcome::OpenAsset(url.clone())
+                                    }
                                 } else { UpdatesOutcome::OpenReleases }
                             } else { UpdatesOutcome::OpenReleases }
                         }
@@ -453,6 +483,11 @@ struct RawRelease {
     #[allow(dead_code)]
     html_url:     String,
     assets:       Vec<RawAsset>,
+    /// Body of the release's `SHA256SUMS` asset (the standard
+    /// `sha256sum -b` output the release-builder CI generates). Empty
+    /// when the release didn't ship one — older tags pre-`feat/self-
+    /// updater` won't have it.
+    sha256sums:   String,
 }
 
 /// Shell out to `curl` (always-present on Linux / macOS / Windows 10+).
@@ -484,18 +519,36 @@ fn fetch_latest_release() -> Result<RawRelease, String> {
     let html_url = v.get("html_url").and_then(|x| x.as_str()).unwrap_or("").to_owned();
 
     let mut assets = Vec::new();
+    let mut sha256sums_url: Option<String> = None;
     if let Some(arr) = v.get("assets").and_then(|x| x.as_array()) {
         for a in arr {
             let name = a.get("name").and_then(|x| x.as_str()).unwrap_or("").to_owned();
             let bdu  = a.get("browser_download_url").and_then(|x| x.as_str()).unwrap_or("").to_owned();
             let size = a.get("size").and_then(|x| x.as_u64()).unwrap_or(0);
+            if name.eq_ignore_ascii_case("SHA256SUMS") && !bdu.is_empty() {
+                sha256sums_url = Some(bdu.clone());
+            }
             if !name.is_empty() && !bdu.is_empty() {
                 assets.push(RawAsset { name, browser_download_url: bdu, size });
             }
         }
     }
 
-    Ok(RawRelease { tag_name, body: body_md, published_at, html_url, assets })
+    // Best-effort SHA256SUMS fetch; failures here are non-fatal so the
+    // dialog still shows release notes even when the hash file is absent.
+    let sha256sums = sha256sums_url
+        .and_then(|url| {
+            std::process::Command::new("curl")
+                .args(["-fsSL", "-A", "kashot-updater", "--max-time", "8"])
+                .arg(&url)
+                .output()
+                .ok()
+                .filter(|o| o.status.success())
+                .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+        })
+        .unwrap_or_default();
+
+    Ok(RawRelease { tag_name, body: body_md, published_at, html_url, assets, sha256sums })
 }
 
 /// First 10 chars of an ISO-8601 timestamp, e.g. "2026-05-17T18:22:11Z" -> "2026-05-17".
@@ -520,7 +573,25 @@ fn same_version(tag: &str, pkg: &str) -> bool {
 
 /// Pick the right release asset for the current OS+arch. Substring-matches
 /// so suffix tweaks (e.g. `-v0.3.0`) don't break the lookup.
+///
+/// On Windows we resolve in two passes: if this kashot.exe was installed
+/// from `Kashot.msi` we prefer the `.msi` asset (which `self_updater`
+/// hands off to msiexec so MajorUpgrade replaces in place + bumps the
+/// ARP entry); if no MSI is in the release, or we're running portable,
+/// we fall back to the per-arch zip.
 fn pick_asset_url(assets: &[RawAsset]) -> Option<String> {
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+    {
+        if crate::self_updater::is_msi_install() {
+            if let Some(a) = assets.iter().find(|a| a.name.eq_ignore_ascii_case("Kashot.msi")) {
+                return Some(a.browser_download_url.clone());
+            }
+            // MSI-installed user, release shipped no MSI: fall through to
+            // the zip — the swap path still works as a fallback, just
+            // leaves ARP showing the old version until next manual MSI run.
+        }
+    }
+
     let needle: &str = if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
         "kashot-linux-x86_64.tar.gz"
     } else if cfg!(all(target_os = "linux", target_arch = "aarch64")) {

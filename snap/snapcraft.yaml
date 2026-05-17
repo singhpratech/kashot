@@ -2,7 +2,7 @@
 # (Ubuntu out of the box, plus Fedora / openSUSE / Arch / Debian via the
 # snapd package).
 #
-# Build locally:
+# Build locally (from repo root):
 #   snapcraft --use-lxd
 #
 # Publish (after `snapcraft login` + first registration):
@@ -18,8 +18,11 @@
 # requires a manual review request from the store team.
 name: kashot
 title: Kashot
-base: core22
-version: '0.3.0'
+# core24 (Ubuntu 24.04) is required: the `xcap` Wayland capture crate
+# pulls `pipewire 0.9.2` + `libspa 0.9.2`, which expect PipeWire 1.x
+# headers. core22 ships PipeWire 0.3.48 and fails to compile.
+base: core24
+version: '0.3.1'
 summary: Fast screenshots with annotations — tray-resident, hotkey-driven
 description: |
   Kashot is a tray-resident screenshot tool with a built-in annotation editor.
@@ -32,15 +35,23 @@ description: |
 grade: stable
 confinement: strict
 license: Apache-2.0
-icon: ../../icons/linux_hicolor/256x256/apps/kashot.png
+icon: icons/linux_hicolor/256x256/apps/kashot.png
 
-architectures:
-  - build-on: amd64
-    build-for: amd64
+# Snap Store listing metadata.
+website: https://kashot.org
+source-code: https://github.com/singhpratech/kashot
+issues: https://github.com/singhpratech/kashot/issues
+contact: https://github.com/singhpratech/kashot/issues
+
+platforms:
+  amd64:
+    build-on: [amd64]
+    build-for: [amd64]
 
 apps:
   kashot:
-    command: bin/kashot
+    # The Rust plugin installs workspace binaries at $SNAP root (not bin/).
+    command: kashot
     desktop: usr/share/applications/kashot.desktop
     extensions: [gnome]
     plugs:
@@ -59,10 +70,14 @@ apps:
 parts:
   kashot:
     plugin: rust
-    source: ../../kashot-rs
+    # Whole repo (not just kashot-rs/) so the tray's
+    # include_bytes!("../../../../icons/...") can find the icon source.
+    source: .
+    source-subdir: kashot-rs
     rust-channel: stable
     rust-features: []
     build-packages:
+      - libclang-dev
       - libwayland-dev
       - libxkbcommon-dev
       - libxcb1-dev
