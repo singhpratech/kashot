@@ -258,4 +258,4 @@ These cross-cut both implementations; if you change one, change both.
 
 ---
 
-*Last updated: 2026-05-17 (v0.3.1 release — ffmpeg-in-MSI fix + MSI-aware self-updater). Maintained by [@singhpratech](https://github.com/singhpratech).*
+*Last updated: 2026-05-17 (v0.3.2 release — Windows audio device picker + permission probe). Maintained by [@singhpratech](https://github.com/singhpratech).*

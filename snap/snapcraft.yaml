@@ -22,7 +22,7 @@ title: Kashot
 # pulls `pipewire 0.9.2` + `libspa 0.9.2`, which expect PipeWire 1.x
 # headers. core22 ships PipeWire 0.3.48 and fails to compile.
 base: core24
-version: '0.3.1'
+version: '0.3.2'
 summary: Fast screenshots with annotations — tray-resident, hotkey-driven
 description: |
   Kashot is a tray-resident screenshot tool with a built-in annotation editor.
