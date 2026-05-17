@@ -247,7 +247,7 @@ impl AboutView {
         draw_text(&mut surf, PAD + 60, y, 1, "github.com/singhpratech/kashot",       argb_to_kashot(TEXT_BRIGHT));
         y += 18;
         draw_text(&mut surf, PAD, y, 1, "LICENSE", argb_to_kashot(SECTION_TINT));
-        draw_text(&mut surf, PAD + 60, y, 1, "MIT OR Apache-2.0",                    argb_to_kashot(TEXT_BRIGHT));
+        draw_text(&mut surf, PAD + 60, y, 1, "Apache-2.0",                           argb_to_kashot(TEXT_BRIGHT));
 
         // Buttons.
         for (i, b) in self.btns.iter().enumerate() {
