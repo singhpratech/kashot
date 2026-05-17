@@ -218,8 +218,8 @@ body.booted .boot { opacity: 0; visibility: hidden; }
 .topbar-spacer { flex: 1; }
 
 /* Audio toggle in the topbar. Looks like a topbar-cell at rest, lights up
-   in laser-green when active. Procedurally generates a Tron-style ambient
-   pad in the Web Audio API — no file, no copyright surface. */
+   in laser-green when active. Drives a fully procedural pad in the Web
+   Audio API — no audio files, no samples, original composition. */
 .topbar-btn {
   background: transparent;
   border: 0;

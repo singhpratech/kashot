@@ -411,73 +411,154 @@
     });
   });
 
-  // ── Ambient Tron-style audio (procedurally generated) ─────────────────
-  // No external audio file — pure Web Audio API. Four detuned saw-wave
-  // voices stacked into a power-chord pad, swept by a slow lowpass-LFO
-  // for the "digital grid breathing" feel.
-  // Off by default (browser autoplay policies require a user gesture);
-  // user clicks the topbar AUDIO toggle to start. Preference persisted
-  // in localStorage so a returning user with audio enabled needs only
-  // one click to re-arm.
+  // ── Ambient site music (procedurally generated, original) ─────────────
+  // 100% synthesized live in the browser via Web Audio. No samples, no
+  // external audio files, no third-party melodies. Four saw voices form
+  // a chord pad that walks an A-minor / F / C / G progression on an
+  // 8-second-per-chord cycle. A separate "swell" gain modulates the
+  // overall amplitude up and down on a slow sine to create an emotional
+  // breath, and a high shimmer voice fades in/out for lift.
+  //
+  // Default ON. Browser autoplay policies block AudioContext until a
+  // user gesture, so we arm the synth on the first click / scroll /
+  // keypress / touch — instant once the user does anything. The topbar
+  // toggle still lets you mute, and the preference persists.
   const audioBtn   = document.getElementById('audio-toggle');
   const audioState = document.getElementById('audio-state');
   let audioCtx     = null;
   let audioMaster  = null;
   let audioStarted = false;
+  let chordOscs    = [];       // {osc, target} per voice
+  let chordTimer   = null;
+
+  // Four chords, four voices each (root / 5th / oct / 10th-ish). Hand-
+  // picked so the bass voice walks A1 → F1 → C2 → G1 — descent then
+  // lift — for an arc that climbs into the third chord and resolves.
+  const CHORDS = [
+    [55.00,  82.41, 110.00, 164.81], // Am  (A1, E2, A2, E3)
+    [43.65,  65.41,  87.31, 174.61], // F   (F1, C2, F2, F3)
+    [65.41,  98.00, 130.81, 196.00], // C   (C2, G2, C3, G3)
+    [49.00,  73.42,  98.00, 146.83], // G   (G1, D2, G2, D3)
+  ];
+  const CHORD_SECS = 8;
 
   function startAudio() {
     if (audioStarted) return;
     const Ctor = window.AudioContext || window.webkitAudioContext;
-    if (!Ctor) return; // very old browser
+    if (!Ctor) return;
     audioStarted = true;
     audioCtx = new Ctor();
+
+    // Master chain: master -> destination
     audioMaster = audioCtx.createGain();
     audioMaster.gain.value = 0;
     audioMaster.connect(audioCtx.destination);
 
-    // Lowpass shapes the timbre — opens / closes via slow sine LFO.
+    // Swell gain — sits between the pad bus and master, modulated by a
+    // slow sine LFO to breathe between intimate and uplifting.
+    const swell = audioCtx.createGain();
+    swell.gain.value = 0.7;
+    swell.connect(audioMaster);
+
+    const swellLfo = audioCtx.createOscillator();
+    swellLfo.type = 'sine';
+    swellLfo.frequency.value = 1 / 18; // 18-second emotional breath
+    const swellDepth = audioCtx.createGain();
+    swellDepth.gain.value = 0.25;       // swings 0.45 ↔ 0.95
+    swellLfo.connect(swellDepth);
+    swellDepth.connect(swell.gain);
+    swellLfo.start();
+
+    // Lowpass on the pad bus — slow filter motion adds texture beyond
+    // just amplitude.
     const lpf = audioCtx.createBiquadFilter();
     lpf.type = 'lowpass';
-    lpf.frequency.value = 500;
-    lpf.Q.value = 3;
-    lpf.connect(audioMaster);
+    lpf.frequency.value = 600;
+    lpf.Q.value = 2.5;
+    lpf.connect(swell);
 
-    // Slight high-shelf cut so the saw stack doesn't get harsh.
+    const filtLfo = audioCtx.createOscillator();
+    filtLfo.type = 'sine';
+    filtLfo.frequency.value = 1 / 13; // out of phase with swell on purpose
+    const filtDepth = audioCtx.createGain();
+    filtDepth.gain.value = 360;
+    filtLfo.connect(filtDepth);
+    filtDepth.connect(lpf.frequency);
+    filtLfo.start();
+
     const hpf = audioCtx.createBiquadFilter();
     hpf.type = 'highpass';
-    hpf.frequency.value = 40;
+    hpf.frequency.value = 45;
     hpf.connect(lpf);
 
-    // Voice stack: A1 / E2 / A2 / C#3 — a Tron-flavoured A-minor power pad.
-    const baseFreqs = [55.00, 82.41, 110.00, 138.59];
-    baseFreqs.forEach((f, i) => {
-      ['sawtooth', 'sawtooth'].forEach((wave, j) => {
+    // Four pad voices — two saws each, detuned for thickness.
+    const initial = CHORDS[0];
+    for (let i = 0; i < 4; i++) {
+      const voiceGain = audioCtx.createGain();
+      voiceGain.gain.value = 0.13 / Math.pow(i + 1, 0.55);
+      voiceGain.connect(hpf);
+      const pair = [];
+      for (let j = 0; j < 2; j++) {
         const osc = audioCtx.createOscillator();
-        osc.type = wave;
-        osc.frequency.value = f;
-        osc.detune.value = j === 0 ? -6 : +6; // beat for thickness
-        const g = audioCtx.createGain();
-        g.gain.value = 0.12 / Math.pow(i + 1, 0.7);
-        osc.connect(g);
-        g.connect(hpf);
+        osc.type = 'sawtooth';
+        osc.frequency.value = initial[i];
+        osc.detune.value = j === 0 ? -7 : +7;
+        osc.connect(voiceGain);
         osc.start();
+        pair.push(osc);
+      }
+      chordOscs.push(pair);
+    }
+
+    // Shimmer voice — sine an octave above the top pad note, comes in
+    // on the lifting half of the swell to add emotional peak.
+    const shimmerGain = audioCtx.createGain();
+    shimmerGain.gain.value = 0;
+    shimmerGain.connect(audioMaster);
+    const shimmer = audioCtx.createOscillator();
+    shimmer.type = 'sine';
+    shimmer.frequency.value = initial[3] * 2;
+    shimmer.connect(shimmerGain);
+    shimmer.start();
+    // Slow shimmer envelope: 0 → 0.06 → 0 every 22s, offset from swell.
+    const shimmerLfo = audioCtx.createOscillator();
+    shimmerLfo.type = 'sine';
+    shimmerLfo.frequency.value = 1 / 22;
+    const shimmerDepth = audioCtx.createGain();
+    shimmerDepth.gain.value = 0.03;
+    const shimmerBias = audioCtx.createConstantSource();
+    shimmerBias.offset.value = 0.03;
+    shimmerLfo.connect(shimmerDepth);
+    shimmerDepth.connect(shimmerGain.gain);
+    shimmerBias.connect(shimmerGain.gain);
+    shimmerLfo.start();
+    shimmerBias.start();
+
+    // Chord scheduler — glide each voice to the next chord every
+    // CHORD_SECS, smoothly so it feels like motion not steps.
+    let chordIdx = 1;
+    const scheduleNextChord = () => {
+      const t = audioCtx.currentTime;
+      const next = CHORDS[chordIdx % CHORDS.length];
+      chordOscs.forEach((pair, vi) => {
+        pair.forEach((osc) => {
+          osc.frequency.cancelScheduledValues(t);
+          osc.frequency.setValueAtTime(osc.frequency.value, t);
+          osc.frequency.linearRampToValueAtTime(next[vi], t + 1.4);
+        });
       });
-    });
+      // Move shimmer to the top voice of the new chord, octave up.
+      shimmer.frequency.cancelScheduledValues(t);
+      shimmer.frequency.setValueAtTime(shimmer.frequency.value, t);
+      shimmer.frequency.linearRampToValueAtTime(next[3] * 2, t + 1.4);
+      chordIdx++;
+    };
+    chordTimer = setInterval(scheduleNextChord, CHORD_SECS * 1000);
 
-    // Slow filter LFO — gives the pad its "breath".
-    const lfo = audioCtx.createOscillator();
-    lfo.type = 'sine';
-    lfo.frequency.value = 0.06;
-    const lfoGain = audioCtx.createGain();
-    lfoGain.gain.value = 320;
-    lfo.connect(lfoGain);
-    lfoGain.connect(lpf.frequency);
-    lfo.start();
-
-    // Fade master in over 2.5s.
+    // Master fade-in.
     audioMaster.gain.cancelScheduledValues(audioCtx.currentTime);
     audioMaster.gain.setValueAtTime(0, audioCtx.currentTime);
-    audioMaster.gain.linearRampToValueAtTime(0.22, audioCtx.currentTime + 2.5);
+    audioMaster.gain.linearRampToValueAtTime(0.24, audioCtx.currentTime + 3);
   }
 
   function setAudioUI(on) {
@@ -489,6 +570,20 @@
     try { localStorage.setItem('kashot.audio', on ? '1' : '0'); } catch (_) {}
   }
 
+  function muteAudio() {
+    if (!audioStarted || !audioCtx) return;
+    audioMaster.gain.cancelScheduledValues(audioCtx.currentTime);
+    audioMaster.gain.linearRampToValueAtTime(0, audioCtx.currentTime + 0.4);
+    setTimeout(() => { try { audioCtx.suspend(); } catch (_) {} }, 450);
+  }
+
+  function unmuteAudio() {
+    if (!audioCtx) { startAudio(); return; }
+    audioCtx.resume();
+    audioMaster.gain.cancelScheduledValues(audioCtx.currentTime);
+    audioMaster.gain.linearRampToValueAtTime(0.24, audioCtx.currentTime + 0.8);
+  }
+
   if (audioBtn) {
     audioBtn.addEventListener('click', () => {
       if (!audioStarted) {
@@ -497,22 +592,41 @@
         saveAudioPref(true);
         return;
       }
-      // Toggle suspend/resume — keeps the graph alive so re-enable is instant.
       if (audioCtx.state === 'running') {
-        audioMaster.gain.cancelScheduledValues(audioCtx.currentTime);
-        audioMaster.gain.linearRampToValueAtTime(0, audioCtx.currentTime + 0.4);
-        setTimeout(() => audioCtx.suspend(), 450);
+        muteAudio();
         setAudioUI(false);
         saveAudioPref(false);
       } else {
-        audioCtx.resume();
-        audioMaster.gain.cancelScheduledValues(audioCtx.currentTime);
-        audioMaster.gain.linearRampToValueAtTime(0.22, audioCtx.currentTime + 0.8);
+        unmuteAudio();
         setAudioUI(true);
         saveAudioPref(true);
       }
     });
-    setAudioUI(false);
+  }
+
+  // Default ON unless the user has explicitly muted on a previous visit.
+  // Browsers require a user gesture before AudioContext can produce
+  // sound, so we arm the first gesture to autostart instantly.
+  let storedPref = null;
+  try { storedPref = localStorage.getItem('kashot.audio'); } catch (_) {}
+  const wantAudio = storedPref === null ? true : storedPref === '1';
+  setAudioUI(wantAudio);
+
+  if (wantAudio) {
+    const armEvents = ['pointerdown', 'keydown', 'scroll', 'touchstart'];
+    const arm = () => {
+      armEvents.forEach((ev) =>
+        window.removeEventListener(ev, arm, { capture: true })
+      );
+      if (!audioStarted) {
+        startAudio();
+        setAudioUI(true);
+        saveAudioPref(true);
+      }
+    };
+    armEvents.forEach((ev) =>
+      window.addEventListener(ev, arm, { capture: true, passive: true })
+    );
   }
 
 })();
