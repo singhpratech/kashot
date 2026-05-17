@@ -412,8 +412,20 @@ pub(crate) fn pick_windows_audio_device(
     match mic.or_else(|| devices.iter().next()) {
         Some(d) => Ok(Some(d.clone())),
         None => Err(Error::Recording(
-            "No audio capture device found. Plug in a microphone (or skip \
-             audio in the tray menu's Record submenu).".into()
+            // Empty device list on Windows almost always means the OS
+            // Privacy gate is blocking dshow enumeration entirely (no
+            // device data leaks to apps without mic permission). The
+            // "no microphone plugged in" case is extremely rare on
+            // desktop / laptop hardware. Lead with the common fix.
+            "No microphone detected by ffmpeg.\n\n\
+             This is almost always Windows Privacy blocking microphone \
+             access for desktop apps. Fix it:\n\n\
+             1. Open Settings → Privacy & Security → Microphone\n\
+             2. Turn ON \"Microphone access\"\n\
+             3. Turn ON \"Let desktop apps access your microphone\"\n\
+             4. Retry recording\n\n\
+             If you genuinely have no mic plugged in, skip audio in \
+             the tray menu's Record submenu instead.".into()
         )),
     }
 }
@@ -831,7 +843,13 @@ dummy: Immediate exit requested
     #[test]
     fn pick_audio_mic_only_errors_when_no_devices() {
         let err = pick_windows_audio_device(&[], RecordingOptions::MIC_ONLY).unwrap_err();
-        assert!(matches!(err, Error::Recording(_)));
+        let Error::Recording(msg) = err else { panic!("wrong error variant") };
+        // Should lead with the Privacy fix, not the "plug in a mic" red
+        // herring — empty dshow audio list on Windows almost always means
+        // the OS Privacy gate is blocking enumeration.
+        let lower = msg.to_lowercase();
+        assert!(lower.contains("privacy"), "should mention Privacy: {msg}");
+        assert!(lower.contains("microphone access"), "should name the toggle: {msg}");
     }
 
     #[test]

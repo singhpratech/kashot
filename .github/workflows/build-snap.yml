@@ -62,9 +62,27 @@ jobs:
           name: kashot-snap-amd64
           path: .
 
+      # snapcore/action-publish@v1 doesn't expand globs — it passes the
+      # literal `snap:` value straight to `snapcraft upload`, which then
+      # fails with "<glob> is not a valid file". Resolve the actual file
+      # name here (it's `kashot_<version>_amd64.snap`) and pass the
+      # explicit path to the publish step.
+      - name: Resolve snap filename
+        id: snap_file
+        run: |
+          set -euo pipefail
+          files=( kashot_*.snap )
+          if [ ${#files[@]} -ne 1 ] || [ ! -f "${files[0]}" ]; then
+            echo "::error::Expected exactly one kashot_*.snap, found: ${files[*]}"
+            ls -la
+            exit 1
+          fi
+          echo "path=${files[0]}" >> "$GITHUB_OUTPUT"
+          echo "Resolved snap: ${files[0]}"
+
       - uses: snapcore/action-publish@v1
         env:
           SNAPCRAFT_STORE_CREDENTIALS: ${{ secrets.SNAPCRAFT_STORE_CREDENTIALS }}
         with:
-          snap: kashot_*.snap
+          snap: ${{ steps.snap_file.outputs.path }}
           release: edge
