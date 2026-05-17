@@ -60,6 +60,9 @@ jobs:
         # xdg-desktop-portal capture path).
         # libgbm-dev → -lgbm at link time (Mesa's Generic Buffer Manager,
         # transitive of xcap's capture backend on Linux).
+        # ffmpeg → bundled next to the release binary by kashot-app/build.rs
+        # so the Convert-video dialog and screen-recording feature work
+        # without requiring a system install on end-user machines.
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
@@ -68,7 +71,9 @@ jobs:
             libxcb-composite0-dev libxcb-randr0-dev libxcb-cursor-dev \
             libxcb-keysyms1-dev libxcb-icccm4-dev \
             libgtk-3-dev libdbus-1-dev libayatana-appindicator3-dev \
-            libpipewire-0.3-dev libgbm-dev libxdo-dev libssl-dev pkg-config
+            libpipewire-0.3-dev libgbm-dev libxdo-dev libssl-dev pkg-config \
+            ffmpeg
+          echo "KASHOT_FFMPEG=$(which ffmpeg)" >> $GITHUB_ENV
 
       - run: cargo build --release --bin kashot
 
@@ -100,6 +105,21 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with: { workspaces: kashot-rs }
+
+      - name: Download static ffmpeg
+        # Pulled into KASHOT_FFMPEG so kashot-app/build.rs bundles ffmpeg.exe
+        # next to the release binary — end users don't need a system install
+        # to run the Convert-video dialog or (future) recording on Windows.
+        shell: pwsh
+        run: |
+          $url = "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip"
+          $zip = "$env:RUNNER_TEMP\ffmpeg.zip"
+          $dst = "$env:RUNNER_TEMP\ffmpeg"
+          Invoke-WebRequest -Uri $url -OutFile $zip
+          Expand-Archive -Path $zip -DestinationPath $dst -Force
+          $ffmpeg = (Get-ChildItem -Path $dst -Recurse -Filter ffmpeg.exe | Select-Object -First 1).FullName
+          if (-not $ffmpeg) { throw "ffmpeg.exe not found in extracted archive" }
+          echo "KASHOT_FFMPEG=$ffmpeg" >> $env:GITHUB_ENV
 
       - run: cargo build --release --bin kashot
 
@@ -138,6 +158,14 @@ jobs:
           targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
         with: { workspaces: kashot-rs }
+
+      - name: Install ffmpeg
+        # Bundled next to the release binary by kashot-app/build.rs via
+        # KASHOT_FFMPEG, so Convert-video and (future) recording on macOS
+        # work without a system install on end-user machines.
+        run: |
+          brew install ffmpeg
+          echo "KASHOT_FFMPEG=$(which ffmpeg)" >> $GITHUB_ENV
 
       - run: cargo build --release --bin kashot --target ${{ matrix.target }}
 
