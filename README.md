@@ -11,7 +11,7 @@
 [**kashot.org**](https://kashot.org)
 &nbsp;·&nbsp; [Download](https://kashot.org/#download)
 &nbsp;·&nbsp; [Roadmap](PLAN.md)
-&nbsp;·&nbsp; [Architecture](CLAUDE.md)
+&nbsp;·&nbsp; [Architecture](ARCHITECTURE.md)
 
 [![License](https://img.shields.io/badge/license-Apache--2.0-22c55e.svg)](LICENSE)
 ![Platform](https://img.shields.io/badge/platforms-Windows%20%7C%20Linux%20%7C%20macOS-0ea5e9)
@@ -223,7 +223,7 @@ macOS + Windows need no extra system packages — winit, softbuffer, tray-icon, 
 KASHOT_FFMPEG=/path/to/static/ffmpeg cargo build --release --bin kashot
 ```
 
-Full architecture notes in [`CLAUDE.md`](CLAUDE.md).
+Full architecture notes in [`ARCHITECTURE.md`](ARCHITECTURE.md).
 
 ---
 

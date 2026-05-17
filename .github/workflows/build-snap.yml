@@ -1,0 +1,70 @@
+# Build the Snap package on every push + PR, and publish to the Snap
+# Store on tag push. Locks in the recipe shape we settled on after
+# multiple iterations on 2026-05-17 (see snap/snapcraft.yaml header):
+#
+#   - base: core24 (required — xcap→pipewire 0.9.2 needs PipeWire 1.x
+#     headers that ship in Ubuntu 24.04 but not 22.04)
+#   - platforms: amd64 (core24 dropped the `architectures:` key)
+#   - source: . + source-subdir: kashot-rs (the tray's include_bytes!
+#     reaches outside kashot-rs/ for the icon)
+#   - apps.kashot.command: kashot (Rust plugin installs binaries at
+#     $CRAFT_PART_INSTALL root, not bin/)
+#
+# Outputs:
+#   - PR / main push : .snap uploaded as build artifact
+#   - tag push (v*) : .snap uploaded to Snap Store edge channel
+#                     (requires SNAPCRAFT_STORE_CREDENTIALS secret)
+name: Build Snap
+
+on:
+  push:
+    branches: [ main ]
+    tags:     [ 'v*' ]
+  pull_request:
+    branches: [ main ]
+    paths:
+      - 'snap/**'
+      - 'kashot-rs/**'
+      - 'icons/**'
+      - 'dist/aur/kashot.desktop'
+      - '.github/workflows/build-snap.yml'
+
+jobs:
+  build-snap:
+    name: snap pack (amd64)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: snapcore/action-build@v1
+        id: snapcraft
+        # snapcraft is invoked from repo root; recipe at snap/snapcraft.yaml.
+
+      - name: Show snap metadata
+        run: |
+          ls -lh "${{ steps.snapcraft.outputs.snap }}"
+          unsquashfs -l "${{ steps.snapcraft.outputs.snap }}" | head -40
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: kashot-snap-amd64
+          path: ${{ steps.snapcraft.outputs.snap }}
+          if-no-files-found: error
+
+  publish-snap:
+    name: snap upload → edge
+    needs: [ build-snap ]
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: kashot-snap-amd64
+          path: .
+
+      - uses: snapcore/action-publish@v1
+        env:
+          SNAPCRAFT_STORE_CREDENTIALS: ${{ secrets.SNAPCRAFT_STORE_CREDENTIALS }}
+        with:
+          snap: kashot_*.snap
+          release: edge

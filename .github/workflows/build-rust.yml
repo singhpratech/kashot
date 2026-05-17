@@ -175,9 +175,17 @@ jobs:
 
       - name: Stage zip
         shell: pwsh
+        # ffmpeg.exe gets dropped into target\release\ by kashot-app/build.rs
+        # (via KASHOT_FFMPEG). Hard-fail here if it's missing — shipping a
+        # zip without it produces the runtime "ffmpeg.exe not found" error
+        # users hit when recording on a fresh install.
         run: |
           New-Item -ItemType Directory -Force -Path dist\kashot | Out-Null
           Copy-Item target\release\kashot.exe dist\kashot\
+          if (-not (Test-Path target\release\ffmpeg.exe)) {
+            throw "target\release\ffmpeg.exe missing — kashot-app/build.rs did not bundle ffmpeg. Check KASHOT_FFMPEG was set before cargo build."
+          }
+          Copy-Item target\release\ffmpeg.exe dist\kashot\
           Compress-Archive -Path dist\kashot\* -DestinationPath dist\kashot-windows-x86_64.zip
 
       - uses: actions/upload-artifact@v4
