@@ -16,6 +16,26 @@ build       = "build.rs"
 name = "kashot"
 path = "src/main.rs"
 
+# cargo-wix metadata. Drives `cargo wix` to produce Kashot.msi for the
+# GitHub Release on tag pushes (see .github/workflows/build-rust.yml).
+#
+# The WiX source itself lives at the workspace root in `kashot-rs/wix/`
+# (one shared dir, not buried inside this crate) so that the WiX file +
+# License.rtf + Kashot.ico are easy to find. CI passes `--include` to
+# `cargo wix` to point at `wix/main.wxs` explicitly.
+#
+# `name = "Kashot"` (capitalised) forces cargo-wix to emit `Kashot.msi`
+# instead of `kashot-app-<version>-x86_64.msi`, matching the URL pattern
+# that dist/winget and dist/chocolatey already hard-code.
+[package.metadata.wix]
+name      = "Kashot"
+no-build  = false
+output    = "Kashot.msi"
+# Skip cargo-wix's auto-license / auto-EULA — we provide our own
+# License.rtf and the WixUI License page wires it up via WixVariable.
+license   = false
+eula      = false
+
 [dependencies]
 kashot-core     = { path = "../kashot-core" }
 kashot-platform = { path = "../kashot-platform" }
