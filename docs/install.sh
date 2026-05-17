@@ -44,6 +44,31 @@ case "$(uname -s)" in
   *) echo "kashot: unsupported OS: $(uname -s)" >&2; exit 1 ;;
 esac
 
+# ── Suggest the native package manager when one is wired up ─────────────────
+# Purely informational — the tarball install below still runs. We don't
+# auto-switch to dnf/snap because (a) the user piped us into `sh` expecting
+# a portable install, and (b) the RPM/COPR channel isn't activated yet.
+if [ "$OS" = 'linux' ] && [ -r /etc/os-release ]; then
+  # shellcheck disable=SC1091
+  . /etc/os-release
+  case "${ID:-}:${ID_LIKE:-}" in
+    fedora*|*:*fedora*|rhel*|*:*rhel*|centos*|*:*centos*|rocky*|*:*rocky*|almalinux*|*:*almalinux*)
+      echo 'kashot: Fedora/RHEL-family system detected.' >&2
+      echo '  once the COPR repo is live you will be able to use:' >&2
+      echo '    sudo dnf copr enable singhpratech/kashot && sudo dnf install kashot' >&2
+      echo '  for now, continuing with the portable tarball install...' >&2
+      echo >&2
+      ;;
+    opensuse*|*:*opensuse*|suse*|*:*suse*)
+      echo 'kashot: openSUSE detected.' >&2
+      echo '  once the OBS repo is live you will be able to use:' >&2
+      echo '    sudo zypper install kashot' >&2
+      echo '  for now, continuing with the portable tarball install...' >&2
+      echo >&2
+      ;;
+  esac
+fi
+
 case "$(uname -m)" in
   x86_64|amd64)  ARCH='x86_64' ;;
   arm64|aarch64) ARCH='arm64' ;;
