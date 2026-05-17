@@ -313,17 +313,21 @@ fn spawn_recorder(output: &Path, options: RecordingOptions) -> Result<Child> {
         Error::Recording("non-UTF-8 output path".into()))?;
     let ffmpeg = locate_ffmpeg().unwrap_or_else(|| PathBuf::from("ffmpeg.exe"));
 
-    // Discover the default DirectShow microphone if the user asked for mic
-    // (or system audio — see the TODO on WASAPI loopback at the top of the
-    // file; until that lands, "system audio" silently degrades to "mic only"
-    // when there's a mic available, and to "video only" when there isn't).
-    let mic_device: Option<String> = if options.mic || options.system_audio {
-        list_dshow_audio_devices(&ffmpeg)
-            .into_iter()
-            .next()
-    } else { None };
+    // Pick the right audio capture device(s) given what the user asked for.
+    // Returns Err with an actionable message if `system_audio` was requested
+    // but no loopback device (Stereo Mix / What U Hear / VoiceMeeter / etc.)
+    // is available — so the toast doesn't lie about what's being recorded.
+    let devices = list_dshow_audio_devices(&ffmpeg);
+    let audio_dev: Option<String> = pick_windows_audio_device(&devices, options)?;
 
-    let args = build_windows_ffmpeg_args(path, options, mic_device.as_deref());
+    // Pre-flight probe: catch the Windows-Privacy "microphone access denied"
+    // case BEFORE we start a recording that would silently produce a muted
+    // track. Skipped for video-only.
+    if let Some(dev) = &audio_dev {
+        probe_dshow_audio_device(&ffmpeg, dev)?;
+    }
+
+    let args = build_windows_ffmpeg_args(path, options, audio_dev.as_deref());
     let res = Command::new(&ffmpeg)
         .args(&args)
         .stdin(Stdio::piped())
@@ -339,6 +343,78 @@ fn spawn_recorder(output: &Path, options: RecordingOptions) -> Result<Child> {
              folder as kashot.exe and retry.".into()
         )),
         Err(e) => Err(Error::Recording(format!("failed to spawn ffmpeg: {e}"))),
+    }
+}
+
+/// Pick the right DirectShow audio device from the discovered list given
+/// what the user asked for. Pure function — testable without a host that
+/// actually has any of these devices installed.
+///
+/// Selection rules:
+/// - `options.system_audio` (loopback): require one of the loopback-style
+///   device names (Stereo Mix, What U Hear, Wave Out Mix, VoiceMeeter…).
+///   If `mic` is *also* set we still return the loopback device; ffmpeg's
+///   dshow input can only consume one audio source per `-i`, so picking
+///   loopback is the closest thing to "both" until Phase-3 WASAPI lands.
+/// - `options.mic` (mic only): prefer names that look like microphones
+///   ("Microphone (…)", "Headset", "Array"), fall back to whatever's first.
+/// - neither: returns `None` (video-only recording).
+///
+/// When `system_audio` was requested but no loopback device exists we
+/// return Err with a Windows-specific actionable message. That bubbles up
+/// to the tray-loop and the user sees a real dialog rather than a silent
+/// muted MP4.
+#[cfg(any(target_os = "windows", test))]
+pub(crate) fn pick_windows_audio_device(
+    devices: &[String],
+    options: RecordingOptions,
+) -> Result<Option<String>> {
+    if !options.mic && !options.system_audio {
+        return Ok(None);
+    }
+
+    if options.system_audio {
+        // Loopback-style devices vary by audio chipset and driver. The names
+        // below cover the common shapes (English locale defaults) plus
+        // VoiceMeeter, which is the most popular virtual audio cable on
+        // Windows.
+        const LOOPBACK_NEEDLES: &[&str] = &[
+            "stereo mix", "what u hear", "what you hear", "wave out mix",
+            "voicemeeter", "vb-audio", "virtual audio",
+        ];
+        let loopback = devices.iter().find(|d| {
+            let n = d.to_lowercase();
+            LOOPBACK_NEEDLES.iter().any(|needle| n.contains(needle))
+        });
+        if let Some(d) = loopback {
+            return Ok(Some(d.clone()));
+        }
+        if !options.mic {
+            return Err(Error::Recording(
+                "System-audio capture needs a loopback device, but none is \
+                 enabled. Right-click the Windows speaker icon → Sounds → \
+                 Recording → right-click empty area → \"Show Disabled \
+                 Devices\" → enable \"Stereo Mix\" — then retry. (No system \
+                 audio was captured; nothing was recorded.)".into()
+            ));
+        }
+        // mic=true && system_audio=true && no loopback: fall through to mic.
+    }
+
+    // Mic-only path (or system_audio fallback when both were requested).
+    const MIC_NEEDLES: &[&str] = &[
+        "microphone", "headset", "array mic", "internal mic",
+    ];
+    let mic = devices.iter().find(|d| {
+        let n = d.to_lowercase();
+        MIC_NEEDLES.iter().any(|needle| n.contains(needle))
+    });
+    match mic.or_else(|| devices.iter().next()) {
+        Some(d) => Ok(Some(d.clone())),
+        None => Err(Error::Recording(
+            "No audio capture device found. Plug in a microphone (or skip \
+             audio in the tray menu's Record submenu).".into()
+        )),
     }
 }
 
@@ -438,6 +514,101 @@ pub(crate) fn parse_dshow_audio_devices(stderr: &str) -> Vec<String> {
         }
     }
     out
+}
+
+/// Pre-flight: open `device` for a 1-second probe to confirm Windows lets
+/// this process actually read samples from it. Catches the most common
+/// "silent muted MP4" causes:
+///   - Windows Settings → Privacy → Microphone → "Let desktop apps access
+///     your microphone" is OFF (very common after Win11 fresh install).
+///   - The mic device is exclusive-mode held by another app.
+///   - The mic was renamed/unplugged between device-list and start time.
+///
+/// Returns `Ok(())` if ffmpeg opens the device successfully within ~3s.
+/// On failure we shape the stderr into an actionable message and let the
+/// tray-loop's existing dialog code surface it. NO MP4 is produced; the
+/// user gets a real error before the recording "starts".
+#[cfg(target_os = "windows")]
+fn probe_dshow_audio_device(ffmpeg: &Path, device: &str) -> Result<()> {
+    use std::time::Duration;
+    let mut child = Command::new(ffmpeg)
+        .args([
+            "-hide_banner", "-nostats",
+            "-rtbufsize", "32M",
+            "-f", "dshow",
+            "-i", &format!("audio={device}"),
+            "-t", "0.5",
+            "-f", "null", "-",
+        ])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| Error::Recording(format!("audio probe spawn failed: {e}")))?;
+
+    // 3s ceiling — a healthy probe finishes in <500ms; anything longer is
+    // a device that's either denied or exclusive-locked.
+    let deadline = std::time::Instant::now() + Duration::from_secs(3);
+    let exit = loop {
+        if let Some(status) = child.try_wait().ok().flatten() {
+            break Some(status);
+        }
+        if std::time::Instant::now() >= deadline {
+            let _ = child.kill();
+            break None;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    };
+
+    let stderr = child.stderr.take()
+        .map(|mut s| { let mut b = String::new(); use std::io::Read as _; let _ = s.read_to_string(&mut b); b })
+        .unwrap_or_default();
+
+    let ok = exit.map(|s| s.success()).unwrap_or(false);
+    if ok {
+        return Ok(());
+    }
+
+    let lower = stderr.to_lowercase();
+    let msg = if lower.contains("access is denied") || lower.contains("0x80070005") {
+        format!(
+            "Windows blocked microphone access for KAShot.\n\n\
+             Open Settings → Privacy & Security → Microphone, turn on \
+             \"Microphone access\" AND \"Let desktop apps access your \
+             microphone\", then retry.\n\n\
+             (Device: {device})"
+        )
+    } else if lower.contains("could not find") || lower.contains("i/o error")
+            || lower.contains("no such") {
+        format!(
+            "The audio device \"{device}\" is no longer available. \
+             Did it get unplugged or renamed? Re-open the Record menu \
+             to refresh the device list."
+        )
+    } else if lower.contains("device or resource busy")
+            || lower.contains("exclusive") {
+        format!(
+            "The audio device \"{device}\" is held in exclusive mode by \
+             another app (often Zoom / Teams / Discord). Close that app \
+             or right-click the speaker icon → Sounds → Recording → pick \
+             the device → Properties → Advanced → uncheck \"Allow \
+             applications to take exclusive control\", then retry."
+        )
+    } else if exit.is_none() {
+        format!(
+            "The microphone probe didn't finish in 3 s — \"{device}\" is \
+             likely deadlocked. Unplug + replug the device, or pick a \
+             different one from the Record menu."
+        )
+    } else {
+        // Generic non-zero exit — pass through the last line of ffmpeg's
+        // stderr so support has something to work with.
+        let tail = stderr.lines().rev()
+            .find(|l| !l.trim().is_empty())
+            .unwrap_or("(no ffmpeg output)");
+        format!("Could not open audio device \"{device}\": {tail}")
+    };
+    Err(Error::Recording(msg))
 }
 
 /// Probe ffmpeg for available DirectShow audio devices. Returns an empty Vec
@@ -624,5 +795,84 @@ dummy: Immediate exit requested
 "#;
         assert!(parse_dshow_audio_devices(sample).is_empty(),
                 "must not return video devices as audio");
+    }
+
+    // pick_windows_audio_device — selection rules under each
+    // (mic, system_audio, available-devices) combo.
+
+    #[test]
+    fn pick_audio_video_only_returns_none() {
+        let got = pick_windows_audio_device(&[
+            "Microphone (Realtek)".to_string(),
+        ], RecordingOptions::NONE).unwrap();
+        assert_eq!(got, None);
+    }
+
+    #[test]
+    fn pick_audio_mic_only_prefers_microphone_named_device() {
+        let devs = vec![
+            "Line In (Realtek)".to_string(),
+            "Microphone (Realtek)".to_string(),
+        ];
+        let got = pick_windows_audio_device(&devs, RecordingOptions::MIC_ONLY).unwrap();
+        assert_eq!(got, Some("Microphone (Realtek)".to_string()));
+    }
+
+    #[test]
+    fn pick_audio_mic_only_falls_back_to_first_if_no_mic_named() {
+        let devs = vec![
+            "Line In (Realtek)".to_string(),
+            "Aux In".to_string(),
+        ];
+        let got = pick_windows_audio_device(&devs, RecordingOptions::MIC_ONLY).unwrap();
+        assert_eq!(got, Some("Line In (Realtek)".to_string()));
+    }
+
+    #[test]
+    fn pick_audio_mic_only_errors_when_no_devices() {
+        let err = pick_windows_audio_device(&[], RecordingOptions::MIC_ONLY).unwrap_err();
+        assert!(matches!(err, Error::Recording(_)));
+    }
+
+    #[test]
+    fn pick_audio_system_audio_finds_stereo_mix() {
+        let devs = vec![
+            "Microphone (Realtek)".to_string(),
+            "Stereo Mix (Realtek)".to_string(),
+        ];
+        let got = pick_windows_audio_device(&devs, RecordingOptions::SYSTEM_ONLY).unwrap();
+        assert_eq!(got, Some("Stereo Mix (Realtek)".to_string()));
+    }
+
+    #[test]
+    fn pick_audio_system_audio_finds_voicemeeter() {
+        let devs = vec![
+            "VoiceMeeter Output (VB-Audio VoiceMeeter VAIO)".to_string(),
+        ];
+        let got = pick_windows_audio_device(&devs, RecordingOptions::SYSTEM_ONLY).unwrap();
+        assert_eq!(got.unwrap().contains("VoiceMeeter"), true);
+    }
+
+    #[test]
+    fn pick_audio_system_only_errors_when_no_loopback_device() {
+        // mic exists but no Stereo Mix / VoiceMeeter / etc. — system_audio
+        // alone must surface the actionable Stereo Mix instructions, NOT
+        // silently downgrade to mic.
+        let devs = vec!["Microphone (Realtek)".to_string()];
+        let err = pick_windows_audio_device(&devs, RecordingOptions::SYSTEM_ONLY)
+            .unwrap_err();
+        let Error::Recording(msg) = err else { panic!("wrong error variant") };
+        assert!(msg.to_lowercase().contains("stereo mix"),
+                "actionable message should name Stereo Mix; got: {msg}");
+    }
+
+    #[test]
+    fn pick_audio_mic_and_sys_falls_back_to_mic_when_no_loopback() {
+        // With both requested and no loopback device, we degrade to mic
+        // (the toast already says "with mic + system audio" — the truthful
+        // user-visible label will be tightened in a follow-up).
+        let devs = vec!["Microphone (Realtek)".to_string()];
+        let got = pick_windows_audio_device(&devs, RecordingOptions::MIC_AND_SYS).unwrap();
+        assert_eq!(got, Some("Microphone (Realtek)".to_string()));
     }
 }
