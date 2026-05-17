@@ -78,9 +78,9 @@ That's KAShot. Lightweight. One workflow. Everywhere.
 <tr>
 <td valign="top">
 
-[**Download .msi**](https://github.com/singhpratech/kashot/releases/latest/download/Kashot.msi)
+[**Download .zip**](https://github.com/singhpratech/kashot/releases/latest/download/kashot-windows-x86_64.zip)
 
-Or grab `Kashot.exe` (standalone) or `Kashot-portable.zip` from [releases](https://github.com/singhpratech/kashot/releases/latest).
+Unzip → run `kashot.exe`. Same Rust binary that ships on Linux and macOS.
 
 ```powershell
 # coming soon
@@ -88,6 +88,8 @@ winget install singhpratech.Kashot
 choco  install kashot
 scoop  install kashot
 ```
+
+The legacy WiX MSI (`Kashot.msi`) is still available as a CI artifact on the `Build C# (Windows, legacy)` workflow run for anyone who needs an installer-style package.
 
 </td>
 <td valign="top">
@@ -143,7 +145,7 @@ brew install --cask kashot
 | ⏱️ | **Delayed capture** — 3 s / 5 s / 10 s countdown with tray indicator |
 | 🖥️ | **Multi-monitor** — single virtual-desktop capture, no per-screen switching |
 | 🌗 | **Themed dialogs** — Settings · About · Updates · Convert — same laser-green skin everywhere |
-| 🔒 | **No accounts. No telemetry. No upsell.** Free, MIT, closed source today |
+| 🔒 | **No accounts. No telemetry. No upsell.** Free, MIT, open source |
 
 </div>
 
@@ -247,9 +249,9 @@ icons/                 branded icon pack (every platform size, one source PNG)
 | Screen recording (MP4 + audio) | ⏳ | ✅ | ⏳ |
 | Themed Settings · About · Updates | ✅ | ✅ | ✅ |
 | Image + video format conversion | ✅ | ✅ | ✅ |
-| Native installers | MSI / EXE / ZIP | tar.gz | dmg (planned) |
+| Release artifact | `.zip` | `.tar.gz` | raw binary (`.dmg` planned) |
 
-Linux + macOS ship the Rust port; Windows ships both the original C# build (current MSI) and the Rust port. The two stay aligned on settings JSON shape and hotkey wire format — see [`PLAN.md`](PLAN.md) § "Architecture invariants".
+**One Rust binary, three platforms.** Same source, same editor, same feature set — the `kashot-rs/` workspace is the canonical build on Windows, Linux, and macOS. The original C# WinForms version (`Kashot/`) is retained as a reference implementation and PR compile-check; it no longer attaches to releases. Both stay aligned on settings JSON shape and hotkey wire format — see [`PLAN.md`](PLAN.md) § "Architecture invariants".
 
 ---
 
