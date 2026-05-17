@@ -6,7 +6,7 @@
 
 ### The lightweight screenshot tool every platform deserves.
 
-**Drag a region. Annotate. Save, copy, pin, record — get back to work.**
+**Drag a region. Annotate. Save, copy, pin, record. Stop screenshotting — start kashoting.**
 
 [**kashot.org**](https://kashot.org)
 &nbsp;·&nbsp; [Download](https://kashot.org/#download)
