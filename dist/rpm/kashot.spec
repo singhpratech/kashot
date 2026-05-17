@@ -12,7 +12,7 @@
 # Fedora COPR comes next; until then this is buildable by hand.
 
 Name:           kashot
-Version:        0.2.0
+Version:        0.3.0
 Release:        1%{?dist}
 Summary:        Fast screenshots with annotations — tray-resident, hotkey-driven
 License:        MIT OR Apache-2.0
@@ -85,6 +85,14 @@ install -Dm0644 %{SOURCE5}                 %{buildroot}%{_datadir}/licenses/%{na
 %{_datadir}/icons/hicolor/256x256/apps/kashot.png
 
 %changelog
+* Sun May 17 2026 Prateek Singh <singhpratech> - 0.3.0-1
+- Windows screen recording shipped (ffmpeg gdigrab + dshow).
+- Marker opacity slider in the editor; hotkey rebind widget in Settings.
+- Native Linux arm64 release artifact added.
+- C# / WinForms reference build retired; Rust is canonical on all platforms.
+- License switched to dual MIT OR Apache-2.0 — installs all three license
+  files under %license.
+
 * Sun May 17 2026 Prateek Singh <singhpratech> - 0.2.0-1
 - Initial RPM packaging for Fedora / RHEL / openSUSE.
 - Repackages the upstream kashot-linux-x86_64.tar.gz release asset.
