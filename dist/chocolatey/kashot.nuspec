@@ -2,7 +2,7 @@
 <package xmlns="http://schemas.microsoft.com/packaging/2015/06/nuspec.xsd">
   <metadata>
     <id>kashot</id>
-    <version>0.2.0</version>
+    <version>0.3.0</version>
     <packageSourceUrl>https://github.com/singhpratech/kashot/tree/main/dist/chocolatey</packageSourceUrl>
     <owners>singhpratech</owners>
 
@@ -32,7 +32,7 @@ Kashot is a fast, free, tray-resident screenshot tool with a built-in annotation
 
 Native on Windows. Native Linux and macOS builds available via the Rust port (kashot-rs).
     </description>
-    <releaseNotes>https://github.com/singhpratech/kashot/releases/tag/v0.2.0</releaseNotes>
+    <releaseNotes>https://github.com/singhpratech/kashot/releases/tag/v0.3.0</releaseNotes>
   </metadata>
   <files>
     <file src="tools\**" target="tools" />

@@ -19,7 +19,7 @@
 name: kashot
 title: Kashot
 base: core22
-version: '0.2.0'
+version: '0.3.0'
 summary: Fast screenshots with annotations — tray-resident, hotkey-driven
 description: |
   Kashot is a tray-resident screenshot tool with a built-in annotation editor.

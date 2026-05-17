@@ -5,7 +5,7 @@
 cask "kashot" do
   arch arm: "arm64", intel: "x64"
 
-  version "0.2.0"
+  version "0.3.0"
   sha256  arm:   "REPLACE_WITH_ARM64_SHA256_AT_RELEASE_TIME",
           intel: "REPLACE_WITH_X64_SHA256_AT_RELEASE_TIME"
 
