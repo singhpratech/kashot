@@ -7,7 +7,7 @@ PublisherSupportUrl: https://github.com/singhpratech/kashot/issues
 Author:             PrateekSingh
 PackageName:        Kashot
 PackageUrl:         https://kashot.org/
-License:            MIT OR Apache-2.0
+License:            Apache-2.0
 LicenseUrl:         https://github.com/singhpratech/kashot/blob/main/LICENSE
 Copyright:          © PrateekSingh
 ShortDescription:   Fast screenshots with annotations — tray-resident, hotkey-driven, free.
