@@ -6,18 +6,20 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Kashot lives in **two parallel codebases**:
 
-- **`Kashot/`** — original C# / .NET 8 / WinForms build. Windows-only.
-  Currently the source of all shipping releases (v0.1 MSI/EXE/ZIP).
-- **`kashot-rs/`** — Rust workspace targeting Windows + Linux + macOS from one
-  codebase. Foundation (tray + hotkey + capture + save) is in place; the
-  overlay editor port is queued and fully scoped in `PLAN.md`.
+- **`kashot-rs/`** — Rust workspace, **canonical build on Windows + Linux + macOS**
+  from one codebase as of v0.2.0. Ships every release artifact (`.zip` on Windows,
+  `.tar.gz` on Linux, raw binary on macOS).
+- **`Kashot/`** — original C# / .NET 8 / WinForms build, Windows-only. Retained
+  as a reference implementation and PR compile-check; no longer attaches to
+  releases. The legacy WiX MSI is still produced as a CI artifact for anyone
+  who needs the installer flavour.
 
 Both share **brand, settings JSON format, hotkey wire format, tool shortcuts,
 and color palettes**. See `PLAN.md` § "Architecture invariants" for the list of
-cross-cutting decisions that must stay aligned between the two.
+cross-cutting decisions that stay aligned between the two.
 
-The C# build keeps shipping until the Rust port reaches feature parity. Don't
-delete the C# code; it's the reference implementation while the port catches up.
+Don't delete the C# code — it's the reference implementation, and the WiX
+installer is still useful for users who prefer an MSI install path.
 
 ## Naming
 
