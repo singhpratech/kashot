@@ -5,10 +5,12 @@
 //! dispatches `WindowEvent`s by `WindowId`, and polls `outcome` after each
 //! event to learn when the user saved or cancelled.
 //!
-//! Layout — three grouped sections, all keyboard- and mouse-driven:
+//! Layout — four grouped sections, all keyboard- and mouse-driven:
 //!
 //!   PATHS         Screenshots folder (path display + Browse…)
 //!                 Recordings folder  (path display + Browse…)
+//!   HOTKEY        Global hotkey      (live binding + REBIND button →
+//!                                      capture next keypress)
 //!   WATERMARK     Enabled (toggle pill)
 //!                 Text    (editable, focus on click, types live)
 //!                 Position (cycles TopLeft → TopRight → BottomRight → BottomLeft)
@@ -16,10 +18,11 @@
 //!   APPEARANCE    Theme   (cycles Light / Dark)
 //!                 Start with system (toggle pill)
 //!
-//! Hotkey rebinding is the one option still routed through the JSON file —
-//! it needs a keystroke-capture widget that's out of scope here. The
-//! "Edit as JSON" button in the action bar opens settings.json in the user's
-//! default editor for anything this dialog doesn't expose.
+//! The "Edit as JSON" button in the action bar still opens settings.json in
+//! the user's default editor — useful as an escape hatch when the rebind
+//! widget doesn't know a particular key (the supported set covers letters,
+//! digits, F1–F12, arrows, navigation cluster, PrintScreen, ScrollLock,
+//! Pause).
 
 use std::num::NonZeroU32;
 use std::path::PathBuf;
@@ -31,12 +34,12 @@ use softbuffer::{Context, Surface};
 use winit::dpi::{PhysicalPosition, PhysicalSize};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::event_loop::ActiveEventLoop;
-use winit::keyboard::{Key, NamedKey};
+use winit::keyboard::{Key, KeyCode, ModifiersState, NamedKey, PhysicalKey};
 use winit::window::{CursorIcon, Window, WindowAttributes, WindowId};
 
-use kashot_core::AppSettings;
+use kashot_core::{AppSettings, Hotkey, Modifiers as HkMods};
 use kashot_core::color::Rgba as KashotRgba;
-use kashot_core::settings::WatermarkAnchor;
+use kashot_core::settings::{vk_label, WatermarkAnchor};
 
 use crate::bitmap_font;
 use crate::painter;
@@ -63,7 +66,7 @@ const TOGGLE_OFF_K:  u32 = 0x004a_5a52;
 
 // ── geometry ────────────────────────────────────────────────────────────────
 const WIN_W: u32 = 640;
-const WIN_H: u32 = 600;
+const WIN_H: u32 = 680;
 const PAD:   i32 = 22;
 const ROW_H: i32 = 34;
 const LABEL_W: i32 = 200;
@@ -82,6 +85,8 @@ const CARET_BLINK_MS: u128 = 530;
 enum WidgetKind {
     SaveFolder,
     RecordingsFolder,
+    HotkeyDisplay,
+    HotkeyRebind,
     WatermarkToggle,
     WatermarkText,
     WatermarkPos,
@@ -127,6 +132,16 @@ pub struct SettingsView {
     /// capture the drag once mouse-down lands on the track and keep
     /// updating the opacity value as the cursor moves until release.
     dragging_opacity: bool,
+    /// True while the HOTKEY row is in "press a key" capture mode. The next
+    /// non-modifier `KeyboardInput::Pressed` event commits the binding;
+    /// `Esc` cancels and reverts to `hotkey_before_capture`.
+    capturing_hotkey: bool,
+    /// Snapshot of the binding the user had before they pressed REBIND, so
+    /// Esc can roll back the draft without disk persistence.
+    hotkey_before_capture: Hotkey,
+    /// Latest live modifier state, tracked via `WindowEvent::ModifiersChanged`.
+    /// The `KeyboardInput` event doesn't carry modifier info on its own.
+    mods_state: ModifiersState,
     pub outcome: Option<SettingsOutcome>,
 }
 
@@ -152,6 +167,7 @@ impl SettingsView {
         let surface = Surface::new(&ctx, window.clone())
             .map_err(|e| anyhow!("softbuffer Surface::new (settings): {e}"))?;
 
+        let initial_hk = current.hotkey();
         let mut me = SettingsView {
             window, _ctx: ctx, surface,
             draft: current,
@@ -161,6 +177,9 @@ impl SettingsView {
             focus: None,
             caret_t: Instant::now(),
             dragging_opacity: false,
+            capturing_hotkey: false,
+            hotkey_before_capture: initial_hk,
+            mods_state: ModifiersState::empty(),
             outcome: None,
         };
         me.rows = me.build_rows();
@@ -174,6 +193,12 @@ impl SettingsView {
         match event {
             WindowEvent::CloseRequested => {
                 self.outcome = Some(SettingsOutcome::Cancelled);
+            }
+            WindowEvent::ModifiersChanged(mods) => {
+                // Track the live modifier mask so the rebind capture step can
+                // pair `Ctrl+Shift+P` together — `KeyboardInput` on its own
+                // doesn't carry modifier info in winit 0.30.
+                self.mods_state = mods.state();
             }
             WindowEvent::CursorMoved { position, .. } => {
                 self.cursor = (position.x as i32, position.y as i32);
@@ -228,7 +253,11 @@ impl SettingsView {
                 }
             }
             WindowEvent::KeyboardInput { event: key_ev, .. } => {
-                self.on_key(key_ev);
+                if self.capturing_hotkey {
+                    self.on_capture_key(key_ev);
+                } else {
+                    self.on_key(key_ev);
+                }
             }
             WindowEvent::Resized(_) | WindowEvent::RedrawRequested => self.redraw(),
             _ => {}
@@ -285,6 +314,48 @@ impl SettingsView {
             }
             _ => {}
         }
+    }
+
+    /// Hotkey-capture key handler. Active only while
+    /// `capturing_hotkey == true`. Eats every key event so they don't fall
+    /// through into the regular `on_key` text-input path.
+    ///
+    /// Behavior:
+    /// - `Esc` cancels capture and rolls back to `hotkey_before_capture`.
+    /// - A bare modifier press (Ctrl / Shift / Alt / Super) is ignored —
+    ///   we want a real key alongside the modifiers.
+    /// - Any supported `KeyCode` commits the binding using the live
+    ///   `mods_state` mask. The draft is mutated; persistence waits for the
+    ///   Save button (or rolls back on Cancel).
+    /// - Unsupported keys ignore the press; the user can hit `Esc` and use
+    ///   the "Edit as JSON" escape hatch for exotic keys.
+    fn on_capture_key(&mut self, ev: winit::event::KeyEvent) {
+        if ev.state != ElementState::Pressed { return; }
+        // Esc always aborts capture and reverts the draft.
+        if matches!(ev.logical_key, Key::Named(NamedKey::Escape)) {
+            self.draft.set_hotkey(self.hotkey_before_capture);
+            self.capturing_hotkey = false;
+            self.window.request_redraw();
+            return;
+        }
+        let PhysicalKey::Code(code) = ev.physical_key else {
+            // Unidentified physical key — keep waiting.
+            return;
+        };
+        // Bare modifier press → keep waiting for a non-modifier.
+        if is_modifier_code(code) { return; }
+        let Some(vk) = keycode_to_vk(code) else {
+            // Unsupported key — hold the user in capture mode so they can
+            // try another key or hit Esc.
+            return;
+        };
+        let hk = Hotkey {
+            modifiers:   mods_state_to_hk(self.mods_state),
+            virtual_key: vk,
+        };
+        self.draft.set_hotkey(hk);
+        self.capturing_hotkey = false;
+        self.window.request_redraw();
     }
 
     /// Geometry of the opacity slider's track. Returns (x, y, width, height)
@@ -390,6 +461,22 @@ impl SettingsView {
             WidgetKind::StartWithOs => {
                 self.draft.start_with_windows = !self.draft.start_with_windows;
             }
+            WidgetKind::HotkeyDisplay => {
+                // Clicking the display box itself is a no-op — the user has
+                // to hit REBIND. Avoids accidental re-capture from a stray
+                // click on the green border.
+            }
+            WidgetKind::HotkeyRebind => {
+                // Snapshot the current binding so Esc during capture can
+                // roll back. Tray-loop has already unregistered the global
+                // hotkey while Settings is open, so the user can press the
+                // current PrintScreen freely without it firing.
+                self.hotkey_before_capture = self.draft.hotkey();
+                self.capturing_hotkey = true;
+                // Drop any text-field focus so caret blink doesn't compete
+                // for redraws.
+                self.focus = None;
+            }
             WidgetKind::OpenJson => {
                 self.outcome = Some(SettingsOutcome::OpenJson);
                 return;
@@ -438,6 +525,15 @@ impl SettingsView {
         // PATHS
         rows.push(Row { kind: WidgetKind::SaveFolder,       label: "Screenshots folder", rect: (x, y, row_w, ROW_H) }); y += ROW_H + 8;
         rows.push(Row { kind: WidgetKind::RecordingsFolder, label: "Recordings folder",  rect: (x, y, row_w, ROW_H) }); y += ROW_H + 22;
+
+        // HOTKEY — display + REBIND on one row. The display fills the left
+        // part of the value column; the REBIND button is anchored right.
+        y += 18;
+        rows.push(Row { kind: WidgetKind::HotkeyDisplay, label: "Global hotkey", rect: (x, y, row_w, ROW_H) });
+        let rebind_w = 100;
+        let rebind_x = x + row_w - rebind_w;
+        rows.push(Row { kind: WidgetKind::HotkeyRebind,  label: "REBIND",        rect: (rebind_x, y, rebind_w, ROW_H) });
+        y += ROW_H + 22;
 
         // WATERMARK header takes 18px above its first row.
         y += 18;
@@ -489,6 +585,9 @@ impl SettingsView {
         if let Some(r) = self.rows.iter().find(|r| r.kind == WidgetKind::SaveFolder) {
             section_header(&mut surf, "PATHS", r.rect.1 - 22);
         }
+        if let Some(r) = self.rows.iter().find(|r| r.kind == WidgetKind::HotkeyDisplay) {
+            section_header(&mut surf, "HOTKEY", r.rect.1 - 22);
+        }
         if let Some(r) = self.rows.iter().find(|r| r.kind == WidgetKind::WatermarkToggle) {
             section_header(&mut surf, "WATERMARK", r.rect.1 - 22);
         }
@@ -497,10 +596,11 @@ impl SettingsView {
         }
 
         let caret_visible = ((self.caret_t.elapsed().as_millis() / CARET_BLINK_MS) % 2) == 0;
+        let capturing = self.capturing_hotkey;
         for (i, row) in self.rows.iter().enumerate() {
             let hovered = self.hover == Some(i);
             let focused = self.focus == Some(i);
-            render_row(&mut surf, row, hovered, focused, caret_visible, &self.draft);
+            render_row(&mut surf, row, hovered, focused, caret_visible, capturing, &self.draft);
         }
 
         if let Err(e) = buf.present() {
@@ -536,7 +636,7 @@ fn section_header<S: painter::Surface>(surf: &mut S, text: &str, y: i32) {
 
 fn render_row<S: painter::Surface>(
     surf: &mut S, row: &Row,
-    hovered: bool, focused: bool, caret_visible: bool,
+    hovered: bool, focused: bool, caret_visible: bool, capturing_hotkey: bool,
     draft: &AppSettings,
 ) {
     let (rx, ry, rw, rh) = row.rect;
@@ -555,6 +655,27 @@ fn render_row<S: painter::Surface>(
         let ty = ry + (rh - bitmap_font::GLYPH_H) / 2;
         let color = if is_primary { LASER } else { TEXT_BRIGHT };
         draw_text(surf, tx, ty, 1, row.label, argb_to_kashot(color));
+        return;
+    }
+
+    // ── REBIND button (sits to the right of the HotkeyDisplay box) ─────────
+    if row.kind == WidgetKind::HotkeyRebind {
+        let active = capturing_hotkey;
+        let border = if active { LASER } else if hovered { LASER_DIM } else { FIELD_BORDER };
+        let fill   = if active { 0x0000_2818 } else if hovered { HOVER_FILL } else { 0x0000_0000 };
+        if fill != 0 {
+            fill_rect(surf, rx, ry, rw, rh, argb_to_kashot(fill));
+        }
+        stroke_rect_argb(surf, rx, ry, rw, rh, argb_to_kashot(border));
+        // Label flips while we're listening for a key so the user knows the
+        // button "armed" the capture state, even though the actual readout
+        // lives in the display box to the left.
+        let label = if active { "LISTENING" } else { row.label };
+        let tw = bitmap_font::measure(label, 1);
+        let tx = rx + (rw - tw) / 2;
+        let ty = ry + (rh - bitmap_font::GLYPH_H) / 2;
+        let color = if active { LASER } else { TEXT_BRIGHT };
+        draw_text(surf, tx, ty, 1, label, argb_to_kashot(color));
         return;
     }
 
@@ -611,6 +732,35 @@ fn render_row<S: painter::Surface>(
             let tx = bx + (bw - tw) / 2;
             let ty = by + (bh - bitmap_font::GLYPH_H) / 2;
             draw_text(surf, tx, ty, 1, label, argb_to_kashot(TEXT_BRIGHT));
+        }
+        WidgetKind::HotkeyDisplay => {
+            // The display box sits in the value column but stops short of
+            // the REBIND button (which is its own row laid out on top of
+            // this rect, anchored right). Reserve the REBIND footprint plus
+            // an 8 px gutter so the laser-green border doesn't run under
+            // the button.
+            let rebind_w = 100;
+            let box_w = val_w - rebind_w - 8;
+            // While in capture mode the border lights up bright laser-green
+            // so the user can see the field is now listening. Otherwise we
+            // use the standard field border with a brighter hover state.
+            let border = if capturing_hotkey {
+                FIELD_FOCUS
+            } else if hovered {
+                LASER_DIM
+            } else {
+                FIELD_BORDER
+            };
+            fill_rect(surf, val_x, val_y, box_w, val_h, argb_to_kashot(FIELD_BG));
+            stroke_rect_argb(surf, val_x, val_y, box_w, val_h, argb_to_kashot(border));
+            let (text, color) = if capturing_hotkey {
+                ("[ PRESS A KEY ]".to_owned(), LASER)
+            } else {
+                (draft.hotkey().describe(), TEXT_BRIGHT)
+            };
+            let truncated = truncate_for(&text, box_w - 16);
+            let ty = val_y + (val_h - bitmap_font::GLYPH_H) / 2;
+            draw_text(surf, val_x + 8, ty, 1, &truncated, argb_to_kashot(color));
         }
         WidgetKind::WatermarkToggle | WidgetKind::StartWithOs => {
             let on = match row.kind {
@@ -832,6 +982,93 @@ fn centered_origin(loop_target: &winit::event_loop::ActiveEventLoop, w: u32, h: 
     let x = mon_x + (mon_w - w as i32) / 2;
     let y = mon_y + (mon_h - h as i32) / 2;
     (x.max(mon_x), y.max(mon_y))
+}
+
+/// True for `KeyCode`s that represent a bare modifier — the rebind widget
+/// rejects these because "Ctrl alone" is rarely a meaningful global hotkey
+/// and would fire on every modifier press.
+fn is_modifier_code(c: KeyCode) -> bool {
+    matches!(
+        c,
+        KeyCode::ControlLeft | KeyCode::ControlRight
+            | KeyCode::ShiftLeft | KeyCode::ShiftRight
+            | KeyCode::AltLeft   | KeyCode::AltRight
+            | KeyCode::SuperLeft | KeyCode::SuperRight
+            | KeyCode::Meta      | KeyCode::Hyper
+            | KeyCode::Fn        | KeyCode::FnLock
+            | KeyCode::CapsLock  | KeyCode::NumLock
+    )
+}
+
+/// Translate winit's `ModifiersState` mask into the kashot-core `Modifiers`
+/// flag set whose bit layout matches Win32 `MOD_*` (the JSON wire format).
+fn mods_state_to_hk(s: ModifiersState) -> HkMods {
+    let mut out = HkMods::empty();
+    if s.control_key() { out |= HkMods::CONTROL; }
+    if s.shift_key()   { out |= HkMods::SHIFT; }
+    if s.alt_key()     { out |= HkMods::ALT; }
+    if s.super_key()   { out |= HkMods::SUPER; }
+    out
+}
+
+/// Map a winit `KeyCode` to the Win32 virtual-key code we serialize in
+/// settings.json (canonical wire format shared with the C# build).
+///
+/// Covers the common cases the rebind widget advertises: letters, digits,
+/// F1–F12, the navigation cluster, PrintScreen, ScrollLock, Pause. Anything
+/// else returns `None` and the widget holds the user in capture mode (they
+/// can hit Esc and fall back to the "Edit as JSON" escape hatch).
+fn keycode_to_vk(c: KeyCode) -> Option<u32> {
+    Some(match c {
+        // Letters
+        KeyCode::KeyA => 0x41, KeyCode::KeyB => 0x42, KeyCode::KeyC => 0x43,
+        KeyCode::KeyD => 0x44, KeyCode::KeyE => 0x45, KeyCode::KeyF => 0x46,
+        KeyCode::KeyG => 0x47, KeyCode::KeyH => 0x48, KeyCode::KeyI => 0x49,
+        KeyCode::KeyJ => 0x4A, KeyCode::KeyK => 0x4B, KeyCode::KeyL => 0x4C,
+        KeyCode::KeyM => 0x4D, KeyCode::KeyN => 0x4E, KeyCode::KeyO => 0x4F,
+        KeyCode::KeyP => 0x50, KeyCode::KeyQ => 0x51, KeyCode::KeyR => 0x52,
+        KeyCode::KeyS => 0x53, KeyCode::KeyT => 0x54, KeyCode::KeyU => 0x55,
+        KeyCode::KeyV => 0x56, KeyCode::KeyW => 0x57, KeyCode::KeyX => 0x58,
+        KeyCode::KeyY => 0x59, KeyCode::KeyZ => 0x5A,
+        // Digits (top row only — numpad omitted intentionally because Win32
+        // splits those into VK_NUMPAD0–9 and the rebind widget doesn't yet
+        // expose a distinction).
+        KeyCode::Digit0 => 0x30, KeyCode::Digit1 => 0x31, KeyCode::Digit2 => 0x32,
+        KeyCode::Digit3 => 0x33, KeyCode::Digit4 => 0x34, KeyCode::Digit5 => 0x35,
+        KeyCode::Digit6 => 0x36, KeyCode::Digit7 => 0x37, KeyCode::Digit8 => 0x38,
+        KeyCode::Digit9 => 0x39,
+        // F-keys
+        KeyCode::F1 => 0x70, KeyCode::F2 => 0x71, KeyCode::F3 => 0x72,
+        KeyCode::F4 => 0x73, KeyCode::F5 => 0x74, KeyCode::F6 => 0x75,
+        KeyCode::F7 => 0x76, KeyCode::F8 => 0x77, KeyCode::F9 => 0x78,
+        KeyCode::F10 => 0x79, KeyCode::F11 => 0x7A, KeyCode::F12 => 0x7B,
+        // Navigation / editing cluster
+        KeyCode::PrintScreen => 0x2C,
+        KeyCode::ScrollLock  => 0x91,
+        KeyCode::Pause       => 0x13,
+        KeyCode::Insert      => 0x2D,
+        KeyCode::Delete      => 0x2E,
+        KeyCode::Home        => 0x24,
+        KeyCode::End         => 0x23,
+        KeyCode::PageUp      => 0x21,
+        KeyCode::PageDown    => 0x22,
+        KeyCode::ArrowLeft   => 0x25,
+        KeyCode::ArrowUp     => 0x26,
+        KeyCode::ArrowRight  => 0x27,
+        KeyCode::ArrowDown   => 0x28,
+        // Anything else (Tab, Enter, Space, numpad, OEM punctuation, media
+        // keys, etc.) falls through to None on purpose. Save people from
+        // binding to keys they'll regret.
+        _ => return None,
+    })
+}
+
+/// Surface the `vk_label` map for any caller outside this module that needs
+/// the same label table. Currently unused at module scope but kept here so
+/// future code (e.g. tray tooltip) doesn't reach into kashot-core directly.
+#[allow(dead_code)]
+fn vk_label_or_hex(vk: u32) -> String {
+    vk_label(vk).map(str::to_owned).unwrap_or_else(|| format!("(0x{:02X})", vk))
 }
 
 fn truncate_for(s: &str, max_px: i32) -> String {

@@ -317,9 +317,26 @@ pub fn run() -> Result<()> {
         /// dialog is open just raises focus to the existing window.
         fn show_settings(&mut self, loop_target: &ActiveEventLoop) {
             if self.settings_view.is_some() { return; }
+            // Unregister the global hotkey while Settings is open so the
+            // rebind capture widget can receive the user's keystrokes
+            // (including the current PrintScreen) without triggering a
+            // capture. The hotkey is re-registered when the dialog closes,
+            // whether the user Saves or Cancels.
+            if let Some(hk) = self.hotkeys.as_mut() {
+                hk.unregister();
+            }
             match SettingsView::new(loop_target, self.settings.clone()) {
                 Ok(view) => self.settings_view = Some(view),
-                Err(e)   => eprintln!("Settings dialog failed to open: {e}"),
+                Err(e)   => {
+                    eprintln!("Settings dialog failed to open: {e}");
+                    // Window failed to open — re-register the hotkey so
+                    // the user isn't stranded with capture disabled.
+                    if let Some(hk) = self.hotkeys.as_mut() {
+                        if let Err(e) = hk.register(self.settings.hotkey()) {
+                            eprintln!("Re-register hotkey failed: {e}");
+                        }
+                    }
+                }
             }
         }
 
@@ -347,7 +364,17 @@ pub fn run() -> Result<()> {
                     let _ = tray_tooltip;
                     true
                 }
-                SettingsOutcome::Cancelled => true,
+                SettingsOutcome::Cancelled => {
+                    // No persistence, but `show_settings` unregistered the
+                    // global hotkey on open — re-register the previous
+                    // binding so the user can capture again.
+                    if let Some(hk) = self.hotkeys.as_mut() {
+                        if let Err(e) = hk.register(self.settings.hotkey()) {
+                            eprintln!("Re-register hotkey failed: {e}");
+                        }
+                    }
+                    true
+                }
                 SettingsOutcome::OpenJson => {
                     if let Some(p) = AppSettings::settings_path() {
                         // Ensure the file exists so the editor has something
