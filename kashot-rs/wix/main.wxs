@@ -72,6 +72,25 @@
                             Source='$(var.CargoTargetBinDir)\kashot.exe'
                             KeyPath='yes' />
                     </Component>
+
+                    <!--
+                      ffmpeg.exe sits next to kashot.exe so locate_ffmpeg()
+                      finds it without a PATH dependency. CI's
+                      "Download static ffmpeg" step + kashot-app/build.rs
+                      together drop it into $(var.CargoTargetBinDir) before
+                      this MSI is packaged. If it's missing here, the link
+                      step fails — which is what we want; shipping an MSI
+                      that errors with "ffmpeg.exe not found" at runtime is
+                      the bug this component was added to prevent.
+                    -->
+                    <Component Id='ffmpeg' Guid='*' Win64='yes'>
+                        <File
+                            Id='ffmpegExe'
+                            Name='ffmpeg.exe'
+                            DiskId='1'
+                            Source='$(var.CargoTargetBinDir)\ffmpeg.exe'
+                            KeyPath='yes' />
+                    </Component>
                 </Directory>
             </Directory>
 
@@ -110,6 +129,7 @@
 
             <ComponentRef Id='License' />
             <ComponentRef Id='binary0' />
+            <ComponentRef Id='ffmpeg' />
             <ComponentRef Id='StartMenuShortcut' />
         </Feature>
 
