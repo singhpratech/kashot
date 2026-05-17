@@ -561,9 +561,25 @@
     audioMaster.gain.linearRampToValueAtTime(0.24, audioCtx.currentTime + 3);
   }
 
-  function setAudioUI(on) {
-    if (audioState) audioState.textContent = on ? 'ON' : 'OFF';
-    if (audioBtn)   audioBtn.setAttribute('aria-pressed', String(on));
+  // 3 states: 'on' (audio is actually producing sound), 'armed' (we want
+  // audio but the browser hasn't given us a user gesture yet so the
+  // AudioContext is still asleep), 'off' (user has muted). The 'armed'
+  // state is honest about what's happening — showing ON before first
+  // gesture made it look broken when nothing came through the speakers.
+  function setAudioUI(state) {
+    const label = state === 'on'   ? 'ON'
+                : state === 'armed' ? 'ARMED'
+                                    : 'OFF';
+    if (audioState) audioState.textContent = label;
+    if (audioBtn) {
+      audioBtn.setAttribute('aria-pressed', String(state === 'on'));
+      audioBtn.setAttribute('data-state', state);
+      audioBtn.title = state === 'armed'
+        ? 'Audio is armed — click or scroll anywhere to start (browser autoplay policy)'
+        : state === 'on'
+          ? 'Mute ambient site audio'
+          : 'Enable ambient site audio';
+    }
   }
 
   function saveAudioPref(on) {
@@ -588,39 +604,49 @@
     audioBtn.addEventListener('click', () => {
       if (!audioStarted) {
         startAudio();
-        setAudioUI(true);
+        setAudioUI('on');
         saveAudioPref(true);
         return;
       }
       if (audioCtx.state === 'running') {
         muteAudio();
-        setAudioUI(false);
+        setAudioUI('off');
         saveAudioPref(false);
       } else {
         unmuteAudio();
-        setAudioUI(true);
+        setAudioUI('on');
         saveAudioPref(true);
       }
     });
   }
 
   // Default ON unless the user has explicitly muted on a previous visit.
-  // Browsers require a user gesture before AudioContext can produce
-  // sound, so we arm the first gesture to autostart instantly.
+  // Browsers require a user gesture before AudioContext can produce sound
+  // so we arm the first gesture to autostart instantly. Until that gesture
+  // we show 'ARMED' (honest) rather than 'ON' (a lie if no sound is out).
   let storedPref = null;
   try { storedPref = localStorage.getItem('kashot.audio.v2'); } catch (_) {}
   const wantAudio = storedPref === null ? true : storedPref === '1';
-  setAudioUI(wantAudio);
+  setAudioUI(wantAudio ? 'armed' : 'off');
 
   if (wantAudio) {
-    const armEvents = ['pointerdown', 'keydown', 'scroll', 'touchstart'];
+    // Broad net of events that count as a "user activation" across browsers
+    // (per the HTML spec): click / pointerup / pointerdown / keydown /
+    // wheel / touchend. Some, like scroll on its own, are not a guaranteed
+    // activation but we listen anyway as a fallback.
+    const armEvents = [
+      'pointerdown', 'pointerup', 'click', 'keydown',
+      'touchstart', 'touchend', 'wheel', 'scroll',
+    ];
     const arm = () => {
       armEvents.forEach((ev) =>
         window.removeEventListener(ev, arm, { capture: true })
       );
       if (!audioStarted) {
         startAudio();
-        setAudioUI(true);
+        // startAudio() fades master gain up over 3s but flag UI as on
+        // immediately so the user gets feedback the moment they interact.
+        setAudioUI('on');
         saveAudioPref(true);
       }
     };
