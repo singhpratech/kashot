@@ -36,6 +36,9 @@
   <content_rating type="oars-1.1"/>
 
   <releases>
+    <release version="0.3.3" date="2026-05-17">
+      <description><p>Windows MSI update flow now shows the full installer wizard (license, install dir, confirm) instead of a silent progress bar, and asks the user to confirm before closing the app. Save-your-work prompt makes the close-and-reopen feel intentional rather than abrupt.</p></description>
+    </release>
     <release version="0.3.2" date="2026-05-17">
       <description><p>Windows audio recording overhaul: smart device picker (prefers Microphone-prefixed devices; recognizes Stereo Mix / VoiceMeeter / VB-Audio for system audio); pre-flight permission probe surfaces actionable errors for the Windows 10/11 Microphone privacy block, exclusive-mode lock, and device-disappearance cases instead of silently producing a muted MP4.</p></description>
     </release>

@@ -136,21 +136,46 @@ pub fn is_msi_install() -> bool { false }
 
 #[cfg(target_os = "windows")]
 fn launch_msi_and_exit(msi_path: &Path) -> Result<(), String> {
-    // /i = install (covers MajorUpgrade as well), /qb-! = basic UI with
-    // progress bar, no cancel. The MSI elevates itself via the embedded
-    // UAC manifest. We exit immediately so the installer has a clean
-    // shot at replacing kashot.exe — the running process holds a file
-    // lock that would block MSI's CopyFile step.
+    // Final user confirmation: the file is downloaded + SHA-verified, but
+    // the user hasn't been asked yet. Without this dialog the app just
+    // vanishes when they click "Download" — feels broken. The dialog
+    // also gives them a chance to save any pending work first.
+    //
+    // Buttons: "Install Now" (proceed) / "Cancel" (keep file, do nothing).
+    //
+    // rfd::MessageDialog supports OK-only / Yes-No / OK-Cancel — we use
+    // OK-Cancel so the default action is install but Esc cancels.
+    use rfd::{MessageButtons, MessageDialog, MessageLevel};
+    let go = MessageDialog::new()
+        .set_level(MessageLevel::Info)
+        .set_title("KAShot — ready to install update")
+        .set_description(
+            "The new version has been downloaded and verified.\n\n\
+             KAShot will close now so the Windows installer can replace it. \
+             The installer wizard opens immediately after — Windows may ask \
+             for permission; accept it to complete the upgrade.\n\n\
+             Save any in-progress screenshots first."
+        )
+        .set_buttons(MessageButtons::OkCancel)
+        .show();
+    if go != rfd::MessageDialogResult::Ok {
+        return Err("Install cancelled by user — downloaded MSI is still in your temp folder.".into());
+    }
+
+    // Full MSI wizard (no /q* flag) so the user sees license + install dir
+    // confirmation. /i covers MajorUpgrade. UAC is auto-prompted via the
+    // embedded manifest. We exit immediately so the running .exe releases
+    // its file lock before MSI's CopyFile step tries to overwrite it.
     let res = Command::new("msiexec")
         .arg("/i")
         .arg(msi_path)
-        .arg("/qb-!")
         .spawn();
     match res {
         Ok(_) => {
-            // Give Windows a beat to actually hand control to msiexec
-            // before we tear our own process down.
-            std::thread::sleep(std::time::Duration::from_millis(500));
+            // 1.5s grace: give msiexec time to bind to its UI thread + show
+            // the wizard before our event loop tears down — otherwise the
+            // momentary "no kashot, no wizard either" gap looks like a crash.
+            std::thread::sleep(std::time::Duration::from_millis(1500));
             std::process::exit(0);
         }
         Err(e) => Err(format!("msiexec spawn: {e}")),
