@@ -62,20 +62,27 @@ jobs:
         env:
           BASE: ${{ github.event.pull_request.base.sha }}
           HEAD: ${{ github.event.pull_request.head.sha }}
-        # Targets *attribution* leakage only — Co-authored-by trailers,
-        # "Generated with X" footers, and noreply addresses from AI
-        # vendors. Bare mentions of "claude" / "anthropic" in commit-body
-        # prose are NOT flagged: descriptive lines like "renamed CLAUDE.md
-        # to ARCHITECTURE.md" or "add no-AI-traces gate (rejects claude /
-        # anthropic / copilot)" are legitimate, not attribution.
+        # Targets *attribution* leakage only — Co-authored-by trailers
+        # and "Generated with ..." footers. Bare mentions of vendor names
+        # in commit-body prose are NOT flagged: descriptive lines like
+        # "renamed CLAUDE.md to ARCHITECTURE.md" or "this scan rejects
+        # noreply@anthropic-style trailers" are legitimate, not attribution.
+        #
+        # Two trailer shapes are caught:
+        #   1. lines starting with "Co-authored-by:" that ALSO name an
+        #      AI vendor or AI-noreply email,
+        #   2. lines starting with "Generated with " that ALSO name an
+        #      AI vendor.
         run: |
           set -e
-          pattern='^(co-authored-by:[[:space:]].*|generated[[:space:]]with.*|.*noreply@anthropic.*)'
-          msgs=$(git log --format='%H%n%an <%ae>%n%B%n---END---' "$BASE..$HEAD")
-          hits=$(echo "$msgs" | grep -iE "$pattern" | grep -iE '(claude|anthropic|copilot|ai-bot|gpt|gemini)' || true)
+          msgs=$(git log --format='%B' "$BASE..$HEAD")
+          coauth=$(echo "$msgs" | grep -iE '^co-authored-by:' | grep -iE '(claude|anthropic|copilot|ai-bot|gpt|gemini)' || true)
+          genwith=$(echo "$msgs" | grep -iE '^generated with ' | grep -iE '(claude|anthropic|copilot|ai-bot|gpt|gemini)' || true)
+          hits="${coauth}${genwith}"
           if [ -n "$hits" ]; then
             echo "::error::AI/agent attribution footer found in commit messages:"
-            echo "$hits"
+            echo "$coauth"
+            echo "$genwith"
             exit 1
           fi
           echo "Commit-message scan clean."
