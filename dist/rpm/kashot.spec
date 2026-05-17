@@ -15,12 +15,14 @@ Name:           kashot
 Version:        0.2.0
 Release:        1%{?dist}
 Summary:        Fast screenshots with annotations — tray-resident, hotkey-driven
-License:        MIT
+License:        MIT OR Apache-2.0
 URL:            https://kashot.org/
 Source0:        https://github.com/singhpratech/kashot/releases/download/v%{version}/kashot-linux-x86_64.tar.gz
 Source1:        https://raw.githubusercontent.com/singhpratech/kashot/v%{version}/dist/aur/kashot.desktop
 Source2:        https://raw.githubusercontent.com/singhpratech/kashot/v%{version}/icons/linux_hicolor/256x256/apps/kashot.png
 Source3:        https://raw.githubusercontent.com/singhpratech/kashot/v%{version}/LICENSE
+Source4:        https://raw.githubusercontent.com/singhpratech/kashot/v%{version}/LICENSE-MIT
+Source5:        https://raw.githubusercontent.com/singhpratech/kashot/v%{version}/LICENSE-APACHE
 
 ExclusiveArch:  x86_64
 
@@ -71,9 +73,13 @@ install -Dm0755 kashot/kashot              %{buildroot}%{_bindir}/kashot
 install -Dm0644 %{SOURCE1}                 %{buildroot}%{_datadir}/applications/kashot.desktop
 install -Dm0644 %{SOURCE2}                 %{buildroot}%{_datadir}/icons/hicolor/256x256/apps/kashot.png
 install -Dm0644 %{SOURCE3}                 %{buildroot}%{_datadir}/licenses/%{name}/LICENSE
+install -Dm0644 %{SOURCE4}                 %{buildroot}%{_datadir}/licenses/%{name}/LICENSE-MIT
+install -Dm0644 %{SOURCE5}                 %{buildroot}%{_datadir}/licenses/%{name}/LICENSE-APACHE
 
 %files
 %license %{_datadir}/licenses/%{name}/LICENSE
+%license %{_datadir}/licenses/%{name}/LICENSE-MIT
+%license %{_datadir}/licenses/%{name}/LICENSE-APACHE
 %{_bindir}/kashot
 %{_datadir}/applications/kashot.desktop
 %{_datadir}/icons/hicolor/256x256/apps/kashot.png
