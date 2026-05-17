@@ -143,7 +143,7 @@ brew install --cask kashot
 | ⏱️ | **Delayed capture** — 3 s / 5 s / 10 s countdown with tray indicator |
 | 🖥️ | **Multi-monitor** — single virtual-desktop capture, no per-screen switching |
 | 🌗 | **Themed dialogs** — Settings · About · Updates · Convert — same laser-green skin everywhere |
-| 🔒 | **No accounts. No telemetry. No upsell.** Free, MIT, closed source today |
+| 🔒 | **No accounts. No telemetry. No upsell.** Free, MIT, open source |
 
 </div>
 

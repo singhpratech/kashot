@@ -10,10 +10,10 @@
     <AssemblyName>Kashot</AssemblyName>
     <RootNamespace>Kashot</RootNamespace>
     <ApplicationIcon>Kashot.ico</ApplicationIcon>
-    <Version>0.1.0</Version>
+    <Version>0.2.0</Version>
     <Product>Kashot</Product>
     <Company>Kashot</Company>
-    <Copyright>Kashot</Copyright>
+    <Copyright>Copyright (c) 2026 Prateek Singh</Copyright>
   </PropertyGroup>
 
   <ItemGroup>
