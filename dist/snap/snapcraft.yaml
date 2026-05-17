@@ -1,0 +1,98 @@
+# Snap recipe for Kashot. Works on every distro with snapd installed
+# (Ubuntu out of the box, plus Fedora / openSUSE / Arch / Debian via the
+# snapd package).
+#
+# Build locally:
+#   snapcraft --use-lxd
+#
+# Publish (after `snapcraft login` + first registration):
+#   snapcraft upload --release=edge kashot_*.snap
+#
+# Confinement choice
+# ──────────────────
+# Kashot needs: tray icon, global hotkey, full-screen capture, clipboard,
+# audio capture for sound effects (future), and save-anywhere file writes.
+# All of those are reachable from `strict` with the right plugs, so that's
+# what we use here — strict confinement is what the Snap Store prefers and
+# is what gets auto-approved. Classic confinement would also work but
+# requires a manual review request from the store team.
+name: kashot
+title: Kashot
+base: core22
+version: '0.2.0'
+summary: Fast screenshots with annotations — tray-resident, hotkey-driven
+description: |
+  Kashot is a tray-resident screenshot tool with a built-in annotation editor.
+  A global hotkey opens a region selector across all monitors; nine annotation
+  tools (pen, line, arrow, rectangle, ellipse, marker, text, numbered step,
+  blur/pixelate); four colour palettes; save, copy, or pin to screen.
+
+  One Rust binary on Windows, Linux, and macOS.
+
+grade: stable
+confinement: strict
+license: MIT
+icon: ../../icons/linux_hicolor/256x256/apps/kashot.png
+
+architectures:
+  - build-on: amd64
+    build-for: amd64
+
+apps:
+  kashot:
+    command: bin/kashot
+    desktop: usr/share/applications/kashot.desktop
+    extensions: [gnome]
+    plugs:
+      - home              # save screenshots into the user's home tree
+      - desktop           # base desktop integration
+      - desktop-legacy
+      - wayland           # Wayland session capture / hotkey
+      - x11               # X11 session capture / hotkey
+      - unity7            # global tray on Ubuntu Unity / GNOME w/ AppIndicator
+      - removable-media   # save to mounted USB / external drives
+      - screen-inhibit-control
+      - audio-record      # future: shutter sound capture
+      - network           # update check
+      - opengl
+
+parts:
+  kashot:
+    plugin: rust
+    source: ../../kashot-rs
+    rust-channel: stable
+    rust-features: []
+    build-packages:
+      - libwayland-dev
+      - libxkbcommon-dev
+      - libxcb1-dev
+      - libxcb-render0-dev
+      - libxcb-shape0-dev
+      - libxcb-xfixes0-dev
+      - libxcb-composite0-dev
+      - libxcb-randr0-dev
+      - libxcb-cursor-dev
+      - libxcb-keysyms1-dev
+      - libxcb-icccm4-dev
+      - libgtk-3-dev
+      - libdbus-1-dev
+      - libayatana-appindicator3-dev
+      - libpipewire-0.3-dev
+      - libgbm-dev
+      - libxdo-dev
+      - libssl-dev
+      - pkg-config
+    stage-packages:
+      - libgtk-3-0
+      - libxcb1
+      - libwayland-client0
+      - libdbus-1-3
+      - libayatana-appindicator3-1
+      - libxdo3
+      - libpulse0
+    override-build: |
+      craftctl default
+      install -Dm0644 "$CRAFT_PROJECT_DIR/dist/aur/kashot.desktop" \
+        "$CRAFT_PART_INSTALL/usr/share/applications/kashot.desktop"
+      install -Dm0644 "$CRAFT_PROJECT_DIR/icons/linux_hicolor/256x256/apps/kashot.png" \
+        "$CRAFT_PART_INSTALL/usr/share/icons/hicolor/256x256/apps/kashot.png"
