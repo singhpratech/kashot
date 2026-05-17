@@ -52,12 +52,9 @@ esac
 
 case "$OS-$ARCH" in
   linux-x86_64) ARTIFACT='kashot-linux-x86_64.tar.gz' ;;
+  linux-arm64)  ARTIFACT='kashot-linux-arm64.tar.gz' ;;
   macos-arm64)  ARTIFACT='Kashot-macos-arm64' ;;
   macos-x86_64) ARTIFACT='Kashot-macos-x64' ;;
-  linux-arm64)
-    echo 'kashot: Linux arm64 build is not yet released.' >&2
-    echo "  open an issue: https://github.com/${OWNER}/${REPO}/issues" >&2
-    exit 1 ;;
   *) echo "kashot: no release artifact for $OS-$ARCH" >&2; exit 1 ;;
 esac
 
