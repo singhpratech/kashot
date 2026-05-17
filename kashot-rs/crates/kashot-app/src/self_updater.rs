@@ -72,8 +72,26 @@ fn run(
     let download_path = temp_path_for_url(&asset_url);
     download(&asset_url, &download_path, &on_progress)?;
 
-    // Hand the archive (or raw binary) to the extractor; it returns a
-    // path to a file that *should* be the new kashot executable.
+    // MSI handoff path: when the user installed via Kashot.msi (i.e. lives
+    // under Program Files, registered in Add/Remove Programs), the right
+    // upgrade is `msiexec /i <new>.msi` — MajorUpgrade in main.wxs handles
+    // the transactional replace, rollback on failure, and ARP version bump.
+    // Hand-swapping the .exe out from under the MSI would leave ARP showing
+    // the old version + skip the elevation prompt the OS expects.
+    if is_msi_asset(&asset_url) {
+        if let Some(want) = expected_sha256.as_deref() {
+            verify_sha256(&download_path, want)?;
+        } else {
+            eprintln!(
+                "self-updater: WARNING — launching MSI {} without SHA-256 verification \
+                 (caller passed expected_sha256 = None)",
+                download_path.display()
+            );
+        }
+        return launch_msi_and_exit(&download_path);
+    }
+
+    // Portable / archive path: extract, verify, swap-and-relaunch.
     let extracted = extract_binary(&download_path)?;
 
     if let Some(want) = expected_sha256.as_deref() {
@@ -93,6 +111,57 @@ fn run(
 
     swap_running_binary(&extracted, &current_exe)?;
     spawn_and_exit(&current_exe);
+}
+
+fn is_msi_asset(url: &str) -> bool {
+    let tail = url.rsplit('/').next().unwrap_or("");
+    let tail = tail.split('?').next().unwrap_or(tail);
+    tail.eq_ignore_ascii_case("Kashot.msi") || tail.to_ascii_lowercase().ends_with(".msi")
+}
+
+/// Returns true when this kashot.exe was installed by Kashot.msi rather
+/// than unpacked from the portable zip. Heuristic: the running binary
+/// lives under either `Program Files` directory (the only place
+/// `InstallScope='perMachine'` puts it). On any non-Windows OS this is
+/// always false — MSI is a Windows-only concept.
+#[cfg(target_os = "windows")]
+pub fn is_msi_install() -> bool {
+    let Ok(exe) = std::env::current_exe() else { return false; };
+    let lossy = exe.to_string_lossy().to_lowercase();
+    lossy.contains("\\program files\\") || lossy.contains("\\program files (x86)\\")
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn is_msi_install() -> bool { false }
+
+#[cfg(target_os = "windows")]
+fn launch_msi_and_exit(msi_path: &Path) -> Result<(), String> {
+    // /i = install (covers MajorUpgrade as well), /qb-! = basic UI with
+    // progress bar, no cancel. The MSI elevates itself via the embedded
+    // UAC manifest. We exit immediately so the installer has a clean
+    // shot at replacing kashot.exe — the running process holds a file
+    // lock that would block MSI's CopyFile step.
+    let res = Command::new("msiexec")
+        .arg("/i")
+        .arg(msi_path)
+        .arg("/qb-!")
+        .spawn();
+    match res {
+        Ok(_) => {
+            // Give Windows a beat to actually hand control to msiexec
+            // before we tear our own process down.
+            std::thread::sleep(std::time::Duration::from_millis(500));
+            std::process::exit(0);
+        }
+        Err(e) => Err(format!("msiexec spawn: {e}")),
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn launch_msi_and_exit(_msi_path: &Path) -> Result<(), String> {
+    // MSI is Windows-only — getting here on Linux / macOS means the asset
+    // picker handed us an MSI URL on a non-MSI host, which is a bug.
+    Err("MSI install requested on non-Windows host".into())
 }
 
 // ── download ────────────────────────────────────────────────────────────────
@@ -119,6 +188,7 @@ fn guess_suffix_from_url(url: &str) -> &'static str {
     if last.ends_with(".tar.gz") { ".tar.gz" }
     else if last.ends_with(".tgz") { ".tgz" }
     else if last.ends_with(".zip") { ".zip" }
+    else if last.to_ascii_lowercase().ends_with(".msi") { ".msi" }
     else { ".bin" }
 }
 
@@ -436,10 +506,6 @@ fn spawn_and_exit(current_exe: &Path) -> ! {
 /// extra whitespace, CRLF line endings, and BSD-style `SHA256 (file) = hash`
 /// formatting in case a CI step ever switches.
 ///
-/// `#[allow(dead_code)]` because the parallel
-/// `feat/updates-dialog-release-notes` UI PR is the first caller — until
-/// it merges this is plumbing without a consumer inside the binary.
-#[allow(dead_code)]
 pub fn parse_sha256sums(text: &str, want_filename: &str) -> Option<String> {
     for raw in text.lines() {
         let line = raw.trim();
@@ -473,7 +539,6 @@ pub fn parse_sha256sums(text: &str, want_filename: &str) -> Option<String> {
     None
 }
 
-#[allow(dead_code)] // only used by parse_sha256sums above.
 fn is_hex_sha256(s: &str) -> bool {
     s.len() == 64 && s.bytes().all(|b| b.is_ascii_hexdigit())
 }
@@ -581,5 +646,19 @@ abc123def4567890abc123def4567890abc123def4567890abc123def4567890  kashot-linux-x
             guess_suffix_from_url("https://example.com/Kashot-macos-arm64"),
             ".bin"
         );
+        assert_eq!(
+            guess_suffix_from_url("https://example.com/Kashot.msi"),
+            ".msi"
+        );
+    }
+
+    #[test]
+    fn is_msi_asset_matches_msi_filenames() {
+        assert!(is_msi_asset("https://github.com/x/y/releases/download/v1/Kashot.msi"));
+        assert!(is_msi_asset("https://example.com/Kashot.MSI"));
+        assert!(is_msi_asset("https://example.com/kashot.msi?token=abc"));
+        assert!(!is_msi_asset("https://example.com/kashot-windows-x86_64.zip"));
+        assert!(!is_msi_asset("https://example.com/kashot-linux-x86_64.tar.gz"));
+        assert!(!is_msi_asset("https://example.com/Kashot-macos-arm64"));
     }
 }
