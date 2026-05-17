@@ -48,13 +48,18 @@
 <div class="cursor-glow" aria-hidden="true"></div>
 
 <!-- ── Top status bar ───────────────────────────────────────────────────── -->
-<div class="topbar" aria-hidden="true">
-  <span class="topbar-cell"><span class="dot dot-pulse"></span> SYS::ONLINE</span>
-  <span class="topbar-cell">GRID::03</span>
-  <span class="topbar-cell">UPLINK::SECURE</span>
-  <span class="topbar-cell topbar-spacer"></span>
-  <span class="topbar-cell">KASHOT.ORG</span>
-  <span class="topbar-cell"><span class="dot"></span> <span data-version>v0.2.0</span></span>
+<div class="topbar">
+  <span class="topbar-cell" aria-hidden="true"><span class="dot dot-pulse"></span> SYS::ONLINE</span>
+  <span class="topbar-cell" aria-hidden="true">GRID::03</span>
+  <span class="topbar-cell" aria-hidden="true">UPLINK::SECURE</span>
+  <span class="topbar-cell topbar-spacer" aria-hidden="true"></span>
+  <button id="audio-toggle" class="topbar-cell topbar-btn" type="button"
+          aria-pressed="false"
+          title="Toggle ambient grid audio (procedurally synthesised — no file download)">
+    <span class="dot dot-audio" aria-hidden="true"></span> AUDIO::<span id="audio-state">OFF</span>
+  </button>
+  <span class="topbar-cell" aria-hidden="true">KASHOT.ORG</span>
+  <span class="topbar-cell" aria-hidden="true"><span class="dot"></span> <span data-version>v0.2.0</span></span>
 </div>
 
 <header class="nav">
@@ -737,7 +742,7 @@
           <h3>WINDOWS</h3>
           <span class="dl-status">// NATIVE · RUST</span>
         </header>
-        <p class="dl-desc">Windows 10 / 11 · 64-bit · self-contained. Same Rust binary that ships on Linux and macOS.</p>
+        <p class="dl-desc">Windows 10 / 11 · x86_64 · self-contained.<br>Same Rust binary that ships on Linux and macOS — no .NET install required.</p>
 
         <div class="dl-options">
           <a class="btn btn-primary"
@@ -750,7 +755,10 @@
         </div>
 
         <p class="dl-oneliner">// ONE-LINER · PowerShell</p>
-        <pre class="dl-pipe"><code>iwr -useb https://kashot.org/install.ps1 | iex</code></pre>
+        <div class="dl-pipe-wrap">
+          <pre class="dl-pipe"><code>iwr -useb https://kashot.org/install.ps1 | iex</code></pre>
+          <button class="dl-pipe-copy" type="button" aria-label="Copy install command">COPY</button>
+        </div>
 
         <details class="dl-more">
           <summary>// MORE INSTALL CHANNELS</summary>
@@ -793,7 +801,10 @@ scoop install kashot</code></pre>
         </div>
 
         <p class="dl-oneliner">// ONE-LINER · sh</p>
-        <pre class="dl-pipe"><code>curl -fsSL https://kashot.org/install.sh | sh</code></pre>
+        <div class="dl-pipe-wrap">
+          <pre class="dl-pipe"><code>curl -fsSL https://kashot.org/install.sh | sh</code></pre>
+          <button class="dl-pipe-copy" type="button" aria-label="Copy install command">COPY</button>
+        </div>
 
         <details class="dl-more">
           <summary>// MORE INSTALL CHANNELS</summary>
@@ -820,7 +831,7 @@ yay -S kashot</code></pre>
           <h3>MACOS</h3>
           <span class="dl-status">// NATIVE · RUST</span>
         </header>
-        <p class="dl-desc">Native on Apple Silicon and Intel. Same Rust binary as Windows and Linux. Notarized .dmg packaging is queued next.</p>
+        <p class="dl-desc">Native on Apple Silicon and Intel.<br>Same Rust binary that ships on Windows and Linux — notarized .dmg packaging coming next.</p>
 
         <div class="dl-options">
           <a class="btn btn-primary"
@@ -837,7 +848,10 @@ yay -S kashot</code></pre>
         </div>
 
         <p class="dl-oneliner">// ONE-LINER · sh</p>
-        <pre class="dl-pipe"><code>curl -fsSL https://kashot.org/install.sh | sh</code></pre>
+        <div class="dl-pipe-wrap">
+          <pre class="dl-pipe"><code>curl -fsSL https://kashot.org/install.sh | sh</code></pre>
+          <button class="dl-pipe-copy" type="button" aria-label="Copy install command">COPY</button>
+        </div>
 
         <details class="dl-more">
           <summary>// MORE INSTALL CHANNELS</summary>

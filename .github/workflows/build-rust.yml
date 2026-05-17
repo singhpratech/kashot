@@ -184,10 +184,74 @@ jobs:
           path: kashot-rs/dist/Kashot-macos-${{ matrix.label }}
           if-no-files-found: error
 
+  # ── 4b. Wrap the Linux x86_64 tarball into an AppImage ────────────────────
+  # Downloads the staged `kashot-linux-x86_64.tar.gz` from `build-linux`,
+  # assembles an AppDir using the existing `dist/appimage/AppRun` + the
+  # 256x256 hicolor icon + the desktop entry, then runs `appimagetool` to
+  # produce `kashot-x86_64.AppImage`. No Rust toolchain on this runner —
+  # we never recompile, just repackage.
+  build-appimage:
+    name: Linux AppImage
+    needs: [ build-linux ]
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: .
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download Linux x86_64 tarball
+        uses: actions/download-artifact@v4
+        with:
+          name: kashot-linux-x86_64
+          path: dl
+
+      - name: Install appimagetool
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            file wget desktop-file-utils libfuse2
+          wget -q -O appimagetool \
+            https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage
+          chmod +x appimagetool
+
+      - name: Assemble AppDir
+        run: |
+          set -eux
+          tar -xzf dl/kashot-linux-x86_64.tar.gz -C dl
+          APPDIR=Kashot.AppDir
+          mkdir -p "$APPDIR/usr/bin" \
+                   "$APPDIR/usr/share/applications" \
+                   "$APPDIR/usr/share/icons/hicolor/256x256/apps"
+          install -Dm0755 dl/kashot/kashot "$APPDIR/usr/bin/kashot"
+          install -Dm0755 dist/appimage/AppRun "$APPDIR/AppRun"
+          install -Dm0644 dist/aur/kashot.desktop \
+            "$APPDIR/usr/share/applications/kashot.desktop"
+          # Top-level .desktop + icon are what appimagetool reads.
+          cp dist/aur/kashot.desktop "$APPDIR/kashot.desktop"
+          install -Dm0644 icons/linux_hicolor/256x256/apps/kashot.png \
+            "$APPDIR/usr/share/icons/hicolor/256x256/apps/kashot.png"
+          cp icons/linux_hicolor/256x256/apps/kashot.png "$APPDIR/kashot.png"
+          # appimagetool requires `.DirIcon` to exist too.
+          cp "$APPDIR/kashot.png" "$APPDIR/.DirIcon"
+
+      - name: Build AppImage
+        # ARCH must be set; --appimage-extract-and-run avoids needing FUSE
+        # to mount the tool itself.
+        run: |
+          ARCH=x86_64 ./appimagetool --appimage-extract-and-run \
+            Kashot.AppDir kashot-x86_64.AppImage
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: kashot-x86_64-AppImage
+          path: kashot-x86_64.AppImage
+          if-no-files-found: error
+
   # ── 5. On tag push: collect all artifacts onto the GitHub Release ──────────
   release:
     name: Publish release
-    needs: [ build-linux, build-windows, build-macos ]
+    needs: [ build-linux, build-windows, build-macos, build-appimage ]
     if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
     permissions:
