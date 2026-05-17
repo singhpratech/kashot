@@ -526,6 +526,7 @@ pub fn run() -> Result<()> {
                         match o {
                             UpdatesOutcome::Closed => { self.updates_view = None; }
                             UpdatesOutcome::OpenReleases => open_url("https://github.com/singhpratech/kashot/releases"),
+                            UpdatesOutcome::OpenAsset(url) => open_url(&url),
                         }
                     }
                 }
