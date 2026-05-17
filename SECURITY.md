@@ -24,7 +24,6 @@ In scope:
 
 - The Kashot binary (any platform) and its bundled `ffmpeg` shim.
 - The `kashot-core`, `kashot-platform`, and `kashot-app` crates in `kashot-rs/`.
-- The legacy C# build in `Kashot/` (still ships as a CI artifact).
 - The `kashot.org` install scripts at `docs/install.sh` and `docs/install.ps1`.
 - The release artifacts on [github.com/singhpratech/kashot/releases](https://github.com/singhpratech/kashot/releases).
 

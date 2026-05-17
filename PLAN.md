@@ -222,27 +222,22 @@ These cross-cut both implementations; if you change one, change both.
 
 ## Build & ship procedure (per release)
 
-1. Bump version in:
-   - `kashot-rs/Cargo.toml` (`workspace.package.version`)
-   - `Kashot/Kashot.csproj` (`<Version>`)
-   - `Installer/Kashot.wxs` (`Version=`)
-   - `Kashot/AboutForm.cs` (label text)
+1. Bump `kashot-rs/Cargo.toml` (`workspace.package.version`).
 2. Run the **doc-freshness sweep** (see [`feedback-release-gate`] memory):
    - `docs/assets/og.svg` — bump the two `v0.X` strings (social preview card)
+   - `docs/index.html` — `data-version` spans (auto-sync via `docs/app.js`
+     but seed the first paint correctly)
    - `dist/*` package-channel manifests — bump every release URL + clear
      placeholder SHA256s if a channel is going live this round
-   - `Installer/build.ps1` example "tag release" hint
-   - This `PLAN.md` example tag in step 3 below
+   - This `PLAN.md` example tag in step 4 below
 3. Open a PR with the bumps; merge to `main`.
 4. Locally tag and push: `git tag vX.Y.Z && git push --tags`.
-5. CI fires:
-   - `build-rust.yml` produces `kashot-linux-x86_64.tar.gz` ·
-     `kashot-windows-x86_64.zip` · `Kashot-macos-arm64` · `Kashot-macos-x64`
-     (canonical — attaches to Release)
-   - `build-csharp.yml` produces `Kashot.msi` · `Kashot.exe` ·
-     `Kashot-portable.zip` (compile-check + CI artifact only; legacy)
-6. CI auto-attaches the four Rust artifacts to the GitHub Release with
-   generated notes; edit if you want a curated changelog.
+5. `build-rust.yml` fires on the tag and produces:
+   `kashot-linux-x86_64.tar.gz` · `kashot-linux-arm64.tar.gz` ·
+   `kashot-windows-x86_64.zip` · `Kashot-macos-arm64` · `Kashot-macos-x64`
+   (canonical — attaches to Release automatically).
+6. CI auto-attaches the artifacts to the GitHub Release with generated
+   notes; edit if you want a curated changelog.
 7. Confirm `https://kashot.org` download buttons resolve to the new files
    (the page resolves `releases/latest/download/<asset>` automatically via
    the GitHub API call in `docs/app.js`).
@@ -253,8 +248,9 @@ These cross-cut both implementations; if you change one, change both.
 
 1. Pick an item from "🔨 In progress" or "📋 Backlog"
 2. Reference its ID (e.g., **R3**, or the section heading) in the PR title
-3. PRs land on `main` after a clean build of `Kashot/Kashot.csproj`, a successful
-   `Installer/build.ps1`, and a green `cargo test -p kashot-core` on all three CI platforms
+3. PRs land on `main` after a green `cargo test --workspace --release` and a
+   successful `cargo build --release --bin kashot` on all three CI platforms
+   (Linux x86_64 + arm64, Windows x86_64, macOS arm64 + x64).
 
 ---
 
