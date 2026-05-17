@@ -61,6 +61,21 @@ enum FetchState {
 pub enum UpdatesOutcome {
     Closed,
     OpenReleases,
+    /// User clicked "Download & install" — caller (tray_loop) hands the
+    /// asset URL + verified hash to `self_updater::download_and_install`
+    /// and shows progress while it runs. `expected_sha256 = None` is the
+    /// graceful-degradation path for releases that don't yet carry a
+    /// SHA256SUMS file (the `ci/installer-artifacts` PR adds it).
+    ///
+    /// This variant is added by the self-updater plumbing PR; the actual
+    /// button that surfaces it is added by the parallel
+    /// `feat/updates-dialog-release-notes` UI PR. Hence `allow(dead_code)`
+    /// until that lands.
+    #[allow(dead_code)]
+    DownloadAndInstall {
+        asset_url:       String,
+        expected_sha256: Option<String>,
+    },
 }
 
 pub struct UpdatesView {
