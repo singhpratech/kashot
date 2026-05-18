@@ -258,4 +258,4 @@ These cross-cut both implementations; if you change one, change both.
 
 ---
 
-*Last updated: 2026-05-17 (v0.3.5 release — CI fix: direct `snapcraft upload` for snap publish). Maintained by [@singhpratech](https://github.com/singhpratech).*
+*Last updated: 2026-05-18 (v0.3.6 release — snap-only fix: `audio-playback` plug declared alongside `audio-record` to satisfy Snap Store policy). Maintained by [@singhpratech](https://github.com/singhpratech).*
