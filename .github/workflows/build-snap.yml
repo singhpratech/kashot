@@ -80,9 +80,17 @@ jobs:
           echo "path=${files[0]}" >> "$GITHUB_OUTPUT"
           echo "Resolved snap: ${files[0]}"
 
-      - uses: snapcore/action-publish@v1
+      # We invoke `snapcraft upload` directly instead of
+      # snapcore/action-publish@v1 because that action does
+      # `base64 -d <secret> | snapcraft login --with -` which only accepts
+      # the legacy Ubuntu One macaroon format. snapcraft 8.x export-login
+      # produces a newer JSON-keyring format that snapcraft 8.x ITSELF
+      # reads natively when present in the SNAPCRAFT_STORE_CREDENTIALS env
+      # var — no login step needed.
+      - name: Install snapcraft
+        run: sudo snap install --classic snapcraft
+
+      - name: Upload to Snap Store edge
         env:
           SNAPCRAFT_STORE_CREDENTIALS: ${{ secrets.SNAPCRAFT_STORE_CREDENTIALS }}
-        with:
-          snap: ${{ steps.snap_file.outputs.path }}
-          release: edge
+        run: snapcraft upload "${{ steps.snap_file.outputs.path }}" --release edge
