@@ -36,6 +36,9 @@
   <content_rating type="oars-1.1"/>
 
   <releases>
+    <release version="0.3.6" date="2026-05-18">
+      <description><p>Snap-only fix: declares the `audio-playback` plug alongside `audio-record` to satisfy the Snap Store policy gate. v0.3.5's snap upload was rejected at processing time even though the binary itself was fine. No app-level changes from v0.3.5; existing installs across other channels do not need to update.</p></description>
+    </release>
     <release version="0.3.5" date="2026-05-17">
       <description><p>CI fix only: snap publish now calls `snapcraft upload` directly with the env-var-based auth that snapcraft 8.x emits, instead of the legacy `snapcore/action-publish@v1` which only accepts the old Ubuntu One credential format. Unblocks the snap-store publishing path. No app-level changes from v0.3.4.</p></description>
     </release>
