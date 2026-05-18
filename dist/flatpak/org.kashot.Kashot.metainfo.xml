@@ -36,6 +36,9 @@
   <content_rating type="oars-1.1"/>
 
   <releases>
+    <release version="0.3.5" date="2026-05-17">
+      <description><p>CI fix only: snap publish now calls `snapcraft upload` directly with the env-var-based auth that snapcraft 8.x emits, instead of the legacy `snapcore/action-publish@v1` which only accepts the old Ubuntu One credential format. Unblocks the snap-store publishing path. No app-level changes from v0.3.4.</p></description>
+    </release>
     <release version="0.3.4" date="2026-05-17">
       <description><p>Windows mic recording: when no devices are found, the error now leads with the Windows Privacy fix (the actual root cause 95% of the time) instead of telling users to "plug in a microphone". CI: snap publish step now resolves the kashot_*.snap filename in shell so the upload-to-edge job works on tag pushes.</p></description>
     </release>
