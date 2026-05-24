@@ -10,6 +10,7 @@ finish-args:
   - --share=ipc
   - --socket=fallback-x11
   - --socket=wayland
+  - --socket=pulseaudio
   - --device=dri
   - --filesystem=xdg-pictures
   - --filesystem=xdg-download
@@ -23,6 +24,10 @@ modules:
     only-arches: [x86_64]
     build-commands:
       - install -Dm755 kashot /app/bin/kashot
+      # Bundled static FFmpeg (GPL), invoked as a separate process for
+      # recording + format conversion. locate_ffmpeg() finds it next to
+      # the kashot binary, so /app/bin/ffmpeg is picked up automatically.
+      - install -Dm755 ffmpeg /app/bin/ffmpeg
       - install -Dm644 org.kashot.Kashot.desktop /app/share/applications/org.kashot.Kashot.desktop
       - install -Dm644 org.kashot.Kashot.png      /app/share/icons/hicolor/256x256/apps/org.kashot.Kashot.png
       - install -Dm644 org.kashot.Kashot.metainfo.xml /app/share/metainfo/org.kashot.Kashot.metainfo.xml
