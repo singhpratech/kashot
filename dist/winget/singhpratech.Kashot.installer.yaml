@@ -16,14 +16,14 @@ InstallerLocale: en-US
 Installers:
   - Architecture: x64
     InstallerUrl:    https://github.com/singhpratech/kashot/releases/download/v0.3.8/Kashot.msi
-    InstallerSha256: REPLACE_WITH_ACTUAL_SHA256_AT_RELEASE_TIME
+    InstallerSha256: 7D579A37F8F77CCB5F60718AFD21D20E9AF0566C1A24B1B21FD6FB7A166FA3F0
     # ProductCode is auto-generated per-build by WiX (Product/@Id='*'
     # in kashot-rs/wix/main.wxs). For each release, extract from the
     # published MSI with `msiinfo export Kashot.msi Property | grep ProductCode`
     # (or `wix msi extract` on Windows) and update here. UpgradeCode in
     # main.wxs ({4D6C8E2A-...}) is stable, so winget's upgrade flow keeps
     # working even when ProductCode rolls.
-    ProductCode:     '{REPLACE_WITH_PRODUCT_CODE_FROM_MSI}'
+    ProductCode:     '{38A05C84-8BEF-448F-9273-13D9A32A90B2}'
     UpgradeBehavior: install
     InstallModes:
       - interactive
