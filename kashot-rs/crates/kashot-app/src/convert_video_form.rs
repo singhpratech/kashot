@@ -422,7 +422,7 @@ impl ConvertVideoView {
         let ffmpeg = match locate_ffmpeg() {
             Some(p) => p,
             None => {
-                self.status = Status::Err("ffmpeg not found — bundle it next to kashot or install it on PATH.".to_owned());
+                self.status = Status::Err("ffmpeg not found - bundle it next to kashot or install it on PATH.".to_owned());
                 return;
             }
         };
@@ -605,7 +605,7 @@ impl ConvertVideoView {
                 let dots = (since.elapsed().as_millis() / 400) % 4;
                 let dots_s: String = std::iter::repeat('.').take(dots as usize).collect();
                 let secs = since.elapsed().as_secs();
-                let msg = format!("encoding{dots_s}  ({secs}s elapsed — kashot keeps running, this is a background job)");
+                let msg = format!("encoding{dots_s}  ({secs}s elapsed - kashot keeps running, this is a background job)");
                 draw_text(&mut surf, PAD, footer_y, 1, &msg, argb_to_kashot(TEXT_MUTED));
             }
             Status::Ok(path) => {
@@ -778,7 +778,7 @@ fn render_row<S: painter::Surface>(
         let bw = browse_w;
         let bh = val_h;
         stroke_rect_argb(surf, bx, by, bw, bh, argb_to_kashot(if hovered { LASER_DIM } else { FIELD_BORDER }));
-        let label = "Browse…";
+        let label = "Browse...";
         let tw = bitmap_font::measure(label, 1);
         let tx = bx + (bw - tw) / 2;
         let ty = by + (bh - bitmap_font::GLYPH_H) / 2;
