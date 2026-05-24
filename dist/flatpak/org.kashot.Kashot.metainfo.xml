@@ -67,6 +67,9 @@
   <content_rating type="oars-1.1"/>
 
   <releases>
+    <release version="0.3.9" date="2026-05-24">
+      <description><p>Linux in-app updater: the Updates dialog's Download button now downloads the new release, verifies its SHA-256, swaps the running binary in place, and relaunches — the same one-click upgrade Windows MSI installs already had, instead of just opening a browser. The download action is disabled when you're already on the latest version. The binary swap is cross-device-safe (handles /tmp and the install dir living on different filesystems).</p></description>
+    </release>
     <release version="0.3.8" date="2026-05-24">
       <description><p>UI rendering fixes across the About, Settings, Updates, and Convert dialogs — non-ASCII characters in the bitmap font (em-dashes, middle dots, ellipses, the copyright symbol) were rendering as question marks. The Updates dialog's changelog bullets in particular were showing as "???" per line. Now uses ASCII alternatives throughout and the markdown parser walks proper UTF-8 boundaries. Windows MSI installer adds a "Launch Kashot" checkbox on the final wizard page (checked by default) so the app auto-starts after a fresh install or in-app update — no more closed-installer-with-no-Kashot moment.</p></description>
     </release>

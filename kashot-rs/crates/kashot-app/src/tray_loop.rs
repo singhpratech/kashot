@@ -474,6 +474,15 @@ pub fn run() -> Result<()> {
             // we work; the relaunched binary will pick up where we left off.
             self.updates_view = None;
 
+            // Desktop notification so the silent download (no progress modal
+            // yet) doesn't look like a no-op — the app relaunches a few
+            // seconds later when the swap completes.
+            notify(
+                "KAShot is updating",
+                "Downloading the new version. KAShot will restart automatically when it's ready.",
+                false,
+            );
+
             eprintln!(
                 "self-updater: downloading {asset_url} (verify_sha256 = {})",
                 if expected_sha256.is_some() { "yes" } else { "no — skipping" }

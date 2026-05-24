@@ -258,4 +258,4 @@ These cross-cut both implementations; if you change one, change both.
 
 ---
 
-*Last updated: 2026-05-24 (v0.3.8 release — bitmap-font dialog rendering fixes: question-mark glyphs replaced with ASCII alternatives across About, Settings, Updates, and Convert dialogs; MSI installer adds a "Launch Kashot" checkbox on the final wizard page so the app auto-starts after install). Maintained by [@singhpratech](https://github.com/singhpratech).*
+*Last updated: 2026-05-24 (v0.3.9 release — Linux in-app updater: the Updates dialog's Download button now downloads, SHA-verifies, swaps the binary in place, and relaunches on Linux .tar.gz installs, matching the Windows-MSI handoff; download is disabled when already on the latest version; cross-device-safe binary swap). Maintained by [@singhpratech](https://github.com/singhpratech).*
