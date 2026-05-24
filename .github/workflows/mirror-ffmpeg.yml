@@ -25,11 +25,6 @@ on:
         description: "Release tag to publish the mirror under"
         default: "deps-ffmpeg-v1"
         required: true
-  # TEMP bootstrap trigger: workflow_dispatch only works once a workflow is on
-  # the default branch, so this push trigger lets the mirror run from the
-  # feature branch to create deps-ffmpeg-v1. Removed before merge to main.
-  push:
-    branches: [ v0.3.10-ffmpeg-bundle ]
 
 permissions:
   contents: write
