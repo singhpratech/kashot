@@ -40,9 +40,14 @@
 //!                      mic-only audio (`system_audio: true` is silently
 //!                      treated the same as mic-only when no loopback is
 //!                      available).
-//! * macOS            : built-in `screencapture -v`. Audio control is
-//!                      limited and still ignored. TODO(v0.3): drive
-//!                      AVFoundation directly so we can pick mic + system.
+//! * macOS            : video-only recordings use the built-in
+//!                      `screencapture -v` (no ffmpeg dependency). Any audio
+//!                      request routes through `ffmpeg -f avfoundation`
+//!                      instead — the only way to fold an audio device into
+//!                      the capture. Mic works directly; system audio needs a
+//!                      loopback device (BlackHole / Aggregate), mirroring the
+//!                      Windows "Stereo Mix" situation, otherwise it degrades
+//!                      to mic or surfaces an actionable error.
 //!
 //! Stop is graceful per platform: write `q` to `ffmpeg`'s stdin (Linux,
 //! Windows) or send SIGINT to `screencapture` (macOS) so the MP4 moov atom
@@ -150,7 +155,7 @@ impl Drop for Recorder {
 /// Returns `None` if no candidate is found — callers fall back to plain
 /// `"ffmpeg"` so the existing "ffmpeg not found in PATH" error message still
 /// surfaces from `Command::spawn`.
-#[cfg(any(target_os = "linux", target_os = "windows"))]
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 fn locate_ffmpeg() -> Option<PathBuf> {
     let exe = std::env::current_exe().ok()?;
     let dir = exe.parent()?;
@@ -288,21 +293,216 @@ pub(crate) fn build_linux_ffmpeg_args(
     a
 }
 
+// ── macOS: screencapture (video-only) / ffmpeg -f avfoundation (with audio) ──
+//
+// `screencapture -v` has no audio control at all, so any mic / system-audio
+// request routes through ffmpeg's avfoundation input instead — the only way
+// to pull an audio device into the recording. Video-only recordings keep
+// using `screencapture` so the common case needs no ffmpeg on the box and
+// can't regress. System audio on macOS, like Stereo Mix on Windows, needs a
+// virtual loopback device (BlackHole / Soundflower / an Aggregate device);
+// without one we degrade to mic or surface an actionable error rather than
+// silently shipping a muted track.
 #[cfg(target_os = "macos")]
 fn spawn_recorder(output: &Path, options: RecordingOptions) -> Result<Child> {
-    let _ = options; // screencapture has limited audio control; ignore for now.
-    // TODO(v0.3): drive AVFoundation directly so mic + system audio can be
-    // selected on macOS.
     let path = output.to_str().ok_or_else(||
         Error::Recording("non-UTF-8 output path".into()))?;
 
-    Command::new("screencapture")
-        .args(["-v", path])
-        .stdin(Stdio::null())
+    // Video-only: keep the dependency-free built-in. stdin stays null, which
+    // is how `graceful_signal` tells the two backends apart.
+    if !options.has_audio() {
+        return Command::new("screencapture")
+            .args(["-v", path])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .map_err(|e| Error::Recording(format!("failed to spawn screencapture: {e}")));
+    }
+
+    // Audio requested → ffmpeg avfoundation.
+    let ffmpeg = locate_ffmpeg().ok_or_else(|| Error::Recording(
+        "recording audio on macOS needs ffmpeg, which wasn't found next to \
+         Kashot or on your PATH. Install it with: brew install ffmpeg — then \
+         retry. (Video-only recording works without ffmpeg.)".into()
+    ))?;
+
+    let listing = list_avfoundation_devices(&ffmpeg);
+    let (video_devs, audio_devs) = parse_avfoundation_devices(&listing);
+    let screen_idx = pick_macos_screen_index(&video_devs)?;
+    let audio_idx  = pick_macos_audio_device(&audio_devs, options)?;
+
+    let args = build_macos_ffmpeg_args(screen_idx, audio_idx, path, options);
+    let res = Command::new(&ffmpeg)
+        .args(&args)
+        .stdin(Stdio::piped())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
-        .spawn()
-        .map_err(|e| Error::Recording(format!("failed to spawn screencapture: {e}")))
+        .spawn();
+
+    match res {
+        Ok(c) => Ok(c),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Err(Error::Recording(
+            "ffmpeg not found — install it with: brew install ffmpeg".into()
+        )),
+        Err(e) => Err(Error::Recording(format!("failed to spawn ffmpeg: {e}"))),
+    }
+}
+
+/// Build the ffmpeg argv for macOS avfoundation capture. avfoundation takes a
+/// single `-i "<video>:<audio>"` input that fuses one video and one audio
+/// device, so unlike Linux there's no second `-i` / amix — `audio_idx` is the
+/// one source already chosen by `pick_macos_audio_device`. Pure function so
+/// the suite can assert argv shape without a Mac or a real device.
+#[cfg(any(target_os = "macos", test))]
+pub(crate) fn build_macos_ffmpeg_args(
+    screen_idx: usize,
+    audio_idx:  Option<usize>,
+    output_path: &str,
+    _options:    RecordingOptions,
+) -> Vec<String> {
+    let mut a: Vec<String> = Vec::with_capacity(20);
+    let push = |a: &mut Vec<String>, s: &str| a.push(s.to_string());
+    push(&mut a, "-y");
+    push(&mut a, "-f"); push(&mut a, "avfoundation");
+    push(&mut a, "-framerate"); push(&mut a, "30");
+    // Input spec is one token: "<video>:<audio>"; empty audio half = no audio.
+    let input = match audio_idx {
+        Some(ai) => format!("{screen_idx}:{ai}"),
+        None      => format!("{screen_idx}:"),
+    };
+    push(&mut a, "-i"); a.push(input);
+    push(&mut a, "-c:v"); push(&mut a, "libx264");
+    push(&mut a, "-preset"); push(&mut a, "ultrafast");
+    push(&mut a, "-pix_fmt"); push(&mut a, "yuv420p");
+    push(&mut a, "-vf"); push(&mut a, "pad=ceil(iw/2)*2:ceil(ih/2)*2");
+    if audio_idx.is_some() {
+        push(&mut a, "-c:a"); push(&mut a, "aac");
+        push(&mut a, "-b:a"); push(&mut a, "160k");
+        // Match the stereo AAC container the other platforms emit.
+        push(&mut a, "-ac"); push(&mut a, "2");
+    }
+    push(&mut a, output_path);
+    a
+}
+
+/// Run `ffmpeg -f avfoundation -list_devices true -i ""`. avfoundation writes
+/// the device table to stderr and exits non-zero (it never actually opens a
+/// stream) — that's expected, we only want the stderr text.
+#[cfg(target_os = "macos")]
+fn list_avfoundation_devices(ffmpeg: &Path) -> String {
+    let out = Command::new(ffmpeg)
+        .args(["-hide_banner", "-f", "avfoundation", "-list_devices", "true", "-i", ""])
+        .stdin(Stdio::null())
+        .output();
+    match out {
+        Ok(o) => String::from_utf8_lossy(&o.stderr).into_owned(),
+        Err(_) => String::new(),
+    }
+}
+
+/// Parse the avfoundation `-list_devices` stderr into `(video, audio)` device
+/// lists of `(index, name)`. Pure so it's unit-testable off a Mac. The table
+/// looks like:
+///   [AVFoundation indev @ ..] AVFoundation video devices:
+///   [AVFoundation indev @ ..] [0] FaceTime HD Camera
+///   [AVFoundation indev @ ..] [1] Capture screen 0
+///   [AVFoundation indev @ ..] AVFoundation audio devices:
+///   [AVFoundation indev @ ..] [0] MacBook Pro Microphone
+///   [AVFoundation indev @ ..] [1] BlackHole 2ch
+#[cfg(any(target_os = "macos", test))]
+pub(crate) fn parse_avfoundation_devices(stderr: &str) -> (Vec<(usize, String)>, Vec<(usize, String)>) {
+    #[derive(PartialEq)]
+    enum Section { None, Video, Audio }
+    let mut sect = Section::None;
+    let mut video = Vec::new();
+    let mut audio = Vec::new();
+    for line in stderr.lines() {
+        let low = line.to_ascii_lowercase();
+        if low.contains("video devices:") { sect = Section::Video; continue; }
+        if low.contains("audio devices:") { sect = Section::Audio; continue; }
+        // Pull "[N] Name" — N is the device index ffmpeg expects in the -i spec.
+        let Some(open) = line.find('[') else { continue };
+        // Skip the leading "[AVFoundation indev @ 0x..]" log prefix bracket(s);
+        // the device-index bracket is the last "[<digits>]" on the line.
+        let Some(idx_open) = line.rfind('[') else { continue };
+        let _ = open;
+        let Some(idx_close) = line[idx_open..].find(']').map(|p| idx_open + p) else { continue };
+        let inner = &line[idx_open + 1..idx_close];
+        let Ok(idx) = inner.trim().parse::<usize>() else { continue };
+        let name = line[idx_close + 1..].trim().to_string();
+        if name.is_empty() { continue; }
+        match sect {
+            Section::Video => video.push((idx, name)),
+            Section::Audio => audio.push((idx, name)),
+            Section::None  => {}
+        }
+    }
+    (video, audio)
+}
+
+/// Choose the screen-capture video device index. avfoundation exposes the
+/// display as a "Capture screen N" pseudo-camera; pick the first one. Errors
+/// if none is present (e.g. Screen Recording permission not granted, which
+/// makes the screen devices vanish from the listing).
+#[cfg(any(target_os = "macos", test))]
+pub(crate) fn pick_macos_screen_index(video: &[(usize, String)]) -> Result<usize> {
+    video.iter()
+        .find(|(_, n)| n.to_ascii_lowercase().contains("capture screen"))
+        .map(|(i, _)| *i)
+        .ok_or_else(|| Error::Recording(
+            "no screen-capture device found. Grant Kashot Screen Recording \
+             permission in System Settings > Privacy & Security > Screen \
+             Recording, then reopen Kashot and try again.".into()
+        ))
+}
+
+/// Pick the avfoundation audio device given what the user asked for. Mirrors
+/// `pick_windows_audio_device`: a single source per recording (avfoundation
+/// fuses one audio device into the `-i` spec), system audio needs a loopback
+/// device, and a system-audio-only request with no loopback is a hard error
+/// rather than a silently muted file.
+#[cfg(any(target_os = "macos", test))]
+pub(crate) fn pick_macos_audio_device(
+    audio:   &[(usize, String)],
+    options: RecordingOptions,
+) -> Result<Option<usize>> {
+    if !options.mic && !options.system_audio {
+        return Ok(None);
+    }
+    // Loopback / virtual devices that carry system output back as an input.
+    let is_loopback = |n: &str| {
+        let l = n.to_ascii_lowercase();
+        l.contains("blackhole") || l.contains("soundflower")
+            || l.contains("loopback") || l.contains("aggregate")
+            || l.contains("multi-output") || l.contains("ishowu")
+    };
+    if options.system_audio {
+        if let Some((i, _)) = audio.iter().find(|(_, n)| is_loopback(n)) {
+            return Ok(Some(*i));
+        }
+        // No loopback. If mic was also asked for, degrade to mic (best effort,
+        // same as Windows). Otherwise it's a hard error.
+        if !options.mic {
+            return Err(Error::Recording(
+                "system-audio recording on macOS needs a loopback device \
+                 (e.g. BlackHole: brew install blackhole-2ch) or an Aggregate \
+                 device routing your output back as an input. None was found. \
+                 Install one, or choose 'Record + mic' to capture the \
+                 microphone instead.".into()
+            ));
+        }
+    }
+    // Mic path: prefer something that looks like a microphone, else first.
+    let mic = audio.iter()
+        .find(|(_, n)| {
+            let l = n.to_ascii_lowercase();
+            l.contains("microphone") || l.contains("mic") || l.contains("built-in")
+                || l.contains("macbook") || l.contains("headset")
+        })
+        .or_else(|| audio.first())
+        .map(|(i, _)| *i);
+    Ok(mic)
 }
 
 // ── Windows: ffmpeg -f gdigrab (+ -f dshow for mic) ─────────────────────────
@@ -668,8 +868,15 @@ fn graceful_signal(child: &mut Child) {
 
 #[cfg(target_os = "macos")]
 fn graceful_signal(child: &mut Child) {
-    // screencapture stops cleanly on SIGINT. We don't depend on libc, so
-    // shell out to /bin/kill — it's part of the base macOS install.
+    use std::io::Write;
+    // Two backends: ffmpeg (audio recordings) is spawned with a piped stdin
+    // and stops on 'q'; screencapture (video-only) has a null stdin and stops
+    // on SIGINT. Presence of the stdin pipe is how we tell them apart.
+    if let Some(mut stdin) = child.stdin.take() {
+        let _ = writeln!(stdin, "q");
+        return;
+    }
+    // We don't depend on libc, so shell out to /bin/kill — part of base macOS.
     let pid = child.id().to_string();
     let _ = Command::new("/bin/kill").args(["-INT", &pid]).status();
 }
@@ -892,5 +1099,110 @@ dummy: Immediate exit requested
         let devs = vec!["Microphone (Realtek)".to_string()];
         let got = pick_windows_audio_device(&devs, RecordingOptions::MIC_AND_SYS).unwrap();
         assert_eq!(got, Some("Microphone (Realtek)".to_string()));
+    }
+
+    // macOS avfoundation: argv-builder, device-table parser, and picker.
+    // Same `#[cfg(any(target_os = "macos", test))]` strategy so a Linux CI
+    // agent catches regressions in the command we hand to ffmpeg on a Mac.
+
+    #[test]
+    fn macos_argv_mic_uses_avfoundation_fused_input() {
+        let a = build_macos_ffmpeg_args(1, Some(0), "/tmp/out.mp4", RecordingOptions::MIC_ONLY);
+        assert!(a.windows(2).any(|w| w == ["-f", "avfoundation"]),
+                "missing -f avfoundation in: {:?}", a);
+        // Video+audio fuse into one "-i video:audio" token.
+        assert!(a.windows(2).any(|w| w == ["-i", "1:0"]),
+                "expected fused -i 1:0 in: {:?}", a);
+        assert!(a.windows(2).any(|w| w == ["-c:v", "libx264"]));
+        assert!(a.windows(2).any(|w| w == ["-c:a", "aac"]));
+        assert!(a.windows(2).any(|w| w == ["-ac", "2"]),
+                "should upmix to stereo to match other platforms: {:?}", a);
+        assert_eq!(a.last().unwrap(), "/tmp/out.mp4");
+    }
+
+    #[test]
+    fn macos_argv_no_audio_index_omits_audio_codec() {
+        // Defensive: if the builder is ever called with no audio device the
+        // input's audio half is empty and no AAC stream is requested.
+        let a = build_macos_ffmpeg_args(2, None, "/tmp/out.mp4", RecordingOptions::NONE);
+        assert!(a.windows(2).any(|w| w == ["-i", "2:"]),
+                "expected video-only fused input '2:' in: {:?}", a);
+        assert!(!a.iter().any(|s| s == "-c:a"),
+                "audio codec should be absent with no audio index: {:?}", a);
+    }
+
+    #[test]
+    fn parse_avfoundation_splits_video_and_audio() {
+        let sample = r#"
+[AVFoundation indev @ 0x7f] AVFoundation video devices:
+[AVFoundation indev @ 0x7f] [0] FaceTime HD Camera
+[AVFoundation indev @ 0x7f] [1] Capture screen 0
+[AVFoundation indev @ 0x7f] AVFoundation audio devices:
+[AVFoundation indev @ 0x7f] [0] MacBook Pro Microphone
+[AVFoundation indev @ 0x7f] [1] BlackHole 2ch
+"#;
+        let (video, audio) = parse_avfoundation_devices(sample);
+        assert_eq!(video, vec![(0, "FaceTime HD Camera".to_string()),
+                               (1, "Capture screen 0".to_string())]);
+        assert_eq!(audio, vec![(0, "MacBook Pro Microphone".to_string()),
+                               (1, "BlackHole 2ch".to_string())]);
+    }
+
+    #[test]
+    fn parse_avfoundation_handles_empty() {
+        let (v, a) = parse_avfoundation_devices("");
+        assert!(v.is_empty() && a.is_empty());
+    }
+
+    #[test]
+    fn pick_macos_screen_finds_capture_screen() {
+        let video = vec![(0, "FaceTime HD Camera".to_string()),
+                         (3, "Capture screen 0".to_string())];
+        assert_eq!(pick_macos_screen_index(&video).unwrap(), 3);
+    }
+
+    #[test]
+    fn pick_macos_screen_errors_without_capture_device() {
+        // Screen Recording permission not granted → screen devices vanish.
+        let video = vec![(0, "FaceTime HD Camera".to_string())];
+        let err = pick_macos_screen_index(&video).unwrap_err();
+        let Error::Recording(msg) = err else { panic!("wrong error variant") };
+        assert!(msg.to_lowercase().contains("screen recording"),
+                "should name the permission to grant: {msg}");
+    }
+
+    #[test]
+    fn pick_macos_audio_video_only_returns_none() {
+        let audio = vec![(0, "MacBook Pro Microphone".to_string())];
+        assert_eq!(pick_macos_audio_device(&audio, RecordingOptions::NONE).unwrap(), None);
+    }
+
+    #[test]
+    fn pick_macos_audio_mic_prefers_microphone() {
+        let audio = vec![(0, "Aggregate Device".to_string()),
+                         (1, "MacBook Pro Microphone".to_string())];
+        assert_eq!(pick_macos_audio_device(&audio, RecordingOptions::MIC_ONLY).unwrap(), Some(1));
+    }
+
+    #[test]
+    fn pick_macos_audio_system_finds_blackhole() {
+        let audio = vec![(0, "MacBook Pro Microphone".to_string()),
+                         (1, "BlackHole 2ch".to_string())];
+        assert_eq!(pick_macos_audio_device(&audio, RecordingOptions::SYSTEM_ONLY).unwrap(), Some(1));
+    }
+
+    #[test]
+    fn pick_macos_audio_system_only_errors_without_loopback() {
+        let audio = vec![(0, "MacBook Pro Microphone".to_string())];
+        let err = pick_macos_audio_device(&audio, RecordingOptions::SYSTEM_ONLY).unwrap_err();
+        let Error::Recording(msg) = err else { panic!("wrong error variant") };
+        assert!(msg.to_lowercase().contains("blackhole"),
+                "actionable message should name a loopback option: {msg}");
+    }
+
+    #[test]
+    fn pick_macos_audio_mic_and_sys_degrades_to_mic_without_loopback() {
+        let audio = vec![(0, "MacBook Pro Microphone".to_string())];
+        assert_eq!(pick_macos_audio_device(&audio, RecordingOptions::MIC_AND_SYS).unwrap(), Some(0));
     }
 }

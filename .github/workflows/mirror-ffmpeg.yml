@@ -1,0 +1,107 @@
+# One-time (and on-demand) FFmpeg mirror.
+#
+# WHY: the release build (build-rust.yml) must NOT depend on third-party
+# download servers (johnvansickle.com / gyan.dev / martin-riedl.de) every
+# time it runs. This workflow fetches the static FFmpeg builds ONCE and
+# re-publishes them as assets on a Kashot-owned GitHub release
+# (`deps-ffmpeg-v1`). After that, every release build pulls FFmpeg only from
+# that Kashot-owned release — so if an upstream server vanishes, our builds
+# keep working. We refresh manually (re-run this workflow) only when we
+# deliberately want a newer FFmpeg.
+#
+# Run it from the Actions tab → "Mirror FFmpeg" → Run workflow. It needs no
+# secrets — the built-in GITHUB_TOKEN has the `contents: write` scope below.
+#
+# Licensing: the bundled builds include GPL components (libx264), so the
+# FFmpeg binaries are GPL-2.0-or-later. We attach SOURCE.txt pointing at the
+# corresponding source. Kashot calls FFmpeg as a separate process, so Kashot
+# stays Apache-2.0. See THIRD_PARTY_LICENSES.md.
+name: Mirror FFmpeg
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to publish the mirror under"
+        default: "deps-ffmpeg-v1"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  mirror:
+    name: Fetch upstream static FFmpeg + publish to our release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fetch all platforms
+        run: |
+          set -euxo pipefail
+          mkdir -p out
+
+          # ── Linux x86_64 (static, johnvansickle) ──
+          curl -fL --retry 3 -o lin64.tar.xz \
+            https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz
+          mkdir -p lin64 && tar -xJf lin64.tar.xz -C lin64 --strip-components=1
+          cp lin64/ffmpeg out/ffmpeg-linux-amd64
+
+          # ── Linux arm64 (static, johnvansickle) ──
+          curl -fL --retry 3 -o linarm.tar.xz \
+            https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-arm64-static.tar.xz
+          mkdir -p linarm && tar -xJf linarm.tar.xz -C linarm --strip-components=1
+          cp linarm/ffmpeg out/ffmpeg-linux-arm64
+
+          # ── Windows x86_64 (static, gyan.dev) ──
+          curl -fL --retry 3 -o win.zip \
+            https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip
+          mkdir -p win && unzip -q win.zip -d win
+          cp "$(find win -name ffmpeg.exe | head -1)" out/ffmpeg-win-amd64.exe
+
+          # ── macOS arm64 (static, martin-riedl) ──
+          curl -fL --retry 3 -o macarm.zip \
+            https://ffmpeg.martin-riedl.de/redirect/latest/macos/arm64/release/ffmpeg.zip
+          mkdir -p macarm && unzip -q macarm.zip -d macarm
+          cp "$(find macarm -name ffmpeg -type f | head -1)" out/ffmpeg-macos-arm64
+
+          # ── macOS x86_64 (static, martin-riedl) ──
+          curl -fL --retry 3 -o macamd.zip \
+            https://ffmpeg.martin-riedl.de/redirect/latest/macos/amd64/release/ffmpeg.zip
+          mkdir -p macamd && unzip -q macamd.zip -d macamd
+          cp "$(find macamd -name ffmpeg -type f | head -1)" out/ffmpeg-macos-amd64
+
+          chmod +x out/ffmpeg-*
+
+          # Sanity-check the one we can actually run on this (linux amd64) host.
+          out/ffmpeg-linux-amd64 -version | head -1
+
+      - name: Write SOURCE.txt (GPL corresponding-source pointer)
+        run: |
+          cat > out/SOURCE.txt <<'EOF'
+          These FFmpeg binaries are GPL-2.0-or-later (they include libx264).
+          Corresponding source is available at:
+            https://ffmpeg.org/download.html
+            https://git.ffmpeg.org/ffmpeg.git
+          Upstream static builds mirrored here:
+            linux amd64/arm64 : https://johnvansickle.com/ffmpeg/
+            windows x86_64    : https://www.gyan.dev/ffmpeg/builds/
+            macos arm64/x86_64: https://ffmpeg.martin-riedl.de/
+          Kashot invokes ffmpeg as a separate process; Kashot is Apache-2.0.
+          See THIRD_PARTY_LICENSES.md in the kashot repo.
+          EOF
+
+      - name: Publish to Kashot-owned release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euxo pipefail
+          # Create the release if it doesn't exist yet (idempotent).
+          if ! gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release create "$TAG" \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "FFmpeg static mirror ($TAG)" \
+              --notes "Kashot-owned mirror of static FFmpeg binaries so release builds never depend on third-party servers. GPL-2.0-or-later; see SOURCE.txt + THIRD_PARTY_LICENSES.md."
+          fi
+          # Upload/overwrite every asset.
+          gh release upload "$TAG" out/* \
+            --repo "$GITHUB_REPOSITORY" --clobber

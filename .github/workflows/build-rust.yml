@@ -63,9 +63,6 @@ jobs:
         # xdg-desktop-portal capture path).
         # libgbm-dev → -lgbm at link time (Mesa's Generic Buffer Manager,
         # transitive of xcap's capture backend on Linux).
-        # ffmpeg → bundled next to the release binary by kashot-app/build.rs
-        # so the Convert-video dialog and screen-recording feature work
-        # without requiring a system install on end-user machines.
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
@@ -74,9 +71,24 @@ jobs:
             libxcb-composite0-dev libxcb-randr0-dev libxcb-cursor-dev \
             libxcb-keysyms1-dev libxcb-icccm4-dev \
             libgtk-3-dev libdbus-1-dev libayatana-appindicator3-dev \
-            libpipewire-0.3-dev libgbm-dev libxdo-dev libssl-dev pkg-config \
-            ffmpeg
-          echo "KASHOT_FFMPEG=$(which ffmpeg)" >> $GITHUB_ENV
+            libpipewire-0.3-dev libgbm-dev libxdo-dev libssl-dev pkg-config
+
+      - name: Download static ffmpeg for bundling
+        # Pulled from the KASHOT-OWNED mirror release (deps-ffmpeg-v1), NOT a
+        # third-party server — see .github/workflows/mirror-ffmpeg.yml. A
+        # statically linked ffmpeg so it runs on any end-user machine with no
+        # system libav* installed. build.rs copies KASHOT_FFMPEG next to the
+        # binary; the Stage step ships it inside the tarball, so Convert-video
+        # + screen recording (mic via PulseAudio) work with no `apt install
+        # ffmpeg` on the user's box.
+        run: |
+          set -euxo pipefail
+          mkdir -p /tmp/ffstatic
+          curl -fL --retry 3 -o /tmp/ffstatic/ffmpeg \
+            https://github.com/singhpratech/kashot/releases/download/deps-ffmpeg-v1/ffmpeg-linux-amd64
+          chmod +x /tmp/ffstatic/ffmpeg
+          /tmp/ffstatic/ffmpeg -version | head -1
+          echo "KASHOT_FFMPEG=/tmp/ffstatic/ffmpeg" >> "$GITHUB_ENV"
 
       - run: cargo build --release --bin kashot
 
@@ -87,6 +99,10 @@ jobs:
         run: |
           mkdir -p dist/kashot
           cp target/release/kashot dist/kashot/
+          # Bundle the static ffmpeg next to the binary (build.rs put it in
+          # target/release/ via KASHOT_FFMPEG). locate_ffmpeg() finds it.
+          cp target/release/ffmpeg dist/kashot/
+          chmod +x dist/kashot/ffmpeg
           cd dist && tar -czf kashot-linux-x86_64.tar.gz kashot
 
       - uses: actions/upload-artifact@v4
@@ -122,6 +138,18 @@ jobs:
             libgtk-3-dev libdbus-1-dev libayatana-appindicator3-dev \
             libpipewire-0.3-dev libgbm-dev libxdo-dev libssl-dev pkg-config
 
+      - name: Download static ffmpeg for bundling
+        # arm64 static build from the Kashot-owned mirror (deps-ffmpeg-v1),
+        # same rationale as the x86_64 job.
+        run: |
+          set -euxo pipefail
+          mkdir -p /tmp/ffstatic
+          curl -fL --retry 3 -o /tmp/ffstatic/ffmpeg \
+            https://github.com/singhpratech/kashot/releases/download/deps-ffmpeg-v1/ffmpeg-linux-arm64
+          chmod +x /tmp/ffstatic/ffmpeg
+          /tmp/ffstatic/ffmpeg -version | head -1
+          echo "KASHOT_FFMPEG=/tmp/ffstatic/ffmpeg" >> "$GITHUB_ENV"
+
       - run: cargo build --release --bin kashot
 
       - name: Run full workspace tests
@@ -131,6 +159,8 @@ jobs:
         run: |
           mkdir -p dist/kashot
           cp target/release/kashot dist/kashot/
+          cp target/release/ffmpeg dist/kashot/
+          chmod +x dist/kashot/ffmpeg
           cd dist && tar -czf kashot-linux-arm64.tar.gz kashot
 
       - uses: actions/upload-artifact@v4
@@ -154,18 +184,17 @@ jobs:
         with: { workspaces: kashot-rs }
 
       - name: Download static ffmpeg
-        # Pulled into KASHOT_FFMPEG so kashot-app/build.rs bundles ffmpeg.exe
-        # next to the release binary — end users don't need a system install
-        # to run the Convert-video dialog or (future) recording on Windows.
+        # Pulled from the KASHOT-OWNED mirror release (deps-ffmpeg-v1), NOT a
+        # third-party server — see .github/workflows/mirror-ffmpeg.yml. Set as
+        # KASHOT_FFMPEG so kashot-app/build.rs bundles ffmpeg.exe next to the
+        # release binary — end users need no system install to run the
+        # Convert-video dialog or screen recording on Windows.
         shell: pwsh
         run: |
-          $url = "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip"
-          $zip = "$env:RUNNER_TEMP\ffmpeg.zip"
-          $dst = "$env:RUNNER_TEMP\ffmpeg"
-          Invoke-WebRequest -Uri $url -OutFile $zip
-          Expand-Archive -Path $zip -DestinationPath $dst -Force
-          $ffmpeg = (Get-ChildItem -Path $dst -Recurse -Filter ffmpeg.exe | Select-Object -First 1).FullName
-          if (-not $ffmpeg) { throw "ffmpeg.exe not found in extracted archive" }
+          $url = "https://github.com/singhpratech/kashot/releases/download/deps-ffmpeg-v1/ffmpeg-win-amd64.exe"
+          $ffmpeg = "$env:RUNNER_TEMP\ffmpeg.exe"
+          Invoke-WebRequest -Uri $url -OutFile $ffmpeg
+          if (-not (Test-Path $ffmpeg)) { throw "ffmpeg.exe download failed" }
           echo "KASHOT_FFMPEG=$ffmpeg" >> $env:GITHUB_ENV
 
       - run: cargo build --release --bin kashot
@@ -295,6 +324,27 @@ jobs:
       - name: Install create-dmg
         run: brew install create-dmg
 
+      - name: Download static ffmpeg for bundling
+        id: ffbundle
+        # Pulled from the KASHOT-OWNED mirror release (deps-ffmpeg-v1), NOT a
+        # third-party server — see .github/workflows/mirror-ffmpeg.yml. A
+        # statically linked, arch-matched ffmpeg so audio screen recording
+        # (mic via avfoundation) works out of the box with no `brew install
+        # ffmpeg` on the end user's machine.
+        run: |
+          set -euxo pipefail
+          case "${{ matrix.label }}" in
+            arm64) asset=ffmpeg-macos-arm64 ;;
+            x64)   asset=ffmpeg-macos-amd64 ;;
+            *) echo "unknown label ${{ matrix.label }}"; exit 1 ;;
+          esac
+          mkdir -p dist/ffmpeg-bundle
+          curl -fL --retry 3 -o dist/ffmpeg-bundle/ffmpeg \
+            "https://github.com/singhpratech/kashot/releases/download/deps-ffmpeg-v1/${asset}"
+          chmod +x dist/ffmpeg-bundle/ffmpeg
+          # Sanity-check it actually runs on this arch.
+          dist/ffmpeg-bundle/ffmpeg -version | head -1
+
       - name: Derive version string
         id: ver
         shell: bash
@@ -330,6 +380,11 @@ jobs:
           cp target/${{ matrix.target }}/release/kashot "$APP/Contents/MacOS/kashot"
           chmod +x "$APP/Contents/MacOS/kashot"
           cp dist/Kashot.icns "$APP/Contents/Resources/kashot.icns"
+          # Bundle the static ffmpeg next to the binary so locate_ffmpeg()
+          # finds it (Contents/MacOS/ffmpeg) — powers audio recording +
+          # video conversion without a system ffmpeg install.
+          cp dist/ffmpeg-bundle/ffmpeg "$APP/Contents/MacOS/ffmpeg"
+          chmod +x "$APP/Contents/MacOS/ffmpeg"
 
           cat > "$APP/Contents/Info.plist" <<PLIST
           <?xml version="1.0" encoding="UTF-8"?>
@@ -426,6 +481,9 @@ jobs:
                    "$APPDIR/usr/share/applications" \
                    "$APPDIR/usr/share/icons/hicolor/256x256/apps"
           install -Dm0755 dl/kashot/kashot "$APPDIR/usr/bin/kashot"
+          # Bundle the static ffmpeg shipped in the tarball so the AppImage is
+          # self-contained — locate_ffmpeg() finds it next to the binary.
+          install -Dm0755 dl/kashot/ffmpeg "$APPDIR/usr/bin/ffmpeg"
           install -Dm0755 dist/appimage/AppRun "$APPDIR/AppRun"
           install -Dm0644 dist/aur/kashot.desktop \
             "$APPDIR/usr/share/applications/kashot.desktop"

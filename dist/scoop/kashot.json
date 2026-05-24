@@ -1,9 +1,9 @@
 {
-  "version":     "0.3.9",
+  "version":     "0.3.10",
   "description": "Fast screenshots with annotations — tray-resident, hotkey-driven, free.",
   "homepage":    "https://kashot.org/",
   "license":     "Apache-2.0",
-  "url":         "https://github.com/singhpratech/kashot/releases/download/v0.3.9/kashot-windows-x86_64.zip",
+  "url":         "https://github.com/singhpratech/kashot/releases/download/v0.3.10/kashot-windows-x86_64.zip",
   "hash":        "REPLACE_WITH_ACTUAL_SHA256_AT_RELEASE_TIME",
   "bin":         "kashot.exe",
   "shortcuts": [

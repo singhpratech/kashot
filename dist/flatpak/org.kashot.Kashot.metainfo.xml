@@ -67,6 +67,9 @@
   <content_rating type="oars-1.1"/>
 
   <releases>
+    <release version="0.3.10" date="2026-05-24">
+      <description><p>macOS gains microphone recording: audio captures now route through ffmpeg's avfoundation input (a static ffmpeg is bundled in the .app), so "Record + mic" finally captures sound on a Mac instead of producing a silent video. System audio works when a loopback device (BlackHole / an Aggregate device) is present, mirroring Windows; video-only recording still uses the dependency-free built-in capture. Also fixes a Settings dialog layout bug where the subtitle text overlapped the "Edit as JSON" / Cancel / Save action buttons.</p></description>
+    </release>
     <release version="0.3.9" date="2026-05-24">
       <description><p>Linux in-app updater: the Updates dialog's Download button now downloads the new release, verifies its SHA-256, swaps the running binary in place, and relaunches — the same one-click upgrade Windows MSI installs already had, instead of just opening a browser. The download action is disabled when you're already on the latest version. The binary swap is cross-device-safe (handles /tmp and the install dir living on different filesystems).</p></description>
     </release>
