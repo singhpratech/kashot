@@ -9,7 +9,7 @@
 cask "kashot" do
   arch arm: "arm64", intel: "x64"
 
-  version "0.3.9"
+  version "0.3.10"
   sha256  arm:   "REPLACE_WITH_ARM64_DMG_SHA256_AT_RELEASE_TIME",
           intel: "REPLACE_WITH_X64_DMG_SHA256_AT_RELEASE_TIME"
 

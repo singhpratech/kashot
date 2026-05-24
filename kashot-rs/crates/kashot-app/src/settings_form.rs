@@ -578,7 +578,10 @@ impl SettingsView {
 
         // Title strip.
         draw_text(&mut surf, PAD, 18, 2, "KASHOT // SETTINGS",  argb_to_kashot(LASER));
-        draw_text(&mut surf, PAD, 44, 1, "Capture output, watermark and appearance.",
+        // Subtitle must clear the right-anchored action bar (Edit-as-JSON
+        // starts at x=238). At scale 1 each glyph advances 6px from PAD=22,
+        // so keep this string short enough to end well before the buttons.
+        draw_text(&mut surf, PAD, 44, 1, "Capture, watermark, appearance.",
                   argb_to_kashot(TEXT_MUTED));
 
         // Section headers — anchored relative to their first row.
