@@ -70,4 +70,5 @@ windows = { version = "0.62", features = [
     "Win32_Storage_FileSystem", # MoveFileExW for the self-updater rename-trick
     "Win32_System_Registry",
     "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging", # EndMenu + FindWindow/ShowWindow to dismiss the tray flyout before capture
 ] }
