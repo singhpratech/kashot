@@ -258,4 +258,4 @@ These cross-cut both implementations; if you change one, change both.
 
 ---
 
-*Last updated: 2026-05-18 (v0.3.6 release — snap-only fix: `audio-playback` plug declared alongside `audio-record` to satisfy Snap Store policy). Maintained by [@singhpratech](https://github.com/singhpratech).*
+*Last updated: 2026-05-24 (v0.3.7 release — Windows tray fix: dismisses the tray context menu + hidden-icons overflow flyout before capture so they don't ghost into the screenshot). Maintained by [@singhpratech](https://github.com/singhpratech).*

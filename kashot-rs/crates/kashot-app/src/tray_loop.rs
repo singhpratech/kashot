@@ -187,6 +187,19 @@ pub fn run() -> Result<()> {
 
             // Brief settle delay so the tray menu / flyout can fully dismiss
             // before xcap shoots the desktop. On top of any user-facing delay.
+            //
+            // Windows needs more: the tray context menu has a fade-out
+            // animation (~200–400ms depending on SPI_GETMENUFADE), and if the
+            // click came through the hidden-icons chevron the whole
+            // NotifyIconOverflowWindow stays mapped until we dismiss it. We
+            // force both to close, then wait long enough for the fade to
+            // finish — otherwise the screenshot captures a ghost of the menu.
+            #[cfg(target_os = "windows")]
+            {
+                dismiss_tray_flyouts();
+                std::thread::sleep(Duration::from_millis(700));
+            }
+            #[cfg(not(target_os = "windows"))]
             std::thread::sleep(Duration::from_millis(250));
 
             match capture_all_screens() {
@@ -873,6 +886,30 @@ fn notify(title: &str, body: &str, urgent: bool) {
             .stderr(std::process::Stdio::null())
             .spawn();
         let _ = timeout;
+    }
+}
+
+/// Tell the tray's open popup menu and hidden-icons flyout to close *now*,
+/// so the screenshot we're about to take doesn't capture them. The settle
+/// sleep that follows gives Windows' menu-fade animation time to actually
+/// finish painting.
+#[cfg(target_os = "windows")]
+fn dismiss_tray_flyouts() {
+    use windows::core::w;
+    use windows::Win32::UI::WindowsAndMessaging::{
+        EndMenu, FindWindowW, ShowWindow, SW_HIDE,
+    };
+    unsafe {
+        // Closes any popup menu owned by the calling thread's foreground —
+        // this is what the tray menu actually is once we get the click event.
+        let _ = EndMenu();
+        // Hide the "show hidden icons" chevron flyout if the user opened it
+        // to reach our tray icon. Safe no-op if the window isn't present.
+        if let Ok(hwnd) = FindWindowW(w!("NotifyIconOverflowWindow"), None) {
+            if !hwnd.is_invalid() {
+                let _ = ShowWindow(hwnd, SW_HIDE);
+            }
+        }
     }
 }
 
