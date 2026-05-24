@@ -30,12 +30,12 @@
 //!
 //! Verification
 //! ------------
-//! SHA-256 is computed over the *extracted* binary, not the archive,
-//! because the CI publishes per-platform hashes of the binary file the
-//! user will actually run. `expected_sha256 = None` is a graceful
-//! degradation path that exists so this PR can ship before the
-//! `ci/installer-artifacts` PR lands its `SHA256SUMS` artifact — once
-//! both are in we'll always pass a hash from the caller.
+//! SHA-256 is computed over the *downloaded asset* — the published file
+//! named in the release's `SHA256SUMS` (the `.tar.gz` / `.zip` / `.msi` /
+//! naked macOS binary) — and checked before we extract or install anything.
+//! `expected_sha256 = None` is a graceful degradation path for releases
+//! that didn't ship a `SHA256SUMS`; in practice the caller always resolves
+//! a hash for the picked asset.
 
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -72,6 +72,23 @@ fn run(
     let download_path = temp_path_for_url(&asset_url);
     download(&asset_url, &download_path, &on_progress)?;
 
+    // Verify the *downloaded asset* against the hash from the release's
+    // SHA256SUMS. Those hashes are computed over the published files —
+    // the .tar.gz / .zip / .msi / naked macOS binary the release actually
+    // ships — so we hash what we downloaded, before extracting anything.
+    // (Verifying a binary extracted *out* of the archive would never match
+    // the archive's own hash — that was a latent bug when the archive path
+    // got wired up.)
+    if let Some(want) = expected_sha256.as_deref() {
+        verify_sha256(&download_path, want)?;
+    } else {
+        eprintln!(
+            "self-updater: WARNING — installing {} without SHA-256 verification \
+             (caller passed expected_sha256 = None)",
+            download_path.display()
+        );
+    }
+
     // MSI handoff path: when the user installed via Kashot.msi (i.e. lives
     // under Program Files, registered in Add/Remove Programs), the right
     // upgrade is `msiexec /i <new>.msi` — MajorUpgrade in main.wxs handles
@@ -79,31 +96,12 @@ fn run(
     // Hand-swapping the .exe out from under the MSI would leave ARP showing
     // the old version + skip the elevation prompt the OS expects.
     if is_msi_asset(&asset_url) {
-        if let Some(want) = expected_sha256.as_deref() {
-            verify_sha256(&download_path, want)?;
-        } else {
-            eprintln!(
-                "self-updater: WARNING — launching MSI {} without SHA-256 verification \
-                 (caller passed expected_sha256 = None)",
-                download_path.display()
-            );
-        }
         return launch_msi_and_exit(&download_path);
     }
 
-    // Portable / archive path: extract, verify, swap-and-relaunch.
+    // Portable / archive path: extract the binary we'll run (the .tar.gz /
+    // .zip is now trusted), swap it over the running exe, relaunch.
     let extracted = extract_binary(&download_path)?;
-
-    if let Some(want) = expected_sha256.as_deref() {
-        verify_sha256(&extracted, want)?;
-    } else {
-        eprintln!(
-            "self-updater: WARNING — installing {} without SHA-256 verification \
-             (caller passed expected_sha256 = None)",
-            extracted.display()
-        );
-    }
-
     make_executable(&extracted)?;
 
     let current_exe = std::env::current_exe()
@@ -428,16 +426,27 @@ fn make_executable(_path: &Path) -> Result<(), String> {
 
 #[cfg(not(target_os = "windows"))]
 fn swap_running_binary(new_bin: &Path, current_exe: &Path) -> Result<(), String> {
-    // POSIX guarantee: rename(2) of an executable file is safe while
-    // the kernel still has it open for execution; the kernel keeps the
-    // old inode alive until our process exits, so the in-flight code
-    // pages stay valid.
-    std::fs::rename(new_bin, current_exe).map_err(|e| {
-        format!(
-            "rename {} -> {}: {e}",
-            new_bin.display(),
-            current_exe.display()
-        )
+    // POSIX guarantee: rename(2) over an executable is safe while the kernel
+    // still has it open for execution — the old inode stays alive until our
+    // process exits, so in-flight code pages remain valid.
+    //
+    // But rename(2) only works within a single filesystem. `new_bin` is
+    // extracted under the temp dir (often a tmpfs), while `current_exe` is
+    // usually under $HOME — a different mount — so a direct rename fails with
+    // EXDEV ("Invalid cross-device link"). Stage a copy in current_exe's own
+    // directory first (guaranteed same filesystem), then rename over the
+    // target atomically.
+    let staged = current_exe.with_extension("new");
+    std::fs::copy(new_bin, &staged).map_err(|e| {
+        format!("stage copy {} -> {}: {e}", new_bin.display(), staged.display())
+    })?;
+    if let Err(e) = make_executable(&staged) {
+        let _ = std::fs::remove_file(&staged);
+        return Err(e);
+    }
+    std::fs::rename(&staged, current_exe).map_err(|e| {
+        let _ = std::fs::remove_file(&staged);
+        format!("rename {} -> {}: {e}", staged.display(), current_exe.display())
     })
 }
 

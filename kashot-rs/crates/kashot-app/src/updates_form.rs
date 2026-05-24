@@ -265,16 +265,25 @@ impl UpdatesView {
                         BtnKind::Download => {
                             if let FetchState::Found(info) = &self.state {
                                 if let Some(url) = &info.asset_url {
-                                    // MSI-installed Windows users get the
-                                    // in-app msiexec handoff so the upgrade
-                                    // updates Add/Remove Programs properly.
-                                    // Everyone else keeps the browser-open
-                                    // behavior until the swap path has more
-                                    // mileage on non-Windows.
-                                    if cfg!(target_os = "windows")
-                                        && crate::self_updater::is_msi_install()
-                                        && url.to_ascii_lowercase().ends_with(".msi")
-                                    {
+                                    let lower = url.to_ascii_lowercase();
+                                    // In-app download → verify → install →
+                                    // relaunch is wired for:
+                                    //   - Windows MSI installs (msiexec
+                                    //     handoff, keeps Add/Remove Programs
+                                    //     + elevation correct), and
+                                    //   - Linux .tar.gz (swap the binary in
+                                    //     place; works for the install.sh /
+                                    //     tarball layout under ~/.local/bin).
+                                    // macOS + Windows-portable still open the
+                                    // browser until those swap paths are
+                                    // exercised on real hardware.
+                                    let in_app = (cfg!(target_os = "windows")
+                                            && crate::self_updater::is_msi_install()
+                                            && lower.ends_with(".msi"))
+                                        || (cfg!(target_os = "linux")
+                                            && (lower.ends_with(".tar.gz")
+                                                || lower.ends_with(".tgz")));
+                                    if in_app {
                                         UpdatesOutcome::DownloadAndInstall {
                                             asset_url: url.clone(),
                                             expected_sha256: info.expected_sha256.clone(),
@@ -324,10 +333,16 @@ impl UpdatesView {
         let bh = 36;
         let by = WIN_H as i32 - PAD - bh;
 
-        let has_asset = matches!(&self.state,
-            FetchState::Found(info) if info.asset_url.is_some());
+        // Only offer the Download button when there's actually a newer
+        // release than what's running AND we resolved an asset for this
+        // platform. When the user is already on the latest version, drop
+        // the Download button entirely — leaving "Open releases page" as
+        // the only action — so we never invite a pointless re-download /
+        // reinstall of the version they already have.
+        let offer_download = matches!(&self.state,
+            FetchState::Found(info) if info.asset_url.is_some() && info.has_update);
 
-        if has_asset {
+        if offer_download {
             let dl_w = 200;
             let rel_w = 180;
             let gap  = 12;
