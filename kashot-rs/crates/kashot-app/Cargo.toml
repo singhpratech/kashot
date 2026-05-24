@@ -35,11 +35,12 @@ output    = "Kashot.msi"
 # License.rtf and the WixUI License page wires it up via WixVariable.
 license   = false
 eula      = false
-# Link WixUtilExtension so main.wxs can use WixShellExec (the "Launch
-# Kashot" CustomAction on the install wizard's ExitDialog). Both candle
-# and light need the -ext flag.
-compiler-args = ["-ext", "WixUtilExtension"]
-linker-args   = ["-ext", "WixUtilExtension"]
+# Note: cargo-wix 0.3.x loads WixUIExtension and WixUtilExtension into
+# both candle and light by default, so main.wxs's WixUI_InstallDir
+# reference and the "Launch Kashot" CustomAction (which uses WixCA from
+# WixUtilExtension) link without an explicit -ext declaration. Adding
+# `compiler-args = ["-ext", "WixUtilExtension"]` here causes a
+# duplicate-load error (CNDL0125) — don't do it.
 
 [dependencies]
 kashot-core     = { path = "../kashot-core" }
