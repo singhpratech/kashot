@@ -35,6 +35,11 @@ output    = "Kashot.msi"
 # License.rtf and the WixUI License page wires it up via WixVariable.
 license   = false
 eula      = false
+# Link WixUtilExtension so main.wxs can use WixShellExec (the "Launch
+# Kashot" CustomAction on the install wizard's ExitDialog). Both candle
+# and light need the -ext flag.
+compiler-args = ["-ext", "WixUtilExtension"]
+linker-args   = ["-ext", "WixUtilExtension"]
 
 [dependencies]
 kashot-core     = { path = "../kashot-core" }

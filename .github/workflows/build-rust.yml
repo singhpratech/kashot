@@ -230,8 +230,7 @@ jobs:
                     --no-build `
                     --nocapture `
                     --include wix\main.wxs `
-                    --output dist\Kashot.msi `
-                    -E WixUtilExtension
+                    --output dist\Kashot.msi
 
       - uses: actions/upload-artifact@v4
         with:
