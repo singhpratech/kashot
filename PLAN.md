@@ -258,4 +258,4 @@ These cross-cut both implementations; if you change one, change both.
 
 ---
 
-*Last updated: 2026-05-24 (v0.3.7 release — Windows tray fix: dismisses the tray context menu + hidden-icons overflow flyout before capture so they don't ghost into the screenshot). Maintained by [@singhpratech](https://github.com/singhpratech).*
+*Last updated: 2026-05-24 (v0.3.8 release — bitmap-font dialog rendering fixes: question-mark glyphs replaced with ASCII alternatives across About, Settings, Updates, and Convert dialogs; MSI installer adds a "Launch Kashot" checkbox on the final wizard page so the app auto-starts after install). Maintained by [@singhpratech](https://github.com/singhpratech).*

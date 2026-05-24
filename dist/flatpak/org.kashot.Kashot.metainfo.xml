@@ -67,6 +67,9 @@
   <content_rating type="oars-1.1"/>
 
   <releases>
+    <release version="0.3.8" date="2026-05-24">
+      <description><p>UI rendering fixes across the About, Settings, Updates, and Convert dialogs — non-ASCII characters in the bitmap font (em-dashes, middle dots, ellipses, the copyright symbol) were rendering as question marks. The Updates dialog's changelog bullets in particular were showing as "???" per line. Now uses ASCII alternatives throughout and the markdown parser walks proper UTF-8 boundaries. Windows MSI installer adds a "Launch Kashot" checkbox on the final wizard page (checked by default) so the app auto-starts after a fresh install or in-app update — no more closed-installer-with-no-Kashot moment.</p></description>
+    </release>
     <release version="0.3.7" date="2026-05-24">
       <description><p>Windows fix: clicking the tray "Capture" item could leave the tray context menu (or the hidden-icons overflow flyout, if the user reached the icon via the chevron) painted on screen when the screenshot fired, so the menu ended up in the capture. Now explicitly dismisses both Win32 surfaces and waits long enough for the fade-out animation to finish before xcap shoots the desktop. Other platforms unaffected.</p></description>
     </release>

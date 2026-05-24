@@ -28,8 +28,8 @@ modules:
       - install -Dm644 org.kashot.Kashot.metainfo.xml /app/share/metainfo/org.kashot.Kashot.metainfo.xml
     sources:
       - type: archive
-        url:    https://github.com/singhpratech/kashot/releases/download/v0.3.7/kashot-linux-x86_64.tar.gz
-        sha256: fa5efa2b32170e00fc32664f9674f8b5587fc44ee0e7ebd39db4c6d51d7eb037
+        url:    https://github.com/singhpratech/kashot/releases/download/v0.3.8/kashot-linux-x86_64.tar.gz
+        sha256: REPLACE_AFTER_v0.3.8_RELEASE_PUBLISHES
         strip-components: 1
       - type: file
         path: org.kashot.Kashot.desktop

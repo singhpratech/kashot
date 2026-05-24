@@ -147,11 +147,30 @@
           Wizard UI: WixUI_InstallDir gives the user a chance to pick an
           alternate install location, which matches what users expect from
           a per-machine MSI. Pages: License, InstallDir, Confirm.
+
+          ExitDialog gets a "Launch Kashot" checkbox (checked by default).
+          Without this, fresh installs + in-app updates leave the user
+          staring at a closed installer with no Kashot running — they
+          have to hunt for the Start Menu shortcut to relaunch.
+          WixShellExec + Impersonate='yes' runs the .exe as the original
+          (non-elevated) user, not as SYSTEM.
         -->
         <UI>
             <UIRef Id='WixUI_InstallDir' />
+            <Publish Dialog='ExitDialog'
+                     Control='Finish'
+                     Event='DoAction'
+                     Value='LaunchKashot'>WIXUI_EXITDIALOGOPTIONALCHECKBOX = 1</Publish>
         </UI>
         <Property Id='WIXUI_INSTALLDIR' Value='APPLICATIONFOLDER' />
+        <Property Id='WIXUI_EXITDIALOGOPTIONALCHECKBOXTEXT' Value='Launch Kashot' />
+        <Property Id='WIXUI_EXITDIALOGOPTIONALCHECKBOX' Value='1' />
+        <Property Id='WixShellExecTarget' Value='[#exe0]' />
+        <CustomAction Id='LaunchKashot'
+                      BinaryKey='WixCA'
+                      DllEntry='WixShellExec'
+                      Execute='immediate'
+                      Impersonate='yes' />
         <WixVariable Id='WixUILicenseRtf' Value='$(sys.SOURCEFILEDIR)License.rtf' />
 
     </Product>
