@@ -3,7 +3,7 @@
 #   flatpak install flathub org.kashot.Kashot
 app-id: org.kashot.Kashot
 runtime: org.freedesktop.Platform
-runtime-version: '23.08'
+runtime-version: '24.08'
 sdk: org.freedesktop.Sdk
 command: kashot
 finish-args:
@@ -29,7 +29,7 @@ modules:
     sources:
       - type: archive
         url:    https://github.com/singhpratech/kashot/releases/download/v0.3.7/kashot-linux-x86_64.tar.gz
-        sha256: REPLACE_AFTER_v0.3.7_RELEASE_PUBLISHES
+        sha256: fa5efa2b32170e00fc32664f9674f8b5587fc44ee0e7ebd39db4c6d51d7eb037
         strip-components: 1
       - type: file
         path: org.kashot.Kashot.desktop
