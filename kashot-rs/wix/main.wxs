@@ -170,8 +170,7 @@
                       BinaryKey='WixCA'
                       DllEntry='WixShellExec'
                       Execute='immediate'
-                      Impersonate='yes'
-                      Return='asyncNoWait' />
+                      Impersonate='yes' />
         <WixVariable Id='WixUILicenseRtf' Value='$(sys.SOURCEFILEDIR)License.rtf' />
 
     </Product>
