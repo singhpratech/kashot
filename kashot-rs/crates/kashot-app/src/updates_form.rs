@@ -826,3 +826,58 @@ fn draw_text<S: painter::Surface>(s: &mut S, x: i32, y: i32, scale: i32, text: &
 // Quiet unused-imports warnings for items kept around for parity with the
 // other dialog modules.
 fn _quiet() { let _ = Duration::from_secs(0); }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The bitmap font (bitmap_font.rs) only has glyphs for ASCII
+    /// 0x20..=0x7E; everything else renders as `?`. After strip_markdown
+    /// the rendered text must therefore be pure printable ASCII, or the
+    /// `???`-per-bullet bug (and friends) come back.
+    fn assert_renderable_ascii(s: &str) {
+        for ch in s.chars() {
+            assert!(
+                ch == '\n' || (' '..='~').contains(&ch),
+                "non-renderable char {:?} (U+{:04X}) survived strip_markdown — \
+                 the bitmap font would draw it as '?'",
+                ch, ch as u32
+            );
+        }
+    }
+
+    #[test]
+    fn github_release_body_renders_as_ascii() {
+        // Verbatim "What's Changed" block GitHub auto-generates, which is
+        // exactly what tripped the `???` bug: `* ` bullets plus an
+        // em-dash and a couple of links.
+        let body = "## What's Changed\n\
+            * fix(docs): drop stale icon.svg by @singhpratech in https://github.com/singhpratech/kashot/pull/37\n\
+            * fix(windows): dismiss tray menu — overflow flyout before capture by @singhpratech in https://github.com/singhpratech/kashot/pull/39\n\
+            \n\
+            **Full Changelog**: https://github.com/singhpratech/kashot/compare/v0.3.6...v0.3.7";
+        let out = strip_markdown(body);
+        assert_renderable_ascii(&out);
+        // The literal U+2022 bullet must never appear — we use ASCII '>'.
+        assert!(!out.contains('\u{2022}'), "U+2022 bullet leaked into output");
+        assert!(out.contains("> fix(docs)"), "bullet not rewritten to '>': {out:?}");
+        // The em-dash must have been downgraded to ASCII '-'.
+        assert!(!out.contains('\u{2014}'), "em-dash leaked into output");
+    }
+
+    #[test]
+    fn strip_inline_keeps_multibyte_text_intact() {
+        // A line with a non-ASCII char that is NOT in our fallback table
+        // still must not be split into per-byte garbage — strip_inline
+        // walks chars, so the single char survives as a single char
+        // (which the renderer then maps to one '?', not three).
+        let out = strip_inline("café [docs](https://x.y)");
+        assert_eq!(out, "café docs (https://x.y)");
+    }
+
+    #[test]
+    fn strip_inline_rewrites_markdown_link() {
+        let out = strip_inline("see [the release](https://github.com/a/b/releases) now");
+        assert_eq!(out, "see the release (https://github.com/a/b/releases) now");
+    }
+}
