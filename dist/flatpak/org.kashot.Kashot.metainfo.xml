@@ -49,11 +49,20 @@
     <keyword>recorder</keyword>
   </keywords>
 
-  <!-- TODO before opening flathub/flathub PR: capture screenshots, drop them
-       into docs/assets/screenshots/{editor,tray-menu,pin}.png (1280×800 or
-       similar), push to main so kashot.org/assets/screenshots/* are
-       reachable, then re-add a <screenshots> block here.
-       Flathub bot will block the submission if screenshot URLs 404. -->
+  <screenshots>
+    <screenshot type="default">
+      <image>https://kashot.org/assets/screenshots/editor.png</image>
+      <caption>Overlay editor with region selector and annotation tool palette</caption>
+    </screenshot>
+    <screenshot>
+      <image>https://kashot.org/assets/screenshots/tray-menu.png</image>
+      <caption>Tray-resident with one-click capture, delay capture, and record submenus</caption>
+    </screenshot>
+    <screenshot>
+      <image>https://kashot.org/assets/screenshots/capture-with-watermark.png</image>
+      <caption>Saved screenshot with the optional Kashot watermark applied</caption>
+    </screenshot>
+  </screenshots>
 
   <content_rating type="oars-1.1"/>
 
