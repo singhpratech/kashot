@@ -33,6 +33,28 @@
     <name>PrateekSingh</name>
   </developer>
 
+  <categories>
+    <category>Graphics</category>
+    <category>Utility</category>
+  </categories>
+
+  <keywords>
+    <keyword>screenshot</keyword>
+    <keyword>capture</keyword>
+    <keyword>annotate</keyword>
+    <keyword>region</keyword>
+    <keyword>tray</keyword>
+    <keyword>hotkey</keyword>
+    <keyword>pixelate</keyword>
+    <keyword>recorder</keyword>
+  </keywords>
+
+  <!-- TODO before opening flathub/flathub PR: capture screenshots, drop them
+       into docs/assets/screenshots/{editor,tray-menu,pin}.png (1280×800 or
+       similar), push to main so kashot.org/assets/screenshots/* are
+       reachable, then re-add a <screenshots> block here.
+       Flathub bot will block the submission if screenshot URLs 404. -->
+
   <content_rating type="oars-1.1"/>
 
   <releases>
