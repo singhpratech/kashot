@@ -36,6 +36,9 @@
   <content_rating type="oars-1.1"/>
 
   <releases>
+    <release version="0.3.7" date="2026-05-24">
+      <description><p>Windows fix: clicking the tray "Capture" item could leave the tray context menu (or the hidden-icons overflow flyout, if the user reached the icon via the chevron) painted on screen when the screenshot fired, so the menu ended up in the capture. Now explicitly dismisses both Win32 surfaces and waits long enough for the fade-out animation to finish before xcap shoots the desktop. Other platforms unaffected.</p></description>
+    </release>
     <release version="0.3.6" date="2026-05-18">
       <description><p>Snap-only fix: declares the `audio-playback` plug alongside `audio-record` to satisfy the Snap Store policy gate. v0.3.5's snap upload was rejected at processing time even though the binary itself was fine. No app-level changes from v0.3.5; existing installs across other channels do not need to update.</p></description>
     </release>
