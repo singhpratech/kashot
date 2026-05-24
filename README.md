@@ -112,9 +112,11 @@ curl -L https://github.com/singhpratech/kashot/releases/latest/download/kashot-l
 ```
 
 ```bash
-# coming soon
-flatpak install flathub org.kashot.Kashot
-yay -S kashot         # AUR
+# Flatpak (official self-hosted repo)
+flatpak remote-add --if-not-exists kashot https://repo.kashot.org/kashot.flatpakrepo
+flatpak install kashot org.kashot.Kashot
+
+yay -S kashot         # AUR (coming soon)
 ```
 
 </td>

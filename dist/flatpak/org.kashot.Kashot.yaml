@@ -1,6 +1,7 @@
-# Submit to https://github.com/flathub/flathub
-# Users install with:
-#   flatpak install flathub org.kashot.Kashot
+# Self-hosted Flatpak channel — published to repo.kashot.org by
+# .github/workflows/build-flatpak-repo.yml. Users install with:
+#   flatpak remote-add --if-not-exists kashot https://repo.kashot.org/kashot.flatpakrepo
+#   flatpak install kashot org.kashot.Kashot
 app-id: org.kashot.Kashot
 runtime: org.freedesktop.Platform
 runtime-version: '24.08'

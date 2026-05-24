@@ -1,8 +1,8 @@
-# Validate the Flatpak / Flathub manifest on every push + PR that
-# touches the manifest. Catches schema drift, sha256 mismatches,
-# AppStream metainfo lint issues — the things that block a Flathub
-# submission from being merged. Doesn't actually build the flatpak
-# (that's slow and needs runtime extensions); just runs the linters.
+# Validate the Flatpak manifest on every push + PR that touches it.
+# Catches schema drift, sha256 mismatches, and AppStream metainfo lint
+# issues before they reach the self-hosted repo build. Doesn't actually
+# build the flatpak (that's slow and needs runtime extensions); just runs
+# the linters.
 name: Validate Flatpak
 
 on:
