@@ -25,6 +25,11 @@ on:
         description: "Release tag to publish the mirror under"
         default: "deps-ffmpeg-v1"
         required: true
+  # TEMP bootstrap trigger: workflow_dispatch only works once a workflow is on
+  # the default branch, so this push trigger lets the mirror run from the
+  # feature branch to create deps-ffmpeg-v1. Removed before merge to main.
+  push:
+    branches: [ v0.3.10-ffmpeg-bundle ]
 
 permissions:
   contents: write
@@ -92,7 +97,7 @@ jobs:
       - name: Publish to Kashot-owned release
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ inputs.tag }}
+          TAG: ${{ inputs.tag || 'deps-ffmpeg-v1' }}
         run: |
           set -euxo pipefail
           # Create the release if it doesn't exist yet (idempotent).
