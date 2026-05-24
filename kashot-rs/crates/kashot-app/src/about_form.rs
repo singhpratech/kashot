@@ -212,7 +212,9 @@ impl AboutView {
 
         // Title strip.
         draw_text(&mut surf, PAD, 22, 2, "KASHOT // ABOUT", argb_to_kashot(LASER));
-        let version = format!("v{}  ·  the lightweight screenshot tool", env!("CARGO_PKG_VERSION"));
+        // ASCII separator only — bitmap_font.rs ships glyphs for 0x20..=0x7E,
+        // so a U+00B7 middle dot would render as `?`.
+        let version = format!("v{}  //  the lightweight screenshot tool", env!("CARGO_PKG_VERSION"));
         draw_text(&mut surf, PAD, 50, 1, &version, argb_to_kashot(TEXT_MUTED));
 
         // Body copy. The "PrateekSingh" word is rendered separately so it
@@ -237,7 +239,9 @@ impl AboutView {
         }
         y += 22;
         let year = chrono::Local::now().format("%Y").to_string();
-        let copy = format!("© {} PrateekSingh. All rights reserved.", year);
+        // (c) instead of U+00A9 — bitmap_font.rs is ASCII-only, the symbol
+        // would render as `?`.
+        let copy = format!("(c) {} PrateekSingh. All rights reserved.", year);
         draw_text(&mut surf, PAD, y, 1, &copy, argb_to_kashot(TEXT_MUTED));
         y += 30;
         draw_text(&mut surf, PAD, y, 1, "WEB",     argb_to_kashot(SECTION_TINT));

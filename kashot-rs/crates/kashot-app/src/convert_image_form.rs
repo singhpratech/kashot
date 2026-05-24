@@ -589,7 +589,7 @@ fn render_row<S: painter::Surface>(
             let bw = browse_w;
             let bh = val_h;
             stroke_rect_argb(surf, bx, by, bw, bh, argb_to_kashot(if hovered { LASER_DIM } else { FIELD_BORDER }));
-            let label = "Browse…";
+            let label = "Browse...";
             let tw = bitmap_font::measure(label, 1);
             let tx = bx + (bw - tw) / 2;
             let ty = by + (bh - bitmap_font::GLYPH_H) / 2;

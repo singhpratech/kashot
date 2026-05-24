@@ -621,11 +621,13 @@ fn strip_markdown(md: &str) -> String {
         if let Some(rest) = line.strip_prefix("### ") { line = format!("# {rest}"); }
         else if let Some(rest) = line.strip_prefix("## ") { line = format!("# {rest}"); }
         // "# " stays as-is so renderer can tint it.
-        // Bullet.
+        // Bullet — the bitmap font (bitmap_font.rs) only ships glyphs for
+        // ASCII 0x20..=0x7E, so we stick to `>` here. A literal `•` would
+        // fall back to `?` in the renderer.
         let trimmed = line.trim_start();
         if let Some(rest) = trimmed.strip_prefix("- ").or_else(|| trimmed.strip_prefix("* ")) {
             let indent = line.len() - trimmed.len();
-            line = format!("{}• {}", " ".repeat(indent), rest);
+            line = format!("{}> {}", " ".repeat(indent), rest);
         }
         // Inline replacements.
         line = strip_inline(&line);
@@ -642,33 +644,49 @@ fn strip_inline(s: &str) -> String {
     let s = replace_pair(&s, "*",  "");
     let s = replace_pair(&s, "_",  "");
     let s = replace_pair(&s, "`",  "");
-    // [text](url) -> "text (url)"
+    // [text](url) -> "text (url)". Walk by byte indices on the &str (not over
+    // raw bytes) so multi-byte UTF-8 characters survive — the previous
+    // `bytes[i] as char` cast turned every UTF-8 continuation byte into its
+    // own char, and the bitmap font rendered each as `?`.
     let mut out = String::with_capacity(s.len());
-    let bytes = s.as_bytes();
     let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'[' {
-            if let Some(end_txt) = s[i + 1..].find(']') {
-                let txt_start = i + 1;
-                let txt_end   = i + 1 + end_txt;
-                if txt_end + 1 < bytes.len() && bytes[txt_end + 1] == b'(' {
-                    if let Some(end_url) = s[txt_end + 2..].find(')') {
-                        let url_start = txt_end + 2;
-                        let url_end   = txt_end + 2 + end_url;
-                        out.push_str(&s[txt_start..txt_end]);
+    while i < s.len() {
+        let rest = &s[i..];
+        if rest.starts_with('[') {
+            if let Some(end_txt) = rest[1..].find(']') {
+                let txt = &rest[1..1 + end_txt];
+                let after = &rest[1 + end_txt + 1..];
+                if let Some(after_paren) = after.strip_prefix('(') {
+                    if let Some(end_url) = after_paren.find(')') {
+                        let url = &after_paren[..end_url];
+                        out.push_str(txt);
                         out.push_str(" (");
-                        out.push_str(&s[url_start..url_end]);
+                        out.push_str(url);
                         out.push(')');
-                        i = url_end + 1;
+                        // advance past `[txt](url)` — sizes are byte counts.
+                        i += 1 + end_txt + 1 + 1 + end_url + 1;
                         continue;
                     }
                 }
             }
         }
-        out.push(bytes[i] as char);
-        i += 1;
+        // Step one full UTF-8 char.
+        let ch = rest.chars().next().expect("non-empty rest");
+        out.push(ch);
+        i += ch.len_utf8();
     }
+    // Final pass: any remaining non-ASCII (e.g. em-dashes, smart quotes from
+    // GitHub release bodies) gets replaced with ASCII fallbacks so the
+    // bitmap font (0x20..=0x7E only) doesn't render `?`.
     out
+        .replace('—', "-")
+        .replace('–', "-")
+        .replace('•', ">")
+        .replace('“', "\"")
+        .replace('”', "\"")
+        .replace('‘', "'")
+        .replace('’', "'")
+        .replace('…', "...")
 }
 
 /// Strip every occurrence of `marker` in `s`, replacing with `replacement`.
