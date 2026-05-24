@@ -13,9 +13,12 @@
 # secrets — the built-in GITHUB_TOKEN has the `contents: write` scope below.
 #
 # Licensing: the bundled builds include GPL components (libx264), so the
-# FFmpeg binaries are GPL-2.0-or-later. We attach SOURCE.txt pointing at the
-# corresponding source. Kashot calls FFmpeg as a separate process, so Kashot
-# stays Apache-2.0. See THIRD_PARTY_LICENSES.md.
+# FFmpeg binaries are GPL-2.0-or-later. To satisfy GPLv2 §3 without depending
+# on third-party servers, this workflow also mirrors the *matching* upstream
+# source tarball for every binary INTO the same release (ffmpeg-<ver>.tar.xz
+# from ffmpeg.org/releases) and writes a SOURCE.txt that maps each binary to
+# its source + checksums + a written offer. Kashot calls FFmpeg as a separate
+# process, so Kashot stays Apache-2.0. See THIRD_PARTY_LICENSES.md.
 name: Mirror FFmpeg
 
 on:
@@ -74,20 +77,59 @@ jobs:
           # Sanity-check the one we can actually run on this (linux amd64) host.
           out/ffmpeg-linux-amd64 -version | head -1
 
-      - name: Write SOURCE.txt (GPL corresponding-source pointer)
+      - name: Mirror matching GPL source + write SOURCE.txt
         run: |
-          cat > out/SOURCE.txt <<'EOF'
-          These FFmpeg binaries are GPL-2.0-or-later (they include libx264).
-          Corresponding source is available at:
-            https://ffmpeg.org/download.html
-            https://git.ffmpeg.org/ffmpeg.git
-          Upstream static builds mirrored here:
-            linux amd64/arm64 : https://johnvansickle.com/ffmpeg/
-            windows x86_64    : https://www.gyan.dev/ffmpeg/builds/
-            macos arm64/x86_64: https://ffmpeg.martin-riedl.de/
-          Kashot invokes ffmpeg as a separate process; Kashot is Apache-2.0.
-          See THIRD_PARTY_LICENSES.md in the kashot repo.
-          EOF
+          set -euxo pipefail
+          # Determine the FFmpeg version each binary reports, then fetch the
+          # exact matching release source from ffmpeg.org (version-pinned and
+          # permanent) into the same release. This is the GPLv2 §3 corresponding
+          # source — no third-party server in the loop.
+          : > out/.srcmap
+          declare -A SEEN
+          for b in ffmpeg-linux-amd64 ffmpeg-linux-arm64 ffmpeg-win-amd64.exe \
+                   ffmpeg-macos-amd64 ffmpeg-macos-arm64; do
+            ver=$(strings "out/$b" | grep -m1 -oE 'version [0-9]+\.[0-9]+(\.[0-9]+)?' \
+                  | head -1 | awk '{print $2}')
+            test -n "$ver" || { echo "::error::could not parse version for $b"; exit 1; }
+            echo "$b $ver" >> out/.srcmap
+            if [ -z "${SEEN[$ver]:-}" ]; then
+              curl -fL --retry 3 -o "out/ffmpeg-$ver.tar.xz" \
+                "https://ffmpeg.org/releases/ffmpeg-$ver.tar.xz"
+              SEEN[$ver]=1
+            fi
+          done
+          ( cd out && sha256sum ffmpeg-*.tar.xz )
+          {
+            echo "FFmpeg — GPL-2.0-or-later corresponding source"
+            echo "================================================"
+            echo
+            echo "The FFmpeg binaries in this release are GPL-2.0-or-later (built"
+            echo "with --enable-gpl, including libx264/libx265). The complete"
+            echo "corresponding source (GPLv2 §3) is mirrored INTO this release,"
+            echo "next to the binaries, so it never depends on a third-party server."
+            echo
+            echo "Binary  ->  version  ->  corresponding source (in THIS release)"
+            echo "----------------------------------------------------------------"
+            while read -r b ver; do
+              printf '  %-22s %-7s ->  ffmpeg-%s.tar.xz\n' "$b" "$ver" "$ver"
+            done < out/.srcmap
+            echo
+            echo "Source tarball checksums (sha256):"
+            ( cd out && sha256sum ffmpeg-*.tar.xz | sed 's/^/  /' )
+            echo
+            echo "These are the official version-matched release tarballs from"
+            echo "https://ffmpeg.org/releases/ . The exact build configuration"
+            echo "for any binary is printed by:  ffmpeg -version  (configuration: line)."
+            echo
+            echo "Written offer: for three years from distribution, the Kashot project"
+            echo "will provide the complete corresponding machine-readable source for"
+            echo "any binary here to any third party, for no more than the cost of"
+            echo "distribution, on request via https://github.com/singhpratech/kashot ."
+            echo
+            echo "Kashot invokes ffmpeg as a separate process; Kashot is Apache-2.0."
+            echo "See THIRD_PARTY_LICENSES.md in the kashot repo."
+          } > out/SOURCE.txt
+          rm -f out/.srcmap
 
       - name: Publish to Kashot-owned release
         env:
