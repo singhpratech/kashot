@@ -1,0 +1,115 @@
+# Build the Flatpak from dist/flatpak/org.kashot.Kashot.yaml on each tagged
+# release and publish the resulting OSTree repo to singhpratech/kashot-flatpak-repo,
+# which serves at https://repo.kashot.org/ via GitHub Pages.
+#
+# This is the self-hosted Flatpak channel — independent of Flathub. Users
+# install with:
+#   flatpak remote-add --if-not-exists kashot https://repo.kashot.org/kashot.flatpakrepo
+#   flatpak install kashot org.kashot.Kashot
+#
+# Requires a fine-grained PAT with "Contents: write" scope on
+# singhpratech/kashot-flatpak-repo, stored as repo secret KASHOT_FLATPAK_REPO_TOKEN.
+name: Build Flatpak repo
+
+on:
+  push:
+    tags: [ 'v*' ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-publish:
+    name: Build + publish to repo.kashot.org
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install flatpak + flatpak-builder + ostree
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            flatpak flatpak-builder ostree appstream
+
+      - name: Add Flathub remote (runtime source only)
+        # We pull org.freedesktop.Platform//24.08 + Sdk//24.08 from Flathub
+        # to *build* against. The resulting .flatpak does not require Flathub
+        # at install time — users get the runtime extension via dependency
+        # resolution on their own remotes.
+        run: |
+          flatpak remote-add --user --if-not-exists flathub \
+            https://flathub.org/repo/flathub.flatpakrepo
+
+      - name: Build Flatpak
+        run: |
+          flatpak-builder --user --install-deps-from=flathub \
+            --force-clean --disable-rofiles-fuse \
+            --repo=ostree-repo build-dir \
+            dist/flatpak/org.kashot.Kashot.yaml
+
+      - name: Generate .flatpakref + .flatpakrepo metadata
+        run: |
+          mkdir -p out
+          cp -r ostree-repo out/repo
+
+          # Static repo metadata published at /kashot.flatpakrepo so users can
+          # `flatpak remote-add` from a single URL. Format documented at
+          # https://docs.flatpak.org/en/latest/hosting-a-repository.html
+          cat > out/kashot.flatpakrepo <<EOF
+          [Flatpak Repo]
+          Title=Kashot
+          Url=https://repo.kashot.org/repo/
+          Homepage=https://kashot.org
+          Comment=Self-hosted Flatpak repo for Kashot
+          Description=Install Kashot (screenshot + recorder + format converter) on every Linux distro that ships Flatpak, without enabling Flathub.
+          Icon=https://kashot.org/assets/kashot-256.png
+          DefaultBranch=master
+          GPGKey=
+          EOF
+
+          # Single-click install file. Users can do:
+          #   flatpak install https://repo.kashot.org/org.kashot.Kashot.flatpakref
+          cat > out/org.kashot.Kashot.flatpakref <<EOF
+          [Flatpak Ref]
+          Title=Kashot
+          Name=org.kashot.Kashot
+          Branch=master
+          Url=https://repo.kashot.org/repo/
+          SuggestRemoteName=kashot
+          Homepage=https://kashot.org
+          Icon=https://kashot.org/assets/kashot-256.png
+          RuntimeRepo=https://flathub.org/repo/flathub.flatpakrepo
+          IsRuntime=false
+          EOF
+
+      - name: Copy landing assets (README/index/CNAME) from current main of the repo
+        # Keep the human-facing top-level files in sync with the destination
+        # repo's main — fetched fresh each run so we don't drift if the user
+        # edits README/index.html upstream.
+        run: |
+          git clone --depth=1 https://github.com/singhpratech/kashot-flatpak-repo.git dest-readonly
+          cp dest-readonly/README.md   out/README.md   || true
+          cp dest-readonly/index.html  out/index.html  || true
+          cp dest-readonly/CNAME       out/CNAME       || true
+          rm -rf dest-readonly
+
+      - name: Push to singhpratech/kashot-flatpak-repo
+        env:
+          TOKEN: ${{ secrets.KASHOT_FLATPAK_REPO_TOKEN }}
+        run: |
+          if [ -z "$TOKEN" ]; then
+            echo "::error::KASHOT_FLATPAK_REPO_TOKEN secret is not set. See .github/workflows/build-flatpak-repo.yml header for setup."
+            exit 1
+          fi
+          cd out
+          git init -b main
+          git config user.name  "singhpratech-bot"
+          git config user.email "146540319+singhpratech@users.noreply.github.com"
+          git add .
+          git commit -m "publish: ${GITHUB_REF_NAME:-manual} ($(date -u +%Y-%m-%dT%H:%M:%SZ))"
+          git remote add origin "https://x-access-token:${TOKEN}@github.com/singhpratech/kashot-flatpak-repo.git"
+          # Force push the whole repo — destination is a static site, history
+          # doesn't matter, and a full overwrite avoids OSTree consistency
+          # issues from partial updates.
+          git push -f origin main

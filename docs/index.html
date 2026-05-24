@@ -820,8 +820,9 @@ scoop install kashot</code></pre>
 chmod +x kashot-x86_64.AppImage
 ./kashot-x86_64.AppImage
 
-# Flatpak (queued)
-flatpak install flathub org.kashot.Kashot
+# Flatpak (self-hosted — Flathub still pending)
+flatpak remote-add --if-not-exists kashot https://repo.kashot.org/kashot.flatpakrepo
+flatpak install kashot org.kashot.Kashot
 
 # AUR (queued)
 yay -S kashot</code></pre>
