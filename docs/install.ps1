@@ -4,7 +4,7 @@
 #   iwr -useb https://kashot.org/install.ps1 | iex
 #
 # Pin a specific version:
-#   & ([scriptblock]::Create((iwr -useb https://kashot.org/install.ps1))) -Tag v0.3.8
+#   & ([scriptblock]::Create((iwr -useb https://kashot.org/install.ps1))) -Tag v0.3.9
 #
 # Pick a custom install dir:
 #   & ([scriptblock]::Create((iwr -useb https://kashot.org/install.ps1))) -InstallDir 'C:\Tools\Kashot'
