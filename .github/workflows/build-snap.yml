@@ -28,6 +28,9 @@ on:
       - 'icons/**'
       - 'dist/aur/kashot.desktop'
       - '.github/workflows/build-snap.yml'
+  # Manual publish for snap-only changes (e.g. packaging fixes) that don't
+  # warrant a full version tag — builds and uploads the current snap to edge.
+  workflow_dispatch:
 
 jobs:
   build-snap:
@@ -54,7 +57,7 @@ jobs:
   publish-snap:
     name: snap upload → edge
     needs: [ build-snap ]
-    if: startsWith(github.ref, 'refs/tags/')
+    if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/download-artifact@v4
