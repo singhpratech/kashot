@@ -3,7 +3,7 @@
 #   yay -S kashot-bin
 pkgname=kashot-bin
 _pkgname=kashot
-pkgver=0.4.1
+pkgver=0.4.2
 pkgrel=1
 pkgdesc="Fast screenshots with annotations — tray-resident, hotkey-driven, free."
 arch=('x86_64')
@@ -16,7 +16,7 @@ conflicts=('kashot')
 source=("$_pkgname-$pkgver.tar.gz::https://github.com/singhpratech/kashot/releases/download/v$pkgver/kashot-linux-x86_64.tar.gz"
         "$_pkgname.desktop::https://raw.githubusercontent.com/singhpratech/kashot/v$pkgver/dist/aur/kashot.desktop"
         "$_pkgname.png::https://raw.githubusercontent.com/singhpratech/kashot/v$pkgver/icons/linux_hicolor/256x256/apps/kashot.png")
-sha256sums=('46765359dca96ca33e25be57b211d2ecc20f8cdf2638ff0af89f403d3fb0259c'
+sha256sums=('REPLACE_AFTER_v0.4.2_RELEASE_PUBLISHES'
             'SKIP'
             'SKIP')
 

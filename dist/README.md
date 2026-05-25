@@ -1,7 +1,7 @@
 # Distribution package metadata
 
 Each subfolder is a package manifest for a different distribution channel.
-Files reference `v0.4.1` and use placeholder `REPLACE_WITH_ACTUAL_SHA256_AT_RELEASE_TIME`
+Files reference `v0.4.2` and use placeholder `REPLACE_WITH_ACTUAL_SHA256_AT_RELEASE_TIME`
 strings — the CI workflow fills these in at tag time and submits the
 manifests via PRs to each registry.
 
@@ -32,7 +32,7 @@ review gate.
 > wraps the MSI.
 
 > **Linux broad packaging.** `rpm/kashot.spec` and `snap/snapcraft.yaml`
-> are buildable as-is against the v0.4.1 release tarball, but neither is
+> are buildable as-is against the v0.4.2 release tarball, but neither is
 > activated yet: the RPM still needs a one-time Fedora COPR project
 > submission before `dnf install kashot` works, and the snap needs a
 > first `snapcraft upload --release=stable`. Until then, Fedora/RHEL/
