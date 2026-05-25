@@ -67,6 +67,9 @@
   <content_rating type="oars-1.1"/>
 
   <releases>
+    <release version="0.3.12" date="2026-05-25">
+      <description><p>Linux audio recording fix: the bundled Linux ffmpeg is now built with PulseAudio support, so "Record + mic", "Record + system audio", and "Record + mic + system audio" actually capture sound on Linux (X11). The previously bundled static ffmpeg lacked PulseAudio, so audio recording failed silently on every Linux install (video-only recording was unaffected). No other behavior changes.</p></description>
+    </release>
     <release version="0.3.11" date="2026-05-24">
       <description><p>Licensing correctness: the Windows MSI installer's license page now correctly displays the Apache-2.0 license — it previously carried stale dual MIT/Apache text left over from an earlier licensing scheme. Kashot is, and remains, Apache-2.0 on every platform and surface. The GPL corresponding source for the bundled ffmpeg is now mirrored alongside the binaries so it never depends on a third-party server. No application behavior changes from v0.3.10.</p></description>
     </release>

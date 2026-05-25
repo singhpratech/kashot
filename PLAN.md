@@ -258,4 +258,4 @@ These cross-cut both implementations; if you change one, change both.
 
 ---
 
-*Last updated: 2026-05-24 (v0.3.11 release — the Windows MSI installer license page now correctly shows Apache-2.0 (it previously carried stale dual MIT/Apache text); the GPL corresponding source for the bundled ffmpeg is now mirrored alongside the binaries in the dependency release. No application behavior changes from v0.3.10). Maintained by [@singhpratech](https://github.com/singhpratech).*
+*Last updated: 2026-05-25 (v0.3.12 release — Linux audio recording fix: the bundled Linux ffmpeg is now built with PulseAudio support (switched to a BtbN static GPL build), so "Record + mic" / "Record + system audio" capture sound on Linux X11 instead of failing silently; the previous johnvansickle build lacked libpulse. Earlier in v0.3.11: the Windows MSI license page was corrected to Apache-2.0 and the GPL ffmpeg source was self-hosted). Maintained by [@singhpratech](https://github.com/singhpratech).*
