@@ -21,25 +21,19 @@
 //!                      into a black `-f x11grab` capture that XWayland
 //!                      silently produces. TODO(v0.3): wire `ashpd` /
 //!                      xdg-desktop-portal.
-//! * Windows          : `ffmpeg -f gdigrab` for video + `-f dshow` for the
-//!                      default DirectShow microphone. See approach
-//!                      discussion in the PR — gdigrab is CPU-heavy and does
-//!                      not pick up DWM-composited surfaces as cleanly as
-//!                      `Windows.Graphics.Capture` would, but it's the
-//!                      smallest possible delta from the existing Linux
-//!                      pattern and ships a working recorder in v0.2.1
-//!                      without pulling in the `windows` crate, Media
-//!                      Foundation FFI, or a hand-rolled H.264 encoder.
-//!                      TODO(v0.3): port to `Windows.Graphics.Capture` +
-//!                      MediaFoundation for per-window + per-monitor capture
-//!                      and hardware-accelerated encoding.
-//!                      TODO(v0.3): wire WASAPI loopback for system audio —
-//!                      DirectShow has no general loopback device, and
-//!                      "Stereo Mix" is disabled by default on modern
-//!                      Windows installs, so on this PR Windows ships
-//!                      mic-only audio (`system_audio: true` is silently
-//!                      treated the same as mic-only when no loopback is
-//!                      available).
+//! * Windows          : `ffmpeg -f gdigrab` for video; audio is captured
+//!                      natively via WASAPI (see `recorder_windows_audio.rs`)
+//!                      and streamed into ffmpeg over a loopback TCP socket.
+//!                      The default render endpoint in loopback mode is the
+//!                      system audio and the default capture endpoint is the
+//!                      mic, so both work with **no** Stereo Mix / VB-Audio
+//!                      driver. gdigrab stays for video — it's CPU-heavy and
+//!                      doesn't pick up DWM-composited surfaces as cleanly as
+//!                      `Windows.Graphics.Capture` would, but it's a small,
+//!                      proven delta from the Linux pattern.
+//!                      TODO: port video to `Windows.Graphics.Capture` +
+//!                      MediaFoundation for per-window capture and
+//!                      hardware-accelerated encoding.
 //! * macOS            : video-only recordings use the built-in
 //!                      `screencapture -v` (no ffmpeg dependency). Any audio
 //!                      request routes through `ffmpeg -f avfoundation`
@@ -60,6 +54,12 @@
 use crate::{Error, Result};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+
+// WASAPI loopback + mic capture lives in its own file to keep the COM-heavy
+// code out of this module. Windows-only; everything it exposes is gated too.
+#[cfg(target_os = "windows")]
+#[path = "recorder_windows_audio.rs"]
+mod windows_audio;
 
 /// What audio sources to mix into the recording. Mirrors the C#
 /// `KashotRecorder.Start(path, micEnabled, systemAudioEnabled)` triple.
@@ -165,6 +165,18 @@ impl AudioPump {
             let _ = h.join();
         }
     }
+}
+
+/// The PCM format + loopback port of one started WASAPI source, everything
+/// `build_windows_ffmpeg_args` needs to wire an `-i tcp://…` input. Plain data
+/// (no COM), so the argv builder stays unit-testable on any host.
+#[cfg(any(target_os = "windows", test))]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct WasapiAudioSpec {
+    pub port:        u16,
+    pub sample_rate: u32,
+    pub channels:    u16,
+    pub ffmpeg_fmt:  &'static str,
 }
 
 impl Recorder {
@@ -577,29 +589,45 @@ pub(crate) fn pick_macos_audio_device(
     Ok(mic)
 }
 
-// ── Windows: ffmpeg -f gdigrab (+ -f dshow for mic) ─────────────────────────
+// ── Windows: ffmpeg -f gdigrab video + WASAPI audio over loopback TCP ────────
+//
+// Video stays on gdigrab (low-risk, already shipping). Audio is captured
+// natively via WASAPI (see recorder_windows_audio.rs): the default render
+// endpoint in loopback mode is the system audio, the default capture endpoint
+// is the mic — no Stereo Mix, no VB-Audio driver. Each source streams raw PCM
+// over a 127.0.0.1 socket that ffmpeg reads as an extra `-i`, and ffmpeg does
+// the resample + amix, exactly like the Linux pulse + monitor path.
 
 #[cfg(target_os = "windows")]
 fn spawn_recorder(output: &Path, options: RecordingOptions) -> Result<Backend> {
+    use windows_audio::SourceKind;
+
     let path = output.to_str().ok_or_else(||
         Error::Recording("non-UTF-8 output path".into()))?;
     let ffmpeg = locate_ffmpeg().unwrap_or_else(|| PathBuf::from("ffmpeg.exe"));
 
-    // Pick the right audio capture device(s) given what the user asked for.
-    // Returns Err with an actionable message if `system_audio` was requested
-    // but no loopback device (Stereo Mix / What U Hear / VoiceMeeter / etc.)
-    // is available — so the toast doesn't lie about what's being recorded.
-    let devices = list_dshow_audio_devices(&ffmpeg);
-    let audio_dev: Option<String> = pick_windows_audio_device(&devices, options)?;
+    // One WASAPI capture per requested source. Input-index order is irrelevant
+    // (both feed amix), so mic-then-system is fine. If any source fails to
+    // start, tear down the ones already running so we never leak a capture
+    // thread, then surface the actionable error (mic-privacy is the usual one).
+    let mut kinds: Vec<SourceKind> = Vec::new();
+    if options.mic          { kinds.push(SourceKind::Microphone); }
+    if options.system_audio { kinds.push(SourceKind::SystemLoopback); }
 
-    // Pre-flight probe: catch the Windows-Privacy "microphone access denied"
-    // case BEFORE we start a recording that would silently produce a muted
-    // track. Skipped for video-only.
-    if let Some(dev) = &audio_dev {
-        probe_dshow_audio_device(&ffmpeg, dev)?;
+    let mut started: Vec<windows_audio::StartedSource> = Vec::new();
+    for kind in kinds {
+        match windows_audio::start_source(kind) {
+            Ok(s) => started.push(s),
+            Err(e) => {
+                for mut s in started { s.pump.signal_stop(); s.pump.join(); }
+                return Err(e);
+            }
+        }
     }
 
-    let args = build_windows_ffmpeg_args(path, options, audio_dev.as_deref());
+    let specs: Vec<WasapiAudioSpec> = started.iter().map(|s| s.spec.clone()).collect();
+    let args = build_windows_ffmpeg_args(path, &specs);
+
     let res = Command::new(&ffmpeg)
         .args(&args)
         .stdin(Stdio::piped())
@@ -608,110 +636,33 @@ fn spawn_recorder(output: &Path, options: RecordingOptions) -> Result<Backend> {
         .spawn();
 
     match res {
-        Ok(c) => Ok(Backend::Process { child: c, pumps: Vec::new() }),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Err(Error::Recording(
-            "ffmpeg.exe not found — the Kashot installer normally ships it \
-             next to kashot.exe. Reinstall, or drop ffmpeg.exe into the same \
-             folder as kashot.exe and retry.".into()
-        )),
-        Err(e) => Err(Error::Recording(format!("failed to spawn ffmpeg: {e}"))),
+        Ok(child) => {
+            let pumps = started.into_iter().map(|s| s.pump).collect();
+            Ok(Backend::Process { child, pumps })
+        }
+        Err(e) => {
+            for mut s in started { s.pump.signal_stop(); s.pump.join(); }
+            if e.kind() == std::io::ErrorKind::NotFound {
+                Err(Error::Recording(
+                    "ffmpeg.exe not found — the Kashot installer normally ships \
+                     it next to kashot.exe. Reinstall, or drop ffmpeg.exe into \
+                     the same folder as kashot.exe and retry.".into()))
+            } else {
+                Err(Error::Recording(format!("failed to spawn ffmpeg: {e}")))
+            }
+        }
     }
 }
 
-/// Pick the right DirectShow audio device from the discovered list given
-/// what the user asked for. Pure function — testable without a host that
-/// actually has any of these devices installed.
-///
-/// Selection rules:
-/// - `options.system_audio` (loopback): require one of the loopback-style
-///   device names (Stereo Mix, What U Hear, Wave Out Mix, VoiceMeeter…).
-///   If `mic` is *also* set we still return the loopback device; ffmpeg's
-///   dshow input can only consume one audio source per `-i`, so picking
-///   loopback is the closest thing to "both" until Phase-3 WASAPI lands.
-/// - `options.mic` (mic only): prefer names that look like microphones
-///   ("Microphone (…)", "Headset", "Array"), fall back to whatever's first.
-/// - neither: returns `None` (video-only recording).
-///
-/// When `system_audio` was requested but no loopback device exists we
-/// return Err with a Windows-specific actionable message. That bubbles up
-/// to the tray-loop and the user sees a real dialog rather than a silent
-/// muted MP4.
-#[cfg(any(target_os = "windows", test))]
-pub(crate) fn pick_windows_audio_device(
-    devices: &[String],
-    options: RecordingOptions,
-) -> Result<Option<String>> {
-    if !options.mic && !options.system_audio {
-        return Ok(None);
-    }
-
-    if options.system_audio {
-        // Loopback-style devices vary by audio chipset and driver. The names
-        // below cover the common shapes (English locale defaults) plus
-        // VoiceMeeter, which is the most popular virtual audio cable on
-        // Windows.
-        const LOOPBACK_NEEDLES: &[&str] = &[
-            "stereo mix", "what u hear", "what you hear", "wave out mix",
-            "voicemeeter", "vb-audio", "virtual audio",
-        ];
-        let loopback = devices.iter().find(|d| {
-            let n = d.to_lowercase();
-            LOOPBACK_NEEDLES.iter().any(|needle| n.contains(needle))
-        });
-        if let Some(d) = loopback {
-            return Ok(Some(d.clone()));
-        }
-        if !options.mic {
-            return Err(Error::Recording(
-                "System-audio capture needs a loopback device, but none is \
-                 enabled. Right-click the Windows speaker icon → Sounds → \
-                 Recording → right-click empty area → \"Show Disabled \
-                 Devices\" → enable \"Stereo Mix\" — then retry. (No system \
-                 audio was captured; nothing was recorded.)".into()
-            ));
-        }
-        // mic=true && system_audio=true && no loopback: fall through to mic.
-    }
-
-    // Mic-only path (or system_audio fallback when both were requested).
-    const MIC_NEEDLES: &[&str] = &[
-        "microphone", "headset", "array mic", "internal mic",
-    ];
-    let mic = devices.iter().find(|d| {
-        let n = d.to_lowercase();
-        MIC_NEEDLES.iter().any(|needle| n.contains(needle))
-    });
-    match mic.or_else(|| devices.iter().next()) {
-        Some(d) => Ok(Some(d.clone())),
-        None => Err(Error::Recording(
-            // Empty device list on Windows almost always means the OS
-            // Privacy gate is blocking dshow enumeration entirely (no
-            // device data leaks to apps without mic permission). The
-            // "no microphone plugged in" case is extremely rare on
-            // desktop / laptop hardware. Lead with the common fix.
-            "No microphone detected by ffmpeg.\n\n\
-             This is almost always Windows Privacy blocking microphone \
-             access for desktop apps. Fix it:\n\n\
-             1. Open Settings → Privacy & Security → Microphone\n\
-             2. Turn ON \"Microphone access\"\n\
-             3. Turn ON \"Let desktop apps access your microphone\"\n\
-             4. Retry recording\n\n\
-             If you genuinely have no mic plugged in, skip audio in \
-             the tray menu's Record submenu instead.".into()
-        )),
-    }
-}
-
-/// Build the ffmpeg argv for Windows GDI capture (+ optional DirectShow mic).
-/// Pure function so the test suite can assert exact argv composition without
-/// spawning a process or having an actual mic plugged in.
+/// Build the ffmpeg argv for Windows: gdigrab video plus one raw-PCM TCP input
+/// per WASAPI source, mixed down to a single stereo AAC track. Pure function so
+/// the suite can assert exact argv composition without WASAPI or a real device.
 #[cfg(any(target_os = "windows", test))]
 pub(crate) fn build_windows_ffmpeg_args(
     output_path: &str,
-    options:     RecordingOptions,
-    mic_device:  Option<&str>,
+    audio:       &[WasapiAudioSpec],
 ) -> Vec<String> {
-    let mut a: Vec<String> = Vec::with_capacity(24);
+    let mut a: Vec<String> = Vec::with_capacity(48);
     let push = |a: &mut Vec<String>, s: &str| a.push(s.to_string());
     push(&mut a, "-y");
     // Video: GDI grab of the whole desktop at 30 fps. `desktop` is gdigrab's
@@ -719,14 +670,17 @@ pub(crate) fn build_windows_ffmpeg_args(
     push(&mut a, "-f"); push(&mut a, "gdigrab");
     push(&mut a, "-framerate"); push(&mut a, "30");
     push(&mut a, "-i"); push(&mut a, "desktop");
-    // Audio: DirectShow input named after the discovered default mic.
-    // If `options.mic` is unset OR no device was found, we ship video-only.
-    let have_audio = options.mic || options.system_audio;
-    let use_mic    = have_audio && mic_device.is_some();
-    if use_mic {
-        let dev = mic_device.unwrap();
-        push(&mut a, "-f"); push(&mut a, "dshow");
-        push(&mut a, "-i"); push(&mut a, &format!("audio={}", dev));
+    // Audio: one raw-PCM input per WASAPI source. We're already listening on
+    // the loopback port; ffmpeg connects back as the TCP client. The format /
+    // rate / channels are exactly what the device handed us, so no conversion
+    // happens before ffmpeg. `-thread_queue_size` keeps the demuxer from
+    // dropping packets while the encoder is busy.
+    for s in audio {
+        push(&mut a, "-thread_queue_size"); push(&mut a, "1024");
+        push(&mut a, "-f"); push(&mut a, s.ffmpeg_fmt);
+        push(&mut a, "-ar"); a.push(s.sample_rate.to_string());
+        push(&mut a, "-ac"); a.push(s.channels.to_string());
+        push(&mut a, "-i"); a.push(format!("tcp://127.0.0.1:{}", s.port));
     }
     // Video encode: H.264 ultrafast preset, yuv420p so the result plays in
     // every consumer player. Same even-dimension `pad` as Linux because
@@ -735,186 +689,33 @@ pub(crate) fn build_windows_ffmpeg_args(
     push(&mut a, "-preset"); push(&mut a, "ultrafast");
     push(&mut a, "-pix_fmt"); push(&mut a, "yuv420p");
     push(&mut a, "-vf"); push(&mut a, "pad=ceil(iw/2)*2:ceil(ih/2)*2");
-    if use_mic {
-        // AAC stereo at 160 kbps — same as Linux so converted files behave
-        // identically downstream. `-ac 2` upmixes mono mics so the file
-        // always carries a stereo track and our convert pipeline doesn't
-        // need a per-platform branch.
-        push(&mut a, "-c:a"); push(&mut a, "aac");
-        push(&mut a, "-b:a"); push(&mut a, "160k");
-        push(&mut a, "-ac"); push(&mut a, "2");
+    match audio.len() {
+        0 => {}
+        1 => {
+            // Single source: video is input 0, audio is input 1.
+            push(&mut a, "-map"); push(&mut a, "0:v");
+            push(&mut a, "-map"); push(&mut a, "1:a");
+            push(&mut a, "-c:a"); push(&mut a, "aac");
+            push(&mut a, "-b:a"); push(&mut a, "160k");
+            push(&mut a, "-ac"); push(&mut a, "2");
+        }
+        n => {
+            // Mix every audio input (mic + system) into one stereo AAC track,
+            // mirroring the Linux amix path.
+            let inputs: String = (1..=n).map(|i| format!("[{i}:a]")).collect();
+            push(&mut a, "-filter_complex");
+            a.push(format!(
+                "{inputs}amix=inputs={n}:duration=longest:dropout_transition=0[aout]"
+            ));
+            push(&mut a, "-map"); push(&mut a, "0:v");
+            push(&mut a, "-map"); push(&mut a, "[aout]");
+            push(&mut a, "-c:a"); push(&mut a, "aac");
+            push(&mut a, "-b:a"); push(&mut a, "160k");
+            push(&mut a, "-ac"); push(&mut a, "2");
+        }
     }
     push(&mut a, output_path);
     a
-}
-
-/// Parse `ffmpeg -list_devices true -f dshow -i dummy` output for the names
-/// of audio capture devices. Returns names in the order ffmpeg reports them
-/// (which is the OS-default-first order we want).
-///
-/// Output we're parsing looks like:
-///
-/// ```text
-/// [dshow @ 0000…] DirectShow video devices (some may be both video and audio devices)
-/// [dshow @ 0000…]  "USB Camera"
-/// [dshow @ 0000…]     Alternative name "@device_pnp_…"
-/// [dshow @ 0000…] DirectShow audio devices
-/// [dshow @ 0000…]  "Microphone (Realtek(R) Audio)"
-/// [dshow @ 0000…]     Alternative name "@device_cm_…"
-/// ```
-///
-/// We only care about names listed *after* the "DirectShow audio devices"
-/// header and *not* under an "Alternative name" line.
-#[cfg(any(target_os = "windows", test))]
-pub(crate) fn parse_dshow_audio_devices(stderr: &str) -> Vec<String> {
-    let mut out = Vec::new();
-    let mut in_audio = false;
-    for line in stderr.lines() {
-        let l = line.trim_start();
-        // Strip ffmpeg's `[dshow @ ...]` prefix if present.
-        let body = if let Some(rest) = l.strip_prefix('[') {
-            rest.splitn(2, ']').nth(1).unwrap_or(rest).trim_start()
-        } else { l };
-        if body.starts_with("DirectShow audio devices") {
-            in_audio = true;
-            continue;
-        }
-        if body.starts_with("DirectShow video devices") {
-            in_audio = false;
-            continue;
-        }
-        if !in_audio { continue; }
-        if body.starts_with("Alternative name") { continue; }
-        // Device-name lines are `"Name (...)"` (with the quotes). Anything
-        // else (blank lines, error footer, `Immediate exit requested`) we
-        // skip.
-        if let Some(start) = body.find('"') {
-            if let Some(end_rel) = body[start + 1..].find('"') {
-                let name = &body[start + 1..start + 1 + end_rel];
-                if !name.is_empty() {
-                    out.push(name.to_string());
-                }
-            }
-        }
-    }
-    out
-}
-
-/// Pre-flight: open `device` for a 1-second probe to confirm Windows lets
-/// this process actually read samples from it. Catches the most common
-/// "silent muted MP4" causes:
-///   - Windows Settings → Privacy → Microphone → "Let desktop apps access
-///     your microphone" is OFF (very common after Win11 fresh install).
-///   - The mic device is exclusive-mode held by another app.
-///   - The mic was renamed/unplugged between device-list and start time.
-///
-/// Returns `Ok(())` if ffmpeg opens the device successfully within ~3s.
-/// On failure we shape the stderr into an actionable message and let the
-/// tray-loop's existing dialog code surface it. NO MP4 is produced; the
-/// user gets a real error before the recording "starts".
-#[cfg(target_os = "windows")]
-fn probe_dshow_audio_device(ffmpeg: &Path, device: &str) -> Result<()> {
-    use std::time::Duration;
-    let mut child = Command::new(ffmpeg)
-        .args([
-            "-hide_banner", "-nostats",
-            "-rtbufsize", "32M",
-            "-f", "dshow",
-            "-i", &format!("audio={device}"),
-            "-t", "0.5",
-            "-f", "null", "-",
-        ])
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| Error::Recording(format!("audio probe spawn failed: {e}")))?;
-
-    // 3s ceiling — a healthy probe finishes in <500ms; anything longer is
-    // a device that's either denied or exclusive-locked.
-    let deadline = std::time::Instant::now() + Duration::from_secs(3);
-    let exit = loop {
-        if let Some(status) = child.try_wait().ok().flatten() {
-            break Some(status);
-        }
-        if std::time::Instant::now() >= deadline {
-            let _ = child.kill();
-            break None;
-        }
-        std::thread::sleep(Duration::from_millis(50));
-    };
-
-    let stderr = child.stderr.take()
-        .map(|mut s| { let mut b = String::new(); use std::io::Read as _; let _ = s.read_to_string(&mut b); b })
-        .unwrap_or_default();
-
-    let ok = exit.map(|s| s.success()).unwrap_or(false);
-    if ok {
-        return Ok(());
-    }
-
-    let lower = stderr.to_lowercase();
-    let msg = if lower.contains("access is denied") || lower.contains("0x80070005") {
-        format!(
-            "Windows blocked microphone access for KAShot.\n\n\
-             Open Settings → Privacy & Security → Microphone, turn on \
-             \"Microphone access\" AND \"Let desktop apps access your \
-             microphone\", then retry.\n\n\
-             (Device: {device})"
-        )
-    } else if lower.contains("could not find") || lower.contains("i/o error")
-            || lower.contains("no such") {
-        format!(
-            "The audio device \"{device}\" is no longer available. \
-             Did it get unplugged or renamed? Re-open the Record menu \
-             to refresh the device list."
-        )
-    } else if lower.contains("device or resource busy")
-            || lower.contains("exclusive") {
-        format!(
-            "The audio device \"{device}\" is held in exclusive mode by \
-             another app (often Zoom / Teams / Discord). Close that app \
-             or right-click the speaker icon → Sounds → Recording → pick \
-             the device → Properties → Advanced → uncheck \"Allow \
-             applications to take exclusive control\", then retry."
-        )
-    } else if exit.is_none() {
-        format!(
-            "The microphone probe didn't finish in 3 s — \"{device}\" is \
-             likely deadlocked. Unplug + replug the device, or pick a \
-             different one from the Record menu."
-        )
-    } else {
-        // Generic non-zero exit — pass through the last line of ffmpeg's
-        // stderr so support has something to work with.
-        let tail = stderr.lines().rev()
-            .find(|l| !l.trim().is_empty())
-            .unwrap_or("(no ffmpeg output)");
-        format!("Could not open audio device \"{device}\": {tail}")
-    };
-    Err(Error::Recording(msg))
-}
-
-/// Probe ffmpeg for available DirectShow audio devices. Returns an empty Vec
-/// on any error (missing ffmpeg, no DirectShow, no mics). ffmpeg writes the
-/// device list to stderr and exits non-zero — that's expected and not an
-/// error we want to surface to the user.
-#[cfg(target_os = "windows")]
-fn list_dshow_audio_devices(ffmpeg: &Path) -> Vec<String> {
-    let out = Command::new(ffmpeg)
-        .args(["-hide_banner", "-list_devices", "true",
-               "-f", "dshow", "-i", "dummy"])
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped())
-        .output();
-    match out {
-        Ok(o) => {
-            let s = String::from_utf8_lossy(&o.stderr);
-            parse_dshow_audio_devices(&s)
-        }
-        Err(_) => Vec::new(),
-    }
 }
 
 // ── unreachable on the platforms above, kept so non-tier-1 OSes still build ──
@@ -997,180 +798,69 @@ mod tests {
         assert!(a.iter().any(|s| s == "alsa_output.0.monitor"));
     }
 
-    // Windows argv-builder: same shape of assertions. These tests are
-    // gated on `#[cfg(any(target_os = "windows", test))]` for the builder
-    // and run on every host so a Linux CI agent will catch a Windows-specific
-    // regression in the argv we hand to ffmpeg.
+    // Windows argv-builder: gdigrab video plus one raw-PCM TCP input per
+    // WASAPI source. Gated `#[cfg(any(target_os = "windows", test))]` so a
+    // Linux CI agent catches regressions in the argv we hand to ffmpeg.
+
+    fn spec(port: u16, rate: u32, ch: u16, fmt: &'static str) -> WasapiAudioSpec {
+        WasapiAudioSpec { port, sample_rate: rate, channels: ch, ffmpeg_fmt: fmt }
+    }
 
     #[test]
-    fn windows_argv_video_only_no_mic_available() {
-        let a = build_windows_ffmpeg_args("C:/tmp/out.mp4", RecordingOptions::NONE, None);
+    fn windows_argv_video_only_no_audio_sources() {
+        let a = build_windows_ffmpeg_args("C:/tmp/out.mp4", &[]);
         assert!(a.windows(2).any(|w| w == ["-f", "gdigrab"]),
                 "missing -f gdigrab in: {:?}", a);
         assert!(a.windows(2).any(|w| w == ["-i", "desktop"]));
         assert!(a.windows(2).any(|w| w == ["-c:v", "libx264"]));
-        assert!(!a.iter().any(|s| s == "dshow"), "dshow should be absent when audio off");
+        assert!(!a.iter().any(|s| s.starts_with("tcp://")),
+                "no audio sockets when video-only: {:?}", a);
         assert!(!a.iter().any(|s| s == "-c:a"), "audio codec should be absent when audio off");
         assert_eq!(a.last().unwrap(), "C:/tmp/out.mp4");
     }
 
     #[test]
-    fn windows_argv_mic_only_uses_dshow_aac() {
+    fn windows_argv_single_source_maps_input_one() {
+        // One WASAPI source → input index 1 (gdigrab is 0). The declared
+        // format/rate/channels are exactly what the device reported.
         let a = build_windows_ffmpeg_args("C:/tmp/out.mp4",
-            RecordingOptions::MIC_ONLY, Some("Microphone (Realtek)"));
-        assert!(a.windows(2).any(|w| w == ["-f", "dshow"]));
-        // The audio input arg is `audio=<name>`.
-        assert!(a.iter().any(|s| s == "audio=Microphone (Realtek)"),
-                "missing audio= input in: {:?}", a);
+            &[spec(54123, 48000, 2, "f32le")]);
+        assert!(a.windows(2).any(|w| w == ["-f", "f32le"]),
+                "audio input format must match the device: {:?}", a);
+        assert!(a.windows(2).any(|w| w == ["-ar", "48000"]));
+        assert!(a.windows(2).any(|w| w == ["-ac", "2"]));
+        assert!(a.iter().any(|s| s == "tcp://127.0.0.1:54123"),
+                "missing loopback tcp input: {:?}", a);
+        assert!(a.windows(2).any(|w| w == ["-map", "0:v"]));
+        assert!(a.windows(2).any(|w| w == ["-map", "1:a"]));
         assert!(a.windows(2).any(|w| w == ["-c:a", "aac"]));
-        assert!(a.windows(2).any(|w| w == ["-ac", "2"]),
-                "should always upmix to stereo so output container matches Linux: {:?}", a);
+        assert_eq!(a.last().unwrap(), "C:/tmp/out.mp4");
     }
 
     #[test]
-    fn windows_argv_mic_requested_but_none_available_falls_back_to_video_only() {
+    fn windows_argv_two_sources_uses_amix() {
+        // mic + system loopback → two inputs (1 and 2) mixed to one AAC track.
         let a = build_windows_ffmpeg_args("C:/tmp/out.mp4",
-            RecordingOptions::MIC_ONLY, None);
-        assert!(a.windows(2).any(|w| w == ["-f", "gdigrab"]));
-        assert!(!a.iter().any(|s| s == "dshow"),
-                "should drop dshow when no mic device exists, got: {:?}", a);
-        assert!(!a.iter().any(|s| s == "-c:a"),
-                "should drop audio codec when there's no audio stream, got: {:?}", a);
+            &[spec(40001, 48000, 2, "f32le"), spec(40002, 44100, 1, "s16le")]);
+        let fc = a.iter().position(|s| s == "-filter_complex")
+            .expect("missing -filter_complex");
+        assert!(a[fc + 1].contains("[1:a][2:a]amix=inputs=2"),
+                "expected amix over both inputs, got {:?}", a[fc + 1]);
+        assert!(a.windows(2).any(|w| w == ["-map", "[aout]"]));
+        // Each source keeps its own declared format/rate.
+        assert!(a.iter().any(|s| s == "tcp://127.0.0.1:40001"));
+        assert!(a.iter().any(|s| s == "tcp://127.0.0.1:40002"));
+        assert!(a.windows(2).any(|w| w == ["-f", "s16le"]),
+                "second source's int16 format must be declared: {:?}", a);
     }
 
     #[test]
-    fn windows_argv_system_audio_alone_degrades_to_mic_when_loopback_unavailable() {
-        // Until WASAPI loopback lands, system-audio requests use the
-        // discovered mic as a best-effort fallback. The argv should still
-        // produce a working AAC-stereo MP4.
+    fn windows_argv_uses_thread_queue_size_per_audio_input() {
+        // Guards against demuxer packet drops while the encoder is busy.
         let a = build_windows_ffmpeg_args("C:/tmp/out.mp4",
-            RecordingOptions::SYSTEM_ONLY, Some("Stereo Mix (Realtek)"));
-        assert!(a.iter().any(|s| s == "audio=Stereo Mix (Realtek)"));
-        assert!(a.windows(2).any(|w| w == ["-c:a", "aac"]));
-    }
-
-    // dshow device-list parser.
-
-    #[test]
-    fn parse_dshow_picks_audio_section_only() {
-        let sample = r#"
-[dshow @ 0000020D] DirectShow video devices (some may be both video and audio devices)
-[dshow @ 0000020D]  "Integrated Camera"
-[dshow @ 0000020D]     Alternative name "@device_pnp_\\?\usb#vid_..."
-[dshow @ 0000020D] DirectShow audio devices
-[dshow @ 0000020D]  "Microphone (Realtek(R) Audio)"
-[dshow @ 0000020D]     Alternative name "@device_cm_{...}"
-[dshow @ 0000020D]  "Headset Microphone (Plantronics)"
-[dshow @ 0000020D]     Alternative name "@device_cm_{...}"
-dummy: Immediate exit requested
-"#;
-        let devs = parse_dshow_audio_devices(sample);
-        assert_eq!(devs, vec![
-            "Microphone (Realtek(R) Audio)".to_string(),
-            "Headset Microphone (Plantronics)".to_string(),
-        ]);
-    }
-
-    #[test]
-    fn parse_dshow_handles_empty_or_garbage_output() {
-        assert!(parse_dshow_audio_devices("").is_empty());
-        assert!(parse_dshow_audio_devices("ffmpeg version 6.1\nbuilt with gcc").is_empty());
-    }
-
-    #[test]
-    fn parse_dshow_skips_video_devices() {
-        let sample = r#"
-[dshow @ 1] DirectShow video devices
-[dshow @ 1]  "Integrated Camera"
-[dshow @ 1]     Alternative name "@device_pnp_..."
-"#;
-        assert!(parse_dshow_audio_devices(sample).is_empty(),
-                "must not return video devices as audio");
-    }
-
-    // pick_windows_audio_device — selection rules under each
-    // (mic, system_audio, available-devices) combo.
-
-    #[test]
-    fn pick_audio_video_only_returns_none() {
-        let got = pick_windows_audio_device(&[
-            "Microphone (Realtek)".to_string(),
-        ], RecordingOptions::NONE).unwrap();
-        assert_eq!(got, None);
-    }
-
-    #[test]
-    fn pick_audio_mic_only_prefers_microphone_named_device() {
-        let devs = vec![
-            "Line In (Realtek)".to_string(),
-            "Microphone (Realtek)".to_string(),
-        ];
-        let got = pick_windows_audio_device(&devs, RecordingOptions::MIC_ONLY).unwrap();
-        assert_eq!(got, Some("Microphone (Realtek)".to_string()));
-    }
-
-    #[test]
-    fn pick_audio_mic_only_falls_back_to_first_if_no_mic_named() {
-        let devs = vec![
-            "Line In (Realtek)".to_string(),
-            "Aux In".to_string(),
-        ];
-        let got = pick_windows_audio_device(&devs, RecordingOptions::MIC_ONLY).unwrap();
-        assert_eq!(got, Some("Line In (Realtek)".to_string()));
-    }
-
-    #[test]
-    fn pick_audio_mic_only_errors_when_no_devices() {
-        let err = pick_windows_audio_device(&[], RecordingOptions::MIC_ONLY).unwrap_err();
-        let Error::Recording(msg) = err else { panic!("wrong error variant") };
-        // Should lead with the Privacy fix, not the "plug in a mic" red
-        // herring — empty dshow audio list on Windows almost always means
-        // the OS Privacy gate is blocking enumeration.
-        let lower = msg.to_lowercase();
-        assert!(lower.contains("privacy"), "should mention Privacy: {msg}");
-        assert!(lower.contains("microphone access"), "should name the toggle: {msg}");
-    }
-
-    #[test]
-    fn pick_audio_system_audio_finds_stereo_mix() {
-        let devs = vec![
-            "Microphone (Realtek)".to_string(),
-            "Stereo Mix (Realtek)".to_string(),
-        ];
-        let got = pick_windows_audio_device(&devs, RecordingOptions::SYSTEM_ONLY).unwrap();
-        assert_eq!(got, Some("Stereo Mix (Realtek)".to_string()));
-    }
-
-    #[test]
-    fn pick_audio_system_audio_finds_voicemeeter() {
-        let devs = vec![
-            "VoiceMeeter Output (VB-Audio VoiceMeeter VAIO)".to_string(),
-        ];
-        let got = pick_windows_audio_device(&devs, RecordingOptions::SYSTEM_ONLY).unwrap();
-        assert_eq!(got.unwrap().contains("VoiceMeeter"), true);
-    }
-
-    #[test]
-    fn pick_audio_system_only_errors_when_no_loopback_device() {
-        // mic exists but no Stereo Mix / VoiceMeeter / etc. — system_audio
-        // alone must surface the actionable Stereo Mix instructions, NOT
-        // silently downgrade to mic.
-        let devs = vec!["Microphone (Realtek)".to_string()];
-        let err = pick_windows_audio_device(&devs, RecordingOptions::SYSTEM_ONLY)
-            .unwrap_err();
-        let Error::Recording(msg) = err else { panic!("wrong error variant") };
-        assert!(msg.to_lowercase().contains("stereo mix"),
-                "actionable message should name Stereo Mix; got: {msg}");
-    }
-
-    #[test]
-    fn pick_audio_mic_and_sys_falls_back_to_mic_when_no_loopback() {
-        // With both requested and no loopback device, we degrade to mic
-        // (the toast already says "with mic + system audio" — the truthful
-        // user-visible label will be tightened in a follow-up).
-        let devs = vec!["Microphone (Realtek)".to_string()];
-        let got = pick_windows_audio_device(&devs, RecordingOptions::MIC_AND_SYS).unwrap();
-        assert_eq!(got, Some("Microphone (Realtek)".to_string()));
+            &[spec(50000, 48000, 2, "f32le")]);
+        assert!(a.windows(2).any(|w| w == ["-thread_queue_size", "1024"]),
+                "audio input should set -thread_queue_size: {:?}", a);
     }
 
     // macOS avfoundation: argv-builder, device-table parser, and picker.

@@ -25,3 +25,10 @@ anyhow        = { workspace = true }
 # event loop via `Tray::pump_events`.
 [target.'cfg(target_os = "linux")'.dependencies]
 gtk = "0.18"
+
+# Windows system-audio capture. WASAPI loopback on the default render endpoint
+# pulls what the speakers are playing without any virtual-cable driver, and the
+# default capture endpoint gives the mic. Both feed ffmpeg over a loopback TCP
+# socket (see recorder_windows_audio.rs). No Media Foundation / COM hand-rolling.
+[target.'cfg(target_os = "windows")'.dependencies]
+wasapi = "0.15"
