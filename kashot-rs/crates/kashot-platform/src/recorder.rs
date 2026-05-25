@@ -78,16 +78,101 @@ impl RecordingOptions {
 }
 
 pub struct Recorder {
-    child:  Option<Child>,
-    output: Option<PathBuf>,
+    backend: Option<Backend>,
+    output:  Option<PathBuf>,
+}
+
+/// What's actually running underneath a live recording. Most platforms drive a
+/// single child process (`ffmpeg` on Linux/Windows, `ffmpeg` or `screencapture`
+/// on macOS); Windows additionally runs WASAPI capture threads that stream PCM
+/// into ffmpeg over a loopback socket, and macOS 15+ drives a native
+/// ScreenCaptureKit session with no child at all.
+enum Backend {
+    Process {
+        child: Child,
+        /// Windows-only: WASAPI capture pumps feeding ffmpeg over loopback TCP.
+        /// The field only exists on Windows so every other platform keeps a
+        /// single-field `Process` backend with nothing to join.
+        #[cfg(target_os = "windows")]
+        pumps: Vec<AudioPump>,
+    },
+}
+
+impl Backend {
+    /// Graceful stop for `Recorder::stop()`: signal, then block until the child
+    /// has finalized the container.
+    fn stop_blocking(self) {
+        match self {
+            Backend::Process {
+                mut child,
+                #[cfg(target_os = "windows")] mut pumps,
+            } => {
+                graceful_signal(&mut child);
+                #[cfg(target_os = "windows")]
+                for p in &pumps { p.signal_stop(); }
+                let _ = child.wait();
+                #[cfg(target_os = "windows")]
+                for p in &mut pumps { p.join(); }
+            }
+        }
+    }
+
+    /// Stop for `Drop`: graceful signal, bounded ~2 s wait, then SIGKILL only if
+    /// the child is still alive — so a normal teardown always yields a playable
+    /// file but a wedged child can't hang the app.
+    fn stop_with_timeout(self) {
+        match self {
+            Backend::Process {
+                mut child,
+                #[cfg(target_os = "windows")] mut pumps,
+            } => {
+                graceful_signal(&mut child);
+                #[cfg(target_os = "windows")]
+                for p in &pumps { p.signal_stop(); }
+                let mut exited = false;
+                for _ in 0..20 {
+                    match child.try_wait() {
+                        Ok(Some(_)) => { exited = true; break; }
+                        Ok(None)    => std::thread::sleep(std::time::Duration::from_millis(100)),
+                        Err(_)      => break,
+                    }
+                }
+                if !exited { let _ = child.kill(); }
+                let _ = child.wait();
+                #[cfg(target_os = "windows")]
+                for p in &mut pumps { p.join(); }
+            }
+        }
+    }
+}
+
+/// A background thread streaming captured PCM into ffmpeg over a loopback TCP
+/// socket, plus the flag that tells it to stop. Created only by the Windows
+/// WASAPI path; see `windows_audio`.
+#[cfg(target_os = "windows")]
+struct AudioPump {
+    stop:   std::sync::Arc<std::sync::atomic::AtomicBool>,
+    handle: Option<std::thread::JoinHandle<()>>,
+}
+
+#[cfg(target_os = "windows")]
+impl AudioPump {
+    fn signal_stop(&self) {
+        self.stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+    fn join(&mut self) {
+        if let Some(h) = self.handle.take() {
+            let _ = h.join();
+        }
+    }
 }
 
 impl Recorder {
     pub fn new() -> Self {
-        Self { child: None, output: None }
+        Self { backend: None, output: None }
     }
 
-    pub fn is_recording(&self) -> bool { self.child.is_some() }
+    pub fn is_recording(&self) -> bool { self.backend.is_some() }
     pub fn output_path(&self) -> Option<&Path> { self.output.as_deref() }
 
     /// Begin recording the primary display to `output`. Errors if a recording
@@ -100,44 +185,30 @@ impl Recorder {
         if let Some(parent) = output.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let child = spawn_recorder(&output, options)?;
-        self.child  = Some(child);
-        self.output = Some(output);
+        let backend = spawn_recorder(&output, options)?;
+        self.backend = Some(backend);
+        self.output  = Some(output);
         Ok(())
     }
 
     /// Stop the active recording. Returns the output file path on success.
     /// The OS recorder needs a moment to flush the trailing frames + finalize
-    /// the container — we wait on the child so the file is playable when
-    /// this returns.
+    /// the container — we block on it so the file is playable when this returns.
     pub fn stop(&mut self) -> Result<PathBuf> {
-        let mut child = self.child.take()
+        let backend = self.backend.take()
             .ok_or_else(|| Error::Recording("not currently recording".into()))?;
         let path = self.output.take()
             .unwrap_or_else(PathBuf::new);
 
-        graceful_signal(&mut child);
-        let _ = child.wait();
+        backend.stop_blocking();
         Ok(path)
     }
 }
 
 impl Drop for Recorder {
     fn drop(&mut self) {
-        if let Some(mut c) = self.child.take() {
-            graceful_signal(&mut c);
-            let mut exited = false;
-            for _ in 0..20 {
-                match c.try_wait() {
-                    Ok(Some(_)) => { exited = true; break; }
-                    Ok(None)    => std::thread::sleep(std::time::Duration::from_millis(100)),
-                    Err(_)      => break,
-                }
-            }
-            if !exited {
-                let _ = c.kill();
-            }
-            let _ = c.wait();
+        if let Some(b) = self.backend.take() {
+            b.stop_with_timeout();
         }
     }
 }
@@ -183,7 +254,7 @@ fn locate_ffmpeg() -> Option<PathBuf> {
 // ── platform spawn / signal ─────────────────────────────────────────────────
 
 #[cfg(target_os = "linux")]
-fn spawn_recorder(output: &Path, options: RecordingOptions) -> Result<Child> {
+fn spawn_recorder(output: &Path, options: RecordingOptions) -> Result<Backend> {
     // Reject Wayland up-front — `-f x11grab` against XWayland silently
     // captures only XWayland clients (typically a black frame), and on
     // Wayland-only sessions DISPLAY may be unset entirely.
@@ -239,7 +310,7 @@ fn spawn_recorder(output: &Path, options: RecordingOptions) -> Result<Child> {
         .spawn();
 
     match res {
-        Ok(c) => Ok(c),
+        Ok(c) => Ok(Backend::Process { child: c }),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Err(Error::Recording(
             "ffmpeg not found in PATH — install with: sudo apt install ffmpeg".into()
         )),
@@ -304,20 +375,21 @@ pub(crate) fn build_linux_ffmpeg_args(
 // without one we degrade to mic or surface an actionable error rather than
 // silently shipping a muted track.
 #[cfg(target_os = "macos")]
-fn spawn_recorder(output: &Path, options: RecordingOptions) -> Result<Child> {
+fn spawn_recorder(output: &Path, options: RecordingOptions) -> Result<Backend> {
     let path = output.to_str().ok_or_else(||
         Error::Recording("non-UTF-8 output path".into()))?;
 
     // Video-only: keep the dependency-free built-in. stdin stays null, which
     // is how `graceful_signal` tells the two backends apart.
     if !options.has_audio() {
-        return Command::new("screencapture")
+        let child = Command::new("screencapture")
             .args(["-v", path])
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .spawn()
-            .map_err(|e| Error::Recording(format!("failed to spawn screencapture: {e}")));
+            .map_err(|e| Error::Recording(format!("failed to spawn screencapture: {e}")))?;
+        return Ok(Backend::Process { child });
     }
 
     // Audio requested → ffmpeg avfoundation.
@@ -341,7 +413,7 @@ fn spawn_recorder(output: &Path, options: RecordingOptions) -> Result<Child> {
         .spawn();
 
     match res {
-        Ok(c) => Ok(c),
+        Ok(c) => Ok(Backend::Process { child: c }),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Err(Error::Recording(
             "ffmpeg not found — install it with: brew install ffmpeg".into()
         )),
@@ -508,7 +580,7 @@ pub(crate) fn pick_macos_audio_device(
 // ── Windows: ffmpeg -f gdigrab (+ -f dshow for mic) ─────────────────────────
 
 #[cfg(target_os = "windows")]
-fn spawn_recorder(output: &Path, options: RecordingOptions) -> Result<Child> {
+fn spawn_recorder(output: &Path, options: RecordingOptions) -> Result<Backend> {
     let path = output.to_str().ok_or_else(||
         Error::Recording("non-UTF-8 output path".into()))?;
     let ffmpeg = locate_ffmpeg().unwrap_or_else(|| PathBuf::from("ffmpeg.exe"));
@@ -536,7 +608,7 @@ fn spawn_recorder(output: &Path, options: RecordingOptions) -> Result<Child> {
         .spawn();
 
     match res {
-        Ok(c) => Ok(c),
+        Ok(c) => Ok(Backend::Process { child: c, pumps: Vec::new() }),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Err(Error::Recording(
             "ffmpeg.exe not found — the Kashot installer normally ships it \
              next to kashot.exe. Reinstall, or drop ffmpeg.exe into the same \
@@ -848,7 +920,7 @@ fn list_dshow_audio_devices(ffmpeg: &Path) -> Vec<String> {
 // ── unreachable on the platforms above, kept so non-tier-1 OSes still build ──
 
 #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
-fn spawn_recorder(_output: &Path, _options: RecordingOptions) -> Result<Child> {
+fn spawn_recorder(_output: &Path, _options: RecordingOptions) -> Result<Backend> {
     Err(Error::Recording(
         "screen recording is not implemented on this platform yet".into()))
 }
