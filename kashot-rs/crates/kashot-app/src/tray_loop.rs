@@ -292,11 +292,28 @@ pub fn run() -> Result<()> {
                 }
                 Err(e) => {
                     eprintln!("Recording failed to start: {e}");
-                    rfd::MessageDialog::new()
-                        .set_level(rfd::MessageLevel::Error)
-                        .set_title("KAShot — recording failed")
-                        .set_description(format!("{e}"))
-                        .show();
+                    // Do NOT block the event loop: a synchronous modal here
+                    // freezes the capture hotkey + tray until it's dismissed.
+                    // On Windows the error modal runs on its own thread
+                    // (MessageBoxW is thread-safe and modal only to that
+                    // thread), so capture keeps working while it's up; other
+                    // platforms (GTK/AppKit dialogs are main-thread-only) get
+                    // the non-blocking toast instead.
+                    let msg = format!("{e}");
+                    #[cfg(target_os = "windows")]
+                    {
+                        std::thread::spawn(move || {
+                            rfd::MessageDialog::new()
+                                .set_level(rfd::MessageLevel::Error)
+                                .set_title("KAShot — recording failed")
+                                .set_description(msg)
+                                .show();
+                        });
+                    }
+                    #[cfg(not(target_os = "windows"))]
+                    {
+                        notify("KAShot — recording failed", &msg, true);
+                    }
                 }
             }
         }
@@ -889,10 +906,14 @@ fn notify(title: &str, body: &str, urgent: bool) {
             title.replace('\'', "''"),
             body.replace('\'', "''"),
         );
+        // CREATE_NO_WINDOW: without it, every toast flashes a black powershell
+        // console — including the ones fired on record start/stop.
+        use std::os::windows::process::CommandExt;
         let _ = std::process::Command::new("powershell")
             .args(["-NoProfile", "-Command", &script])
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
+            .creation_flags(0x0800_0000)
             .spawn();
         let _ = timeout;
     }

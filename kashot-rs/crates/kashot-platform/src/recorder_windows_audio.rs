@@ -312,14 +312,30 @@ fn pcm_ffmpeg_format(format: &wasapi::WaveFormat, bits: u16) -> Result<&'static 
 /// endpoint (E_ACCESSDENIED / 0x80070005).
 fn classify_wasapi_error(kind: SourceKind, ctx: &str, raw: &str) -> Error {
     let low = raw.to_lowercase();
-    if matches!(kind, SourceKind::Microphone)
-        && (low.contains("denied") || low.contains("0x80070005")) {
-        return Error::Recording(
-            "Windows blocked microphone access for Kashot.\n\n\
-             Open Settings → Privacy & Security → Microphone, turn on \
-             \"Microphone access\" AND \"Let desktop apps access your \
-             microphone\", then retry.".into()
-        );
+    if matches!(kind, SourceKind::Microphone) {
+        if low.contains("denied") || low.contains("0x80070005") {
+            return Error::Recording(
+                "Windows blocked microphone access for Kashot.\n\n\
+                 Open Settings → Privacy & Security → Microphone, turn on \
+                 \"Microphone access\" AND \"Let desktop apps access your \
+                 microphone\", then retry.".into()
+            );
+        }
+        // 0x80070490 = ELEMENT_NOT_FOUND — there's no *default* recording
+        // device. Usually no mic is plugged in / none is set as default, but
+        // it can also be the privacy gate hiding it from desktop apps.
+        if low.contains("element not found") || low.contains("0x80070490")
+            || low.contains("not found") {
+            return Error::Recording(
+                "No microphone found.\n\n\
+                 Plug in a microphone and set it as the default recording \
+                 device in Windows Sound settings, then retry. If you do have \
+                 one, also check Settings → Privacy & Security → Microphone → \
+                 \"Microphone access\" and \"Let desktop apps access your \
+                 microphone\" are ON.\n\n\
+                 To record without a mic, choose system audio only.".into()
+            );
+        }
     }
     if low.contains("0x88890008") || low.contains("unsupported") {
         return Error::Recording(format!(

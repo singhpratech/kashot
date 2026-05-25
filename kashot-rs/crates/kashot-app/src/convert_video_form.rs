@@ -443,12 +443,15 @@ impl ConvertVideoView {
 
         let dst_thread = dst.clone();
         std::thread::spawn(move || {
-            let res = Command::new(&ffmpeg)
-                .args(&args)
+            let mut cmd = Command::new(&ffmpeg);
+            cmd.args(&args)
                 .stdin(std::process::Stdio::null())
                 .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::piped())
-                .output();
+                .stderr(std::process::Stdio::piped());
+            // CREATE_NO_WINDOW: don't flash a console while converting on Windows.
+            #[cfg(target_os = "windows")]
+            { use std::os::windows::process::CommandExt; cmd.creation_flags(0x0800_0000); }
+            let res = cmd.output();
             let outcome = match res {
                 Ok(out) if out.status.success() => Ok(dst_thread),
                 Ok(out) => {

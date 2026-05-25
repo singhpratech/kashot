@@ -652,11 +652,16 @@ fn spawn_recorder(output: &Path, options: RecordingOptions) -> Result<Backend> {
     let specs: Vec<WasapiAudioSpec> = started.iter().map(|s| s.spec.clone()).collect();
     let args = build_windows_ffmpeg_args(path, &specs);
 
+    // CREATE_NO_WINDOW (0x08000000): ffmpeg.exe is a console app, so without
+    // this flag Windows allocates a visible black console window that stays up
+    // for the whole recording. Suppress it.
+    use std::os::windows::process::CommandExt;
     let res = Command::new(&ffmpeg)
         .args(&args)
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
+        .creation_flags(0x0800_0000)
         .spawn();
 
     match res {
