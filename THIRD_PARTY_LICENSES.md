@@ -35,6 +35,10 @@ aggregation": Kashot remains licensed under Apache-2.0.
   `SOURCE.txt` in that release maps each binary to its source (with checksums)
   and includes a 3-year written offer. The exact build configuration for any
   binary is printed by `ffmpeg -version`.
+- The **Snap** package is the exception: it does not bundle the mirrored
+  binaries — it stages Ubuntu's `ffmpeg` package (also GPL-2.0-or-later, with
+  libx264 + libpulse) via `snapcraft`. Its corresponding source is published by
+  Ubuntu and obtainable with `apt-get source ffmpeg` from the matching release.
 
 We gratefully credit the FFmpeg project and its contributors.
 

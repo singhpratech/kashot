@@ -106,9 +106,20 @@ parts:
       - libayatana-appindicator3-1
       - libxdo3
       - libpulse0
+      # ffmpeg provides screen recording + format conversion. Ubuntu's build is
+      # GPL (libx264) and includes libpulse, so mic + system-audio capture work
+      # inside the snap (the audio-record/audio-playback plugs + libpulse0 are
+      # already declared). Without this the snap had NO ffmpeg at all and both
+      # recording and the convert dialogs silently failed.
+      - ffmpeg
     override-build: |
       craftctl default
       install -Dm0644 "$CRAFT_PROJECT_DIR/dist/aur/kashot.desktop" \
         "$CRAFT_PART_INSTALL/usr/share/applications/kashot.desktop"
       install -Dm0644 "$CRAFT_PROJECT_DIR/icons/linux_hicolor/256x256/apps/kashot.png" \
         "$CRAFT_PART_INSTALL/usr/share/icons/hicolor/256x256/apps/kashot.png"
+      # locate_ffmpeg() looks next to the kashot binary first. The rust plugin
+      # installs `kashot` at the snap root, but stage-packages put ffmpeg in
+      # usr/bin — symlink it next to the binary so it's found without relying
+      # on PATH inside the confined runtime.
+      ln -sf usr/bin/ffmpeg "$CRAFT_PART_INSTALL/ffmpeg"
