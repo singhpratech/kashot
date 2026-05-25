@@ -1,9 +1,9 @@
-# Maintainer: PrateekSingh <42719720+singhpratech@users.noreply.github.com>
+# Maintainer: PrateekSingh <146540319+singhpratech@users.noreply.github.com>
 # Submit to https://aur.archlinux.org as `kashot-bin`. Users install with:
 #   yay -S kashot-bin
 pkgname=kashot-bin
 _pkgname=kashot
-pkgver=0.3.0
+pkgver=0.4.0
 pkgrel=1
 pkgdesc="Fast screenshots with annotations — tray-resident, hotkey-driven, free."
 arch=('x86_64')
@@ -16,7 +16,7 @@ conflicts=('kashot')
 source=("$_pkgname-$pkgver.tar.gz::https://github.com/singhpratech/kashot/releases/download/v$pkgver/kashot-linux-x86_64.tar.gz"
         "$_pkgname.desktop::https://raw.githubusercontent.com/singhpratech/kashot/v$pkgver/dist/aur/kashot.desktop"
         "$_pkgname.png::https://raw.githubusercontent.com/singhpratech/kashot/v$pkgver/icons/linux_hicolor/256x256/apps/kashot.png")
-sha256sums=('REPLACE_WITH_ACTUAL_SHA256_AT_RELEASE_TIME'
+sha256sums=('8a7855955b9bfbfcec30c2c8a776d9ce3ae31eb673af5922248bd805c5babff5'
             'SKIP'
             'SKIP')
 
