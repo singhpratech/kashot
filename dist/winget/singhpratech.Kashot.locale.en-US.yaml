@@ -1,5 +1,5 @@
 PackageIdentifier:  singhpratech.Kashot
-PackageVersion:     0.3.12
+PackageVersion:     0.4.0
 PackageLocale:      en-US
 Publisher:          singhpratech
 PublisherUrl:       https://github.com/singhpratech
@@ -15,7 +15,9 @@ Description: |
   Kashot is a fast, free, tray-resident screenshot tool with a built-in
   annotation editor. Hotkey to a region selector across all monitors, then
   annotate with pen, line, arrow, rectangle, ellipse, marker, text, numbered
-  step, or pixelate. Save, copy, or pin to screen. Native on Windows;
+  step, or pixelate. Save, copy, or pin to screen. Also records the screen to
+  MP4 with microphone and system audio, captured natively via WASAPI — no
+  Stereo Mix or virtual audio driver required. Native on Windows;
   native Linux and macOS via the Rust port.
 Moniker: kashot
 Tags:

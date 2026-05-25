@@ -22,13 +22,17 @@ title: Kashot
 # pulls `pipewire 0.9.2` + `libspa 0.9.2`, which expect PipeWire 1.x
 # headers. core22 ships PipeWire 0.3.58 and fails to compile.
 base: core24
-version: '0.3.12'
+version: '0.4.0'
 summary: Fast screenshots with annotations — tray-resident, hotkey-driven
 description: |
   Kashot is a tray-resident screenshot tool with a built-in annotation editor.
   A global hotkey opens a region selector across all monitors; nine annotation
   tools (pen, line, arrow, rectangle, ellipse, marker, text, numbered step,
   blur/pixelate); four colour palettes; save, copy, or pin to screen.
+
+  Also records the screen to MP4 with microphone and system audio — captured
+  natively on every platform (PulseAudio on Linux, WASAPI on Windows,
+  ScreenCaptureKit on macOS), so system sound needs no extra audio driver.
 
   One Rust binary on Windows, Linux, and macOS.
 

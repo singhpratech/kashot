@@ -151,7 +151,7 @@ brew install --cask kashot
 | ✏️ | **9 annotation tools** — pen, line, arrow, rectangle, ellipse, marker, text, numbered steps, blur / pixelate |
 | 🎨 | **4 palettes × 16 swatches** — Vivid · Highlighter · Pastel · Pro, plus a custom color picker |
 | 📌 | **Pin to screen** — borderless top-most window, drag anywhere on the desktop |
-| 🎬 | **Screen recording** — MP4 with floating STOP control. Linux X11 (PulseAudio mic + monitor); Windows native (ffmpeg gdigrab + DirectShow mic — system audio is queued); macOS (built-in `screencapture` for video, ffmpeg avfoundation for mic — system audio via a loopback/Aggregate device). Wayland capture is queued |
+| 🎬 | **Screen recording** — MP4 with floating STOP control, microphone **and system audio on every platform** (PulseAudio monitor on Linux, WASAPI loopback on Windows, ScreenCaptureKit on macOS) — no Stereo Mix / BlackHole driver needed. Wayland capture is queued |
 | 🔄 | **Format conversion** — PNG ↔ JPG / WEBP / BMP · MP4 → MOV / WEBM / MKV / GIF |
 | 🏷️ | **Watermark** — editable text, 4 anchors, 0–100 % opacity slider |
 | ⌨️ | **Global hotkey** — defaults to `PrintScreen`; remappable via settings |
@@ -253,7 +253,7 @@ icons/                 branded icon pack (every platform size, one source PNG)
 | Tray + global hotkey | ✅ | ✅ | ✅ |
 | Capture + 9-tool overlay editor | ✅ | ✅ | ✅ |
 | Save · Copy · Pin · Watermark | ✅ | ✅ | ✅ |
-| Screen recording (MP4) | ✅ mic only | ✅ mic + system | ✅ mic (system via loopback) |
+| Screen recording (MP4) | ✅ mic + system | ✅ mic + system | ✅ mic + system |
 | Themed Settings · About · Updates | ✅ | ✅ | ✅ |
 | Image + video format conversion | ✅ | ✅ | ✅ |
 | Release artifact | `.zip` | `.tar.gz` (x86_64 + arm64) + AppImage | raw binary (`.dmg` queued) |
