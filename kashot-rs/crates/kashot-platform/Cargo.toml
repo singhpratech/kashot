@@ -32,3 +32,17 @@ gtk = "0.18"
 # socket (see recorder_windows_audio.rs). No Media Foundation / COM hand-rolling.
 [target.'cfg(target_os = "windows")'.dependencies]
 wasapi = "0.15"
+
+# macOS system-audio capture. ScreenCaptureKit captures the system audio mix
+# without a loopback driver (BlackHole / Aggregate); we pull the PCM out of the
+# delivered CMSampleBuffers and stream it into ffmpeg over a loopback TCP socket
+# (see recorder_macos_audio.rs), exactly like the Windows path.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", features = ["NSString", "NSError", "NSArray", "NSObjCRuntime"] }
+objc2-screen-capture-kit = { version = "0.3", features = ["SCStream", "SCShareableContent", "SCError"] }
+objc2-core-media = { version = "0.3", features = ["CMSampleBuffer", "CMBlockBuffer", "CMFormatDescription", "objc2-core-audio-types"] }
+objc2-core-audio-types = { version = "0.3", features = ["CoreAudioBaseTypes"] }
+objc2-core-foundation = "0.3"
+block2 = "0.6"
+dispatch2 = "0.3"
