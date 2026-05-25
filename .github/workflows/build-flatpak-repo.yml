@@ -1,11 +1,15 @@
-# Build the Flatpak from dist/flatpak/org.kashot.Kashot.yaml when a GitHub
-# release is published (so the release tarball already exists) and publish the
-# resulting OSTree repo to singhpratech/kashot-flatpak-repo, which serves at
-# https://repo.kashot.org/ via GitHub Pages.
+# Build the Flatpak from dist/flatpak/org.kashot.Kashot.yaml AFTER the "Build
+# Rust" workflow finishes a tag build (so the release tarball already exists),
+# and publish the resulting OSTree repo to singhpratech/kashot-flatpak-repo,
+# which serves at https://repo.kashot.org/ via GitHub Pages.
+#
+# We use workflow_run (not release:published) because releases created by the
+# Actions GITHUB_TOKEN do NOT fire release events — that recursion guard would
+# silently skip this build. workflow_run chains off Build Rust regardless.
 #
 # The tarball sha256 is computed inside this workflow from the URL in the
 # manifest, so a placeholder/stale sha256 in the committed manifest can never
-# fail the build — and there's no longer a manual post-release SHA refresh.
+# fail the build — and there's no manual post-release SHA refresh.
 #
 # This is the self-hosted Flatpak channel — independent of Flathub. Users
 # install with:
@@ -17,8 +21,9 @@
 name: Build Flatpak repo
 
 on:
-  release:
-    types: [ published ]
+  workflow_run:
+    workflows: [ "Build Rust" ]
+    types: [ completed ]
   workflow_dispatch:
 
 permissions:
@@ -27,6 +32,13 @@ permissions:
 jobs:
   build-and-publish:
     name: Build + publish to repo.kashot.org
+    # Manual runs always proceed. Automatic runs only when Build Rust SUCCEEDED
+    # for a tag build (head_branch like v0.3.12) — skip Build Rust runs on main
+    # / branches, which have no published release tarball to point at.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       startsWith(github.event.workflow_run.head_branch, 'v'))
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
