@@ -228,6 +228,21 @@ impl Recorder {
             .unwrap_or_else(PathBuf::new);
 
         backend.stop_blocking();
+
+        // Late-failure catch: the encoder can clear the startup window yet still
+        // fail to produce a file (it died mid-recording, or a downstream mux
+        // error left nothing on disk). Don't hand back a path to nothing.
+        if !path.as_os_str().is_empty() {
+            match std::fs::metadata(&path) {
+                Ok(m) if m.len() > 0 => {}
+                Ok(_) => return Err(Error::Recording(format!(
+                    "recording stopped but the saved file is empty: {} — the \
+                     encoder likely failed mid-recording.", path.display()))),
+                Err(_) => return Err(Error::Recording(format!(
+                    "recording stopped but no file was written to {} — the \
+                     encoder likely failed to start.", path.display()))),
+            }
+        }
         Ok(path)
     }
 }
@@ -333,11 +348,11 @@ fn spawn_recorder(output: &Path, options: RecordingOptions) -> Result<Backend> {
         .args(&args)
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stderr(Stdio::piped())
         .spawn();
 
     match res {
-        Ok(c) => Ok(Backend::Process { child: c }),
+        Ok(c) => Ok(Backend::Process { child: watch_recorder_startup(c)? }),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Err(Error::Recording(
             "ffmpeg not found in PATH — install with: sudo apt install ffmpeg".into()
         )),
@@ -411,10 +426,10 @@ fn spawn_recorder(output: &Path, options: RecordingOptions) -> Result<Backend> {
             .args(["-v", path])
             .stdin(Stdio::null())
             .stdout(Stdio::null())
-            .stderr(Stdio::null())
+            .stderr(Stdio::piped())
             .spawn()
             .map_err(|e| Error::Recording(format!("failed to spawn screencapture: {e}")))?;
-        return Ok(Backend::Process { child, sck: None });
+        return Ok(Backend::Process { child: watch_recorder_startup(child)?, sck: None });
     }
 
     // Audio requested → ffmpeg avfoundation (video + optional mic).
@@ -443,11 +458,14 @@ fn spawn_recorder(output: &Path, options: RecordingOptions) -> Result<Backend> {
         .args(&args)
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stderr(Stdio::piped())
         .spawn();
 
     match res {
-        Ok(child) => Ok(Backend::Process { child, sck }),
+        Ok(child) => match watch_recorder_startup(child) {
+            Ok(child) => Ok(Backend::Process { child, sck }),
+            Err(e)    => { if let Some(s) = sck { s.stop(); } Err(e) }
+        },
         Err(e) => {
             if let Some(s) = sck { s.stop(); }
             if e.kind() == std::io::ErrorKind::NotFound {
@@ -660,15 +678,21 @@ fn spawn_recorder(output: &Path, options: RecordingOptions) -> Result<Backend> {
         .args(&args)
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stderr(Stdio::piped())
         .creation_flags(0x0800_0000)
         .spawn();
 
     match res {
-        Ok(child) => {
-            let pumps = started.into_iter().map(|s| s.pump).collect();
-            Ok(Backend::Process { child, pumps })
-        }
+        Ok(child) => match watch_recorder_startup(child) {
+            Ok(child) => {
+                let pumps = started.into_iter().map(|s| s.pump).collect();
+                Ok(Backend::Process { child, pumps })
+            }
+            Err(e) => {
+                for mut s in started { s.pump.signal_stop(); s.pump.join(); }
+                Err(e)
+            }
+        },
         Err(e) => {
             for mut s in started { s.pump.signal_stop(); s.pump.join(); }
             if e.kind() == std::io::ErrorKind::NotFound {
@@ -785,6 +809,71 @@ fn graceful_signal(child: &mut Child) {
 
 #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
 fn graceful_signal(_child: &mut Child) {}
+
+// ── startup-failure detection ────────────────────────────────────────────────
+
+/// Watch a freshly-spawned recorder child for an *immediate* failure.
+///
+/// ffmpeg (and macOS `screencapture`) validate their inputs at startup: a
+/// missing pulse demuxer, an unopenable capture device, a Wayland display, or a
+/// malformed argv make the process exit within a few hundred ms — before a
+/// single frame is written. We used to route stderr to `/dev/null` and treat a
+/// successful *spawn* as a successful *recording*, so those failures produced a
+/// cheery "recording started" toast and silently left no file behind.
+///
+/// Instead: poll for ~400 ms. If the child already died, hand back the tail of
+/// its stderr as an actionable error. If it survived the window, drain stderr to
+/// EOF on a detached thread so ffmpeg's periodic stats output can never fill the
+/// pipe buffer and stall a long recording. Caller must spawn with
+/// `stderr(Stdio::piped())` for the diagnostic capture to work.
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+fn watch_recorder_startup(mut child: Child) -> Result<Child> {
+    use std::io::Read;
+    let mut stderr = child.stderr.take();
+
+    for _ in 0..8 {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                let mut buf = String::new();
+                if let Some(mut e) = stderr.take() { let _ = e.read_to_string(&mut buf); }
+                return Err(Error::Recording(format!(
+                    "recording failed to start — the encoder exited immediately ({status}).\n\n{}",
+                    ffmpeg_error_tail(&buf)
+                )));
+            }
+            Ok(None) => std::thread::sleep(std::time::Duration::from_millis(50)),
+            Err(_)   => break,
+        }
+    }
+
+    if let Some(mut e) = stderr.take() {
+        std::thread::spawn(move || {
+            let mut sink = [0u8; 8192];
+            while matches!(e.read(&mut sink), Ok(n) if n > 0) {}
+        });
+    }
+    Ok(child)
+}
+
+/// Pull the most useful lines out of an encoder's startup stderr. The actionable
+/// message ("Unknown input format: 'pulse'", "Error opening input files",
+/// "Permission denied") is always near the end, after the banner + build config.
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+fn ffmpeg_error_tail(stderr: &str) -> String {
+    let lines: Vec<&str> = stderr
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .collect();
+    if lines.is_empty() {
+        return "The encoder produced no diagnostics. Check that recording isn't \
+                running on Wayland (X11 only for now), that the bundled ffmpeg \
+                supports your audio backend, and that the capture device exists."
+            .to_string();
+    }
+    let start = lines.len().saturating_sub(6);
+    lines[start..].join("\n")
+}
 
 // ── tests ───────────────────────────────────────────────────────────────────
 

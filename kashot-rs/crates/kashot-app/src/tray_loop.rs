@@ -329,7 +329,28 @@ pub fn run() -> Result<()> {
                         &format!("{}", path.display()),
                         false);
                 }
-                Err(e) => eprintln!("Stop recording failed: {e}"),
+                Err(e) => {
+                    eprintln!("Stop recording failed: {e}");
+                    if let Some(t) = &self.tray { t.set_recording(false); }
+                    // Surface it — a recording the user thought was running
+                    // produced no usable file. Same non-blocking pattern as
+                    // start_recording: threaded modal on Windows, toast elsewhere.
+                    let msg = format!("{e}");
+                    #[cfg(target_os = "windows")]
+                    {
+                        std::thread::spawn(move || {
+                            rfd::MessageDialog::new()
+                                .set_level(rfd::MessageLevel::Error)
+                                .set_title("KAShot — recording not saved")
+                                .set_description(msg)
+                                .show();
+                        });
+                    }
+                    #[cfg(not(target_os = "windows"))]
+                    {
+                        notify("KAShot — recording not saved", &msg, true);
+                    }
+                }
             }
             self.recording_view = None;
         }
