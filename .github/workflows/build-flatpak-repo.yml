@@ -1,6 +1,11 @@
-# Build the Flatpak from dist/flatpak/org.kashot.Kashot.yaml on each tagged
-# release and publish the resulting OSTree repo to singhpratech/kashot-flatpak-repo,
-# which serves at https://repo.kashot.org/ via GitHub Pages.
+# Build the Flatpak from dist/flatpak/org.kashot.Kashot.yaml when a GitHub
+# release is published (so the release tarball already exists) and publish the
+# resulting OSTree repo to singhpratech/kashot-flatpak-repo, which serves at
+# https://repo.kashot.org/ via GitHub Pages.
+#
+# The tarball sha256 is computed inside this workflow from the URL in the
+# manifest, so a placeholder/stale sha256 in the committed manifest can never
+# fail the build — and there's no longer a manual post-release SHA refresh.
 #
 # This is the self-hosted Flatpak channel — independent of Flathub. Users
 # install with:
@@ -12,8 +17,8 @@
 name: Build Flatpak repo
 
 on:
-  push:
-    tags: [ 'v*' ]
+  release:
+    types: [ published ]
   workflow_dispatch:
 
 permissions:
@@ -40,6 +45,21 @@ jobs:
         run: |
           flatpak remote-add --user --if-not-exists flathub \
             https://flathub.org/repo/flathub.flatpakrepo
+
+      - name: Pin tarball sha256 in the manifest (no placeholder/race failures)
+        # Download the tarball the manifest points at and overwrite the sha256
+        # line with the freshly computed hash. Retries cover the brief window
+        # where a release is published just before its assets finish uploading.
+        run: |
+          set -euxo pipefail
+          URL=$(grep -E '^[[:space:]]*url:' dist/flatpak/org.kashot.Kashot.yaml | awk '{print $2}')
+          echo "manifest tarball URL: $URL"
+          curl -fL --retry 8 --retry-all-errors --retry-delay 10 -o tarball.tgz "$URL"
+          SHA=$(sha256sum tarball.tgz | awk '{print $1}')
+          echo "computed sha256: $SHA"
+          sed -i -E "s|^([[:space:]]*sha256:[[:space:]]*).*|\1$SHA|" \
+            dist/flatpak/org.kashot.Kashot.yaml
+          grep -E '^[[:space:]]*(url|sha256):' dist/flatpak/org.kashot.Kashot.yaml
 
       - name: Build Flatpak
         run: |
