@@ -12,6 +12,7 @@ use tray_icon::{Icon as TrayIconImage, TrayIcon, TrayIconBuilder};
 pub struct Tray {
     _icon: TrayIcon,
     pub capture_id:    tray_icon::menu::MenuId,
+    pub capture_full_id: tray_icon::menu::MenuId,
     pub delay3_id:     tray_icon::menu::MenuId,
     pub delay5_id:     tray_icon::menu::MenuId,
     pub delay10_id:    tray_icon::menu::MenuId,
@@ -41,6 +42,9 @@ pub struct Tray {
 pub enum TrayEvent {
     None,
     Capture,
+    /// Capture the whole desktop and auto-save it immediately — no region
+    /// selector, no editor. One click → file on disk, like the other presets.
+    CaptureFullScreen,
     /// Capture after N seconds. Lets the user dismiss menus, position
     /// windows, etc. before the screenshot fires.
     CaptureDelayed(u32),
@@ -94,6 +98,7 @@ impl Tray {
         // (and a few KDE plasmoids) truncates wider strings with an ellipsis.
         // Every label here is one or two readable phrases at most.
         let capture   = MenuItem::new("Capture",           true,  None);
+        let capture_full = MenuItem::new("Capture Full Screen", true, None);
         let delay_3s  = MenuItem::new("Capture in 3s",     true,  None);
         let delay_5s  = MenuItem::new("Capture in 5s",     true,  None);
         let delay_10s = MenuItem::new("Capture in 10s",    true,  None);
@@ -119,6 +124,7 @@ impl Tray {
         let exit      = MenuItem::new("Exit",              true,  None);
 
         let capture_id  = capture.id().clone();
+        let capture_full_id = capture_full.id().clone();
         let delay3_id   = delay_3s.id().clone();
         let delay5_id   = delay_5s.id().clone();
         let delay10_id  = delay_10s.id().clone();
@@ -138,6 +144,7 @@ impl Tray {
         let exit_id     = exit.id().clone();
 
         menu.append(&capture).map_err(|e| Error::Tray(e.to_string()))?;
+        menu.append(&capture_full).map_err(|e| Error::Tray(e.to_string()))?;
         menu.append(&delay_3s).map_err(|e| Error::Tray(e.to_string()))?;
         menu.append(&delay_5s).map_err(|e| Error::Tray(e.to_string()))?;
         menu.append(&delay_10s).map_err(|e| Error::Tray(e.to_string()))?;
@@ -172,6 +179,7 @@ impl Tray {
         Ok(Tray {
             _icon: tray_icon,
             capture_id,
+            capture_full_id,
             delay3_id,
             delay5_id,
             delay10_id,
@@ -203,6 +211,7 @@ impl Tray {
     pub fn try_recv(&self) -> TrayEvent {
         match MenuEvent::receiver().try_recv() {
             Ok(ev) if ev.id == self.capture_id   => TrayEvent::Capture,
+            Ok(ev) if ev.id == self.capture_full_id => TrayEvent::CaptureFullScreen,
             Ok(ev) if ev.id == self.delay3_id    => TrayEvent::CaptureDelayed(3),
             Ok(ev) if ev.id == self.delay5_id    => TrayEvent::CaptureDelayed(5),
             Ok(ev) if ev.id == self.delay10_id   => TrayEvent::CaptureDelayed(10),

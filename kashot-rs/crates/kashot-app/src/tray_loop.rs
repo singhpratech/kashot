@@ -106,6 +106,7 @@ pub fn run() -> Result<()> {
                 match tray.try_recv() {
                     TrayEvent::None                  => {}
                     TrayEvent::Capture               => self.capture(loop_target),
+                    TrayEvent::CaptureFullScreen     => self.capture_full_screen(),
                     TrayEvent::CaptureDelayed(secs)  => self.capture_after(loop_target, Duration::from_secs(secs as u64)),
                     TrayEvent::CancelPending         => {} // handled inline by the delay loop
                     TrayEvent::StartRecording(opts)  => self.start_recording(opts, loop_target),
@@ -208,6 +209,50 @@ pub fn run() -> Result<()> {
                     Err(e) => eprintln!("Overlay open failed: {e}"),
                 },
                 Err(e) => eprintln!("Capture failed: {e}"),
+            }
+
+            self.capturing = false;
+        }
+
+        /// One-click full-screen capture: grab the whole desktop and auto-save
+        /// it straight to the configured folder — no region selector, no editor.
+        /// Watermark is applied just like the edited path, and the user gets a
+        /// toast with the saved path since there's no overlay to confirm against.
+        fn capture_full_screen(&mut self) {
+            if self.capturing || self.overlay.is_some() { return; }
+            self.capturing = true;
+
+            // Same settle delay as capture_after so the tray menu / flyout fully
+            // dismisses before xcap shoots the desktop — otherwise the menu's
+            // fade-out ghost lands in the screenshot.
+            #[cfg(target_os = "windows")]
+            {
+                dismiss_tray_flyouts();
+                std::thread::sleep(Duration::from_millis(700));
+            }
+            #[cfg(not(target_os = "windows"))]
+            std::thread::sleep(Duration::from_millis(250));
+
+            match capture_all_screens() {
+                Ok(shot) => {
+                    let mut img = shot.bitmap;
+                    apply_watermark(&mut img, &self.settings);
+                    match save_capture(&mut self.settings, &img) {
+                        Ok(path) => {
+                            eprintln!("Saved full screen {}", path.display());
+                            notify("KAShot — full screen saved",
+                                &format!("{}", path.display()), false);
+                        }
+                        Err(e) => {
+                            eprintln!("Save failed: {e}");
+                            notify("KAShot — capture failed", &format!("{e}"), true);
+                        }
+                    }
+                }
+                Err(e) => {
+                    eprintln!("Capture failed: {e}");
+                    notify("KAShot — capture failed", &format!("{e}"), true);
+                }
             }
 
             self.capturing = false;
