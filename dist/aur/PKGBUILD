@@ -16,7 +16,7 @@ conflicts=('kashot')
 source=("$_pkgname-$pkgver.tar.gz::https://github.com/singhpratech/kashot/releases/download/v$pkgver/kashot-linux-x86_64.tar.gz"
         "$_pkgname.desktop::https://raw.githubusercontent.com/singhpratech/kashot/v$pkgver/dist/aur/kashot.desktop"
         "$_pkgname.png::https://raw.githubusercontent.com/singhpratech/kashot/v$pkgver/icons/linux_hicolor/256x256/apps/kashot.png")
-sha256sums=('REPLACE_AFTER_v0.4.2_RELEASE_PUBLISHES'
+sha256sums=('1e5fe3399a9db0e52abc7e56ed957474fd24d602638515cb3139a14fffa2bf37'
             'SKIP'
             'SKIP')
 

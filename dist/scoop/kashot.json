@@ -4,7 +4,7 @@
   "homepage":    "https://kashot.org/",
   "license":     "Apache-2.0",
   "url":         "https://github.com/singhpratech/kashot/releases/download/v0.4.2/kashot-windows-x86_64.zip",
-  "hash":        "REPLACE_AFTER_v0.4.2_RELEASE_PUBLISHES",
+  "hash":        "8a899a812f4789a10064944d7bfb40ec3ddfd5bdff5a6667586b800e630316b9",
   "bin":         "kashot.exe",
   "shortcuts": [
     [ "kashot.exe", "Kashot" ]
