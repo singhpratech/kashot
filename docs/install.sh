@@ -5,7 +5,7 @@
 #   curl -fsSL https://kashot.org/install.sh | sh
 #
 # Pin a specific version:
-#   curl -fsSL https://kashot.org/install.sh | sh -s -- --tag v0.3.10
+#   curl -fsSL https://kashot.org/install.sh | sh -s -- --tag v0.3.11
 #
 # Pick a custom install dir:
 #   curl -fsSL https://kashot.org/install.sh | sh -s -- --dir /opt/kashot/bin

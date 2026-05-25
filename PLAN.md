@@ -258,4 +258,4 @@ These cross-cut both implementations; if you change one, change both.
 
 ---
 
-*Last updated: 2026-05-24 (v0.3.10 release — macOS microphone recording: audio capture now routes through ffmpeg's avfoundation input with a static ffmpeg bundled in the .app, so "Record + mic" captures sound on macOS instead of silent video; system audio works via a loopback device (BlackHole / Aggregate), mirroring Windows; video-only still uses the built-in screencapture. Also fixes the Settings dialog subtitle overlapping the action buttons). Maintained by [@singhpratech](https://github.com/singhpratech).*
+*Last updated: 2026-05-24 (v0.3.11 release — the Windows MSI installer license page now correctly shows Apache-2.0 (it previously carried stale dual MIT/Apache text); the GPL corresponding source for the bundled ffmpeg is now mirrored alongside the binaries in the dependency release. No application behavior changes from v0.3.10). Maintained by [@singhpratech](https://github.com/singhpratech).*
