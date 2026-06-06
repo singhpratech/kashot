@@ -3,7 +3,7 @@
 #   yay -S kashot-bin
 pkgname=kashot-bin
 _pkgname=kashot
-pkgver=0.4.3
+pkgver=0.5.0
 pkgrel=1
 pkgdesc="Fast screenshots with annotations — tray-resident, hotkey-driven, free."
 arch=('x86_64')

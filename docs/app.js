@@ -266,7 +266,7 @@
     const cfg = OS_CONFIG[os] || OS_CONFIG.other;
     activeOS  = os;
 
-    const tag = (latestRelease && (latestRelease.tag_name || latestRelease.name)) || 'v0.2';
+    const tag = (latestRelease && (latestRelease.tag_name || latestRelease.name)) || 'v0.5.0';
     let href  = cfg.fallback;
 
     if (latestRelease && latestRelease.assets) {
@@ -351,7 +351,7 @@
     .then(r => r.ok ? r.json() : Promise.reject(r.status))
     .then(release => {
       latestRelease = release;
-      const tag = release.tag_name || release.name || 'v0.2';
+      const tag = release.tag_name || release.name || 'v0.5.0';
 
       // Re-apply the active OS so the hero button + label update with the
       // real release URL + tag, not just the static fallback.

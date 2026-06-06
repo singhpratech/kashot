@@ -1755,7 +1755,7 @@ dependencies = [
 
 [[package]]
 name = "kashot-app"
-version = "0.4.3"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "arboard",
@@ -1779,7 +1779,7 @@ dependencies = [
 
 [[package]]
 name = "kashot-core"
-version = "0.4.3"
+version = "0.5.0"
 dependencies = [
  "bitflags 2.11.1",
  "chrono",
@@ -1791,7 +1791,7 @@ dependencies = [
 
 [[package]]
 name = "kashot-platform"
-version = "0.4.3"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "arboard",

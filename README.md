@@ -156,7 +156,7 @@ brew install --cask kashot
 | 🎨 | **4 palettes × 16 swatches** — Vivid · Highlighter · Pastel · Pro, plus a custom color picker |
 | 📌 | **Pin to screen** — borderless top-most window, drag anywhere on the desktop |
 | 🎬 | **Screen recording** — MP4 with microphone **and system audio on every platform** (PulseAudio monitor on Linux, WASAPI loopback on Windows, ScreenCaptureKit on macOS) — no Stereo Mix / BlackHole driver needed. The floating STOP control keeps itself out of the recording (Windows / macOS; on Linux/X11 stop via the tray). Wayland capture is queued |
-| 🖊️ | **Annotate recordings** — tray → *Annotate last recording*: draw on a finished clip with the full editor; annotations burn into an `_annotated.mp4` copy, original untouched |
+| 🖊️ | **Annotate recordings on a timeline** — tray → *Annotate last recording*: drag the timeline to scrub the clip to any moment, draw with the full editor, and pick how long each annotation stays on screen (3 s / 5 s / 10 s / until the clip ends); everything burns into an `_annotated.mp4` copy with audio intact, original untouched |
 | 🔄 | **Format conversion** — PNG ↔ JPG / WEBP / BMP · MP4 → MOV / WEBM / MKV / GIF |
 | 🏷️ | **Watermark** — editable text, 4 anchors, 0–100 % opacity slider |
 | ⌨️ | **Global hotkey** — defaults to `PrintScreen`; remappable via settings |

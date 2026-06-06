@@ -38,9 +38,9 @@ Out of scope:
 
 | Version | Status |
 |---|---|
-| `0.3.x` | ✅ Supported |
-| `0.2.x` | ❌ End of life (replaced by 0.3.0) |
-| `0.1.x` | ❌ End of life |
+| `0.5.x` | ✅ Supported |
+| `0.4.x` | ❌ End of life (replaced by 0.5.0) |
+| `0.3.x` and older | ❌ End of life |
 
 Security fixes land on the latest minor; older minor releases are not back-ported.
 
@@ -49,7 +49,7 @@ Security fixes land on the latest minor; older minor releases are not back-porte
 Release artifacts are produced by GitHub-hosted runners running `build-rust.yml` on tag push. The full build log is public — every release is reproducible from the tagged commit:
 
 ```sh
-git checkout v0.4.3
+git checkout v0.5.0
 cd kashot-rs
 cargo build --release --bin kashot
 ```

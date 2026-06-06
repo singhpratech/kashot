@@ -9,7 +9,7 @@
 cask "kashot" do
   arch arm: "arm64", intel: "x64"
 
-  version "0.4.3"
+  version "0.5.0"
   sha256  arm:   "0b7fb0f76bb9e1cdee63ecefc48101c72dc49624e532270e87d2b805c16f689e",
           intel: "98b2691823a60a7d123b4e688571096ee523fb27765feeeb11301c8ce93c9b4e"
 
