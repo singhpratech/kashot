@@ -21,7 +21,7 @@ use kashot_platform::{
 use crate::about_form::{AboutOutcome, AboutView};
 use crate::convert_image_form::{ConvertImageOutcome, ConvertImageView};
 use crate::convert_video_form::{ConvertVideoOutcome, ConvertVideoView};
-use crate::editor::{Overlay, OverlayOutcome};
+use crate::editor::{Overlay, OverlayGroup, OverlayOutcome, VideoCommit};
 use crate::pin::PinView;
 use crate::recording_indicator::RecordingIndicator;
 use crate::self_updater;
@@ -453,7 +453,15 @@ pub fn run() -> Result<()> {
                     return;
                 }
             };
-            match Overlay::new_for_video(loop_target, frame, self.settings.clone()) {
+            // Clip length feeds the editor's timeline. A parse failure
+            // (Duration: N/A) just hides the timeline — annotate still
+            // works as the static whole-clip editor.
+            let duration = match probe_duration(&video) {
+                Ok(d)  => Some(d),
+                Err(e) => { eprintln!("kashot: duration probe failed: {e}"); None }
+            };
+            match Overlay::new_for_video(loop_target, frame, self.settings.clone(),
+                                         video.clone(), duration) {
                 Ok(ov) => {
                     self.overlay        = Some(ov);
                     self.video_annotate = Some(video);
@@ -462,16 +470,15 @@ pub fn run() -> Result<()> {
             }
         }
 
-        /// Burn the annotations-only overlay over every frame of `video`.
-        /// Runs ffmpeg on a background thread — re-encoding a long clip can
-        /// take a while and must not freeze the tray/hotkey loop — and
-        /// notifies on completion. The annotated copy lands next to the
-        /// original as `<stem>_annotated.mp4`; the original is untouched.
-        fn burn_annotations(
-            &mut self,
-            video: PathBuf,
-            overlay: image::ImageBuffer<image::Rgba<u8>, Vec<u8>>,
-        ) {
+        /// Compose the per-window overlays from the editor's commit payload
+        /// and burn them over `video`, each gated to its own time window
+        /// (the untimed default is a single whole-clip overlay). Both steps
+        /// run on a background thread — composition spawns one ffmpeg seek
+        /// per distinct window start and re-encoding a long clip can take a
+        /// while; neither may freeze the tray/hotkey loop — and notifies on
+        /// completion. The annotated copy lands next to the original as
+        /// `<stem>_annotated.mp4`; the original is untouched.
+        fn burn_annotations(&mut self, video: PathBuf, commit: VideoCommit) {
             let Some(ffmpeg) = crate::convert_video_form::locate_ffmpeg() else {
                 notify("KAShot — annotate failed",
                     "ffmpeg not found — bundle it next to kashot or install it on PATH.",
@@ -483,7 +490,8 @@ pub fn run() -> Result<()> {
                 &format!("Re-encoding with your annotations…\n→ {}", out.display()),
                 false);
             std::thread::spawn(move || {
-                match run_annotation_burn(&ffmpeg, &video, &overlay, &out) {
+                let overlays = crate::editor::compose_overlay_groups(&commit, &video);
+                match run_annotation_burn(&ffmpeg, &video, &overlays, &out) {
                     Ok(()) => notify("KAShot — annotated recording saved",
                         &out.display().to_string(), false),
                     Err(e) => notify("KAShot — annotate failed", &format!("{e}"), true),
@@ -745,6 +753,7 @@ pub fn run() -> Result<()> {
 
             let mut drop_overlay = false;
             let mut accepted:     Option<image::ImageBuffer<image::Rgba<u8>, Vec<u8>>> = None;
+            let mut accepted_video: Option<VideoCommit> = None;
             let mut copied:       Option<image::ImageBuffer<image::Rgba<u8>, Vec<u8>>> = None;
             let mut pinned_payload: Option<(image::ImageBuffer<image::Rgba<u8>, Vec<u8>>, (i32, i32))> = None;
             let mut drop_pin: Option<usize> = None;
@@ -757,6 +766,7 @@ pub fn run() -> Result<()> {
                             OverlayOutcome::Continue        => {}
                             OverlayOutcome::Cancelled       => { drop_overlay = true; }
                             OverlayOutcome::Accepted(img)   => { drop_overlay = true; accepted = Some(img); }
+                            OverlayOutcome::AcceptedVideo(commit) => { drop_overlay = true; accepted_video = Some(commit); }
                             OverlayOutcome::Copied(img)     => { drop_overlay = true; copied   = Some(img); }
                             OverlayOutcome::Pinned(img, p)  => { drop_overlay = true; pinned_payload = Some((img, p)); }
                         }
@@ -854,17 +864,19 @@ pub fn run() -> Result<()> {
                 }
                 self.overlay = None;
                 // A video-annotate session ends with its overlay. Only
-                // `Accepted` carries the burn payload (routed below) —
+                // `AcceptedVideo` carries the burn payload (routed below) —
                 // Cancelled / Copied / Pinned just end the session.
-                if accepted.is_none() { self.video_annotate = None; }
+                if accepted.is_none() && accepted_video.is_none() { self.video_annotate = None; }
             }
             if let Some(i) = drop_pin { self.pinned.swap_remove(i); }
-            if let Some(img) = accepted {
+            if let Some(commit) = accepted_video {
                 if let Some(video) = self.video_annotate.take() {
-                    self.burn_annotations(video, img);
-                } else {
-                    self.save_final(img);
+                    self.burn_annotations(video, commit);
                 }
+            }
+            if let Some(img) = accepted {
+                // Screenshot path only — video commits arrive as AcceptedVideo.
+                self.save_final(img);
             }
             if let Some(img) = copied   { self.copy_final(img); }
             if let Some((mut img, pos)) = pinned_payload {
@@ -1022,19 +1034,69 @@ fn newest_recording(dir: &std::path::Path) -> Option<PathBuf> {
     best.map(|(_, p)| p)
 }
 
-/// Extract the first frame of `video` at native resolution via ffmpeg.
-/// The PNG round-trips through the OS temp dir; the editor gets it as an
-/// RGBA buffer, exactly like a screenshot.
-fn extract_first_frame(
+/// Pull the clip length out of ffmpeg's stderr input banner. The line is
+/// `  Duration: 00:00:12.34, start: 0.000000, bitrate: 1234 kb/s` —
+/// HH:MM:SS with two centisecond digits, or `N/A` for broken files.
+/// Returns `None` rather than erroring so callers can degrade to the
+/// static (no-timeline) editor instead of refusing to annotate.
+fn parse_ffmpeg_duration(stderr: &str) -> Option<f32> {
+    let line  = stderr.lines().find(|l| l.trim_start().starts_with("Duration:"))?;
+    let token = line.trim_start().strip_prefix("Duration:")?
+        .split(',').next()?.trim();
+    if token == "N/A" { return None; }
+    let mut parts = token.split(':');
+    let h: f32 = parts.next()?.parse().ok()?;
+    let m: f32 = parts.next()?.parse().ok()?;
+    let s: f32 = parts.next()?.parse().ok()?;
+    Some(h * 3600.0 + m * 60.0 + s)
+}
+
+/// Clip length in seconds via the ffmpeg input banner. ffprobe is not
+/// bundled, but plain `ffmpeg -i <video>` prints the same banner to
+/// stderr before bailing with "At least one output file must be
+/// specified" — the non-zero exit status is expected and ignored; only
+/// the banner matters.
+fn probe_duration(video: &std::path::Path) -> Result<f32> {
+    let ffmpeg = crate::convert_video_form::locate_ffmpeg()
+        .ok_or_else(|| anyhow!("ffmpeg not found — bundle it next to kashot or install it on PATH."))?;
+    let mut cmd = std::process::Command::new(&ffmpeg);
+    cmd.arg("-i").arg(video)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped());
+    // CREATE_NO_WINDOW: don't flash a console on Windows (same as every
+    // other ffmpeg spawn in the app).
+    #[cfg(windows)]
+    { use std::os::windows::process::CommandExt; cmd.creation_flags(0x0800_0000); }
+    let output = cmd.output().map_err(|e| anyhow!("ffmpeg failed to start: {e}"))?;
+    parse_ffmpeg_duration(&String::from_utf8_lossy(&output.stderr))
+        .ok_or_else(|| anyhow!("no Duration in ffmpeg banner for {}", video.display()))
+}
+
+/// Monotonic suffix for ffmpeg temp files — pid alone collides when one
+/// session extracts many scrub frames, or when a burn is still encoding
+/// on its worker thread while a newer session commits its own.
+static FRAME_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Extract the frame at `secs` (clip seconds) at native resolution via
+/// ffmpeg. The PNG round-trips through the OS temp dir; the editor gets
+/// it as an RGBA buffer, exactly like a screenshot.
+pub(crate) fn extract_frame_at(
     video: &std::path::Path,
+    secs:  f32,
 ) -> Result<image::ImageBuffer<image::Rgba<u8>, Vec<u8>>> {
     let ffmpeg = crate::convert_video_form::locate_ffmpeg()
         .ok_or_else(|| anyhow!("ffmpeg not found — bundle it next to kashot or install it on PATH."))?;
+    let seq = FRAME_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let frame_png = std::env::temp_dir()
-        .join(format!("kashot_annotate_frame_{}.png", std::process::id()));
+        .join(format!("kashot_annotate_frame_{}_{seq}.png", std::process::id()));
     let mut cmd = std::process::Command::new(&ffmpeg);
-    cmd.args(["-y", "-i"])
-        .arg(video)
+    cmd.arg("-y");
+    // `-ss` before `-i` is the fast input seek (keyframe jump + decode to
+    // the exact timestamp). Omitted at 0.0 so the default first-frame
+    // path issues the exact argv it always has.
+    if secs > 0.0 { cmd.args(["-ss", &format!("{secs:.3}")]); }
+    cmd.arg("-i").arg(video)
         .args(["-frames:v", "1", "-update", "1"])
         .arg(&frame_png)
         .stdin(std::process::Stdio::null())
@@ -1058,6 +1120,15 @@ fn extract_first_frame(
     Ok(img)
 }
 
+/// Extract the first frame of `video` at native resolution via ffmpeg.
+/// The PNG round-trips through the OS temp dir; the editor gets it as an
+/// RGBA buffer, exactly like a screenshot.
+fn extract_first_frame(
+    video: &std::path::Path,
+) -> Result<image::ImageBuffer<image::Rgba<u8>, Vec<u8>>> {
+    extract_frame_at(video, 0.0)
+}
+
 /// `<dir>/<stem>_annotated.mp4`, next to the original clip.
 fn annotated_output_path(video: &std::path::Path) -> PathBuf {
     let stem = video.file_stem().map(|s| s.to_string_lossy().to_string())
@@ -1067,30 +1138,49 @@ fn annotated_output_path(video: &std::path::Path) -> PathBuf {
         .join(format!("{stem}_annotated.mp4"))
 }
 
-/// The actual burn: overlay PNG composited over every frame, audio copied
-/// through untouched. Encoder settings mirror the recorder (libx264
-/// ultrafast, yuv420p for player compatibility). Runs on a worker thread —
-/// see `burn_annotations`.
+/// The actual burn: one transparent overlay PNG per (start, end) group,
+/// each composited over the clip through its own `overlay` filter. Timed
+/// groups are gated with `enable=`; the whole-clip group (start 0, open
+/// end) gets a plain `overlay=0:0`, so the zero-interaction default
+/// produces the exact pre-timeline filtergraph. Audio copied through
+/// untouched. Encoder settings mirror the recorder (libx264 ultrafast,
+/// yuv420p for player compatibility). Runs on a worker thread — see
+/// `burn_annotations`.
 fn run_annotation_burn(
-    ffmpeg: &std::path::Path,
-    video: &std::path::Path,
-    overlay: &image::ImageBuffer<image::Rgba<u8>, Vec<u8>>,
-    out: &std::path::Path,
+    ffmpeg:   &std::path::Path,
+    video:    &std::path::Path,
+    overlays: &[OverlayGroup],
+    out:      &std::path::Path,
 ) -> Result<()> {
-    let overlay_png = std::env::temp_dir()
-        .join(format!("kashot_annotate_overlay_{}.png", std::process::id()));
-    overlay.save(&overlay_png)
-        .map_err(|e| anyhow!("writing overlay png: {e}"))?;
+    if overlays.is_empty() {
+        return Err(anyhow!("nothing to burn — no overlay groups."));
+    }
+    // One temp PNG per group. pid + group index alone is NOT unique:
+    // burns run on detached worker threads, so committing a second
+    // annotate session while an earlier clip is still encoding reuses
+    // the same pid and indices — each burn also takes a FRAME_SEQ
+    // ticket, the same disambiguation scrub-frame extraction uses.
+    let seq = FRAME_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let mut pngs: Vec<PathBuf> = Vec::with_capacity(overlays.len());
+    for (i, (overlay, _, _)) in overlays.iter().enumerate() {
+        let png = std::env::temp_dir()
+            .join(format!("kashot_annotate_overlay_{}_{seq}_{i}.png", std::process::id()));
+        if let Err(e) = overlay.save(&png) {
+            for p in &pngs { let _ = std::fs::remove_file(p); }
+            return Err(anyhow!("writing overlay png: {e}"));
+        }
+        pngs.push(png);
+    }
+    let windows: Vec<(f32, Option<f32>)> =
+        overlays.iter().map(|(_, s, e)| (*s, *e)).collect();
 
     let mut cmd = std::process::Command::new(ffmpeg);
-    cmd.args(["-y", "-i"])
-        .arg(video)
-        .arg("-i")
-        .arg(&overlay_png)
+    cmd.args(["-y", "-i"]).arg(video);
+    for png in &pngs { cmd.arg("-i").arg(png); }
+    cmd.arg("-filter_complex").arg(overlay_filtergraph(&windows))
         // `[0:a?]` — map audio only if the clip has any (video-only
         // recordings produce no audio stream).
-        .args(["-filter_complex", "[0:v][1:v]overlay=0:0[v]",
-               "-map", "[v]", "-map", "0:a?",
+        .args(["-map", "[v]", "-map", "0:a?",
                "-c:v", "libx264", "-preset", "ultrafast",
                "-pix_fmt", "yuv420p",
                "-c:a", "copy",
@@ -1103,7 +1193,7 @@ fn run_annotation_burn(
     { use std::os::windows::process::CommandExt; cmd.creation_flags(0x0800_0000); }
     let output = cmd.output()
         .map_err(|e| anyhow!("ffmpeg failed to start: {e}"));
-    let _ = std::fs::remove_file(&overlay_png);
+    for png in &pngs { let _ = std::fs::remove_file(png); }
     let output = output?;
     if !output.status.success() {
         let tail = stderr_tail(&String::from_utf8_lossy(&output.stderr));
@@ -1113,6 +1203,49 @@ fn run_annotation_burn(
         Ok(m) if m.len() > 0 => Ok(()),
         _ => Err(anyhow!("ffmpeg reported success but {} is missing or empty.", out.display())),
     }
+}
+
+/// Build the `-filter_complex` graph chaining one `overlay` per group:
+/// `[0:v][1:v]overlay=0:0:enable='gte(t,S0)*lt(t,E0)'[v0];[v0][2:v]…[v]`,
+/// last link always labelled `[v]` for `-map [v]`.
+///
+/// Quoting: this string is passed as a single Command argv entry (no
+/// shell), so the only parser involved is ffmpeg's filtergraph parser.
+/// There an unescaped `,` ends the filter's option list, so the commas
+/// inside `gte(t,…)` / `lt(t,…)` must be protected — single quotes at
+/// the filtergraph level, which the parser strips before the expression
+/// evaluator runs. Backslash-escaping each comma would also work; the
+/// quote form matches the ffmpeg documentation examples, while the
+/// unquoted form is rejected up front with `No such filter: '2.000'` —
+/// the comma is taken as a chain separator.
+///
+/// Window forms:
+///   (0.0, None)  → plain `overlay=0:0` — byte-identical to the
+///                  pre-timeline single-overlay graph.
+///   (s,   None)  → `enable='gte(t,S)'` — "until clip end" without
+///                  trusting the parsed duration to the centisecond.
+///   (s, Some(e)) → `enable='gte(t,S)*lt(t,E)'` — half-open [S, E),
+///                  matching `annotation_visible_at` exactly. ffmpeg's
+///                  `between()` is inclusive at BOTH ends, and a frame
+///                  landing exactly on E is the common case, not a
+///                  corner: the chip presets (3/5/10 s) sit right on the
+///                  30 fps frame grid of kashot's own recordings, so the
+///                  inclusive form burned one frame the preview said was
+///                  clean.
+fn overlay_filtergraph(windows: &[(f32, Option<f32>)]) -> String {
+    let mut chains = Vec::with_capacity(windows.len());
+    let mut prev = "0:v".to_owned();
+    for (i, (start, end)) in windows.iter().enumerate() {
+        let label = if i + 1 == windows.len() { "v".to_owned() } else { format!("v{i}") };
+        let gate = match end {
+            None if *start == 0.0 => String::new(),
+            None                  => format!(":enable='gte(t,{start:.3})'"),
+            Some(e)               => format!(":enable='gte(t,{start:.3})*lt(t,{e:.3})'"),
+        };
+        chains.push(format!("[{prev}][{}:v]overlay=0:0{gate}[{label}]", i + 1));
+        prev = label;
+    }
+    chains.join(";")
 }
 
 /// Last few non-empty stderr lines — enough to say *why* ffmpeg bailed
@@ -1266,6 +1399,49 @@ mod tests {
         let tail = stderr_tail(s);
         assert_eq!(tail, "line2 | line3 | line4 | line5");
         assert_eq!(stderr_tail(""), "");
+    }
+
+    #[test]
+    fn ffmpeg_banner_duration_parses() {
+        // Real banner shape: 2-space indent, comma-terminated field.
+        let stderr = "ffmpeg version 6.1.1 Copyright (c) 2000-2023 the FFmpeg developers\n\
+            Input #0, mov,mp4,m4a,3gp,3g2,mj2, from 'kashot_20260606_101010.mp4':\n\
+            \x20 Metadata:\n\
+            \x20   major_brand     : isom\n\
+            \x20 Duration: 00:00:12.34, start: 0.000000, bitrate: 1234 kb/s\n\
+            \x20 Stream #0:0[0x1](und): Video: h264 (High), yuv420p, 1920x1080\n";
+        let d = parse_ffmpeg_duration(stderr).unwrap();
+        assert!((d - 12.34).abs() < 0.01, "got {d}");
+        let hour = "  Duration: 01:02:03.45, start: 0.000000, bitrate: 5 kb/s\n";
+        let d = parse_ffmpeg_duration(hour).unwrap();
+        assert!((d - 3723.45).abs() < 0.01, "got {d}");
+    }
+
+    #[test]
+    fn ffmpeg_banner_duration_rejects_na_and_absent() {
+        assert_eq!(parse_ffmpeg_duration("  Duration: N/A, start: 0.000000, bitrate: N/A\n"), None);
+        assert_eq!(parse_ffmpeg_duration("no banner here\n"), None);
+        assert_eq!(parse_ffmpeg_duration(""), None);
+    }
+
+    #[test]
+    fn filtergraph_single_whole_clip_matches_pre_timeline_graph() {
+        // The zero-interaction default must produce the exact filter the
+        // static burn always used.
+        assert_eq!(overlay_filtergraph(&[(0.0, None)]), "[0:v][1:v]overlay=0:0[v]");
+    }
+
+    #[test]
+    fn filtergraph_chains_enable_windows() {
+        let graph = overlay_filtergraph(&[
+            (0.0, None),
+            (1.5, Some(4.5)),
+            (2.0, None),
+        ]);
+        assert_eq!(graph,
+            "[0:v][1:v]overlay=0:0[v0];\
+             [v0][2:v]overlay=0:0:enable='gte(t,1.500)*lt(t,4.500)'[v1];\
+             [v1][3:v]overlay=0:0:enable='gte(t,2.000)'[v]");
     }
 
     #[test]

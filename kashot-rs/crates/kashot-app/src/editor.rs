@@ -28,6 +28,7 @@
 //! after the selection is committed; real text on the dimension chip.
 
 use std::num::NonZeroU32;
+use std::path::PathBuf;
 use std::rc::Rc;
 
 use anyhow::{anyhow, Result};
@@ -62,6 +63,35 @@ pub enum OverlayOutcome {
     /// of the selection so the pin window opens right where the user
     /// captured. Mirrors `Kashot/PinForm.cs`.
     Pinned(ImageBuffer<Rgba<u8>, Vec<u8>>, (i32, i32)),
+    /// Video-annotate commit: the raw annotation list plus the committed
+    /// background frame. Composition into per-window overlays is deferred
+    /// to the burn worker thread (`compose_overlay_groups`) because each
+    /// distinct window start costs a synchronous ffmpeg seek for its
+    /// pristine background — that must not stall the event loop. Replaces
+    /// `Accepted` for video sessions so the screenshot save path keeps
+    /// its single-bitmap payload.
+    AcceptedVideo(VideoCommit),
+}
+
+/// One video-burn group: an annotations-only transparent overlay plus its
+/// visibility window in clip seconds. `end == None` = until the clip ends.
+pub type OverlayGroup = (ImageBuffer<Rgba<u8>, Vec<u8>>, f32, Option<f32>);
+
+/// Deferred video-commit payload carried by `AcceptedVideo`: everything
+/// `compose_overlay_groups` needs to build the per-window overlays on the
+/// burn worker thread instead of inside `commit`.
+pub struct VideoCommit {
+    /// Annotations in draw order, each carrying its visibility window.
+    pub annotations: Vec<Annotation>,
+    /// The background frame displayed at commit — reused as the pristine
+    /// frame for groups whose window starts at the committed scrub spot,
+    /// and as the fallback when a group's own extraction fails.
+    pub frame: ImageBuffer<Rgba<u8>, Vec<u8>>,
+    /// Timestamp `frame` was extracted at (the editor's `scrub_frame_t`).
+    pub frame_t: f32,
+    /// Parsed clip length, for nudging per-group extraction times inside
+    /// the clip. `None` when the Duration banner didn't parse.
+    pub duration: Option<f32>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -116,6 +146,30 @@ const MARKER_SLIDER_PAD:      i32 = 8;
 const MARKER_SLIDER_TRACK_H:  i32 = 16;
 const MARKER_SLIDER_KNOB_W:   i32 = 14;
 const MARKER_SLIDER_LABEL_W:  i32 = 34;
+
+// ── video timeline bar geometry ─────────────────────────────────────────────
+// Bottom-center scrub strip, video mode only. Holds (left→right) a
+// "current / total" clock, the seek track with playhead + per-annotation
+// start ticks, and the annotation-duration chip. Sized so a 720-px bar
+// fits comfortably under a full-frame selection without covering the
+// action panel, and shrinks with the window on small screens.
+const TIMELINE_MAX_W:   i32 = 720;
+const TIMELINE_H:       i32 = 40;
+const TIMELINE_MARGIN:  i32 = 16;   // min gap to the screen edges
+const TIMELINE_PAD:     i32 = 10;
+const TIMELINE_TRACK_H: i32 = 10;
+const TIMELINE_KNOB_W:  i32 = 8;
+const TIMELINE_CHIP_W:  i32 = 44;
+const TIMELINE_CHIP_H:  i32 = 24;
+
+/// Annotation-duration presets the chip cycles through. `None` = visible
+/// until the clip ends. The 5×7 bitmap font is ASCII-only (non-ASCII
+/// falls back to '?'), so the "infinity" preset is spelled "End".
+const DURATION_CHOICES: [Option<f32>; 4] = [None, Some(3.0), Some(5.0), Some(10.0)];
+
+fn duration_chip_label(idx: usize) -> &'static str {
+    match idx % DURATION_CHOICES.len() { 0 => "End", 1 => "3s", 2 => "5s", _ => "10s" }
+}
 
 /// Tool-panel button identities. The first 9 mirror `Tool::ALL`; the last 4
 /// (`Color`, `Thickness`, `Undo`, `Redo`) are buttons that don't pick a tool
@@ -234,9 +288,31 @@ pub struct Overlay {
     dragging_marker_opacity: bool,
     /// True when annotating a video frame (`new_for_video`): the selection
     /// is locked to the full frame, Esc cancels outright, and `commit`
-    /// returns the annotations-only transparent overlay instead of a
-    /// cropped composite.
+    /// returns the deferred `VideoCommit` payload instead of a cropped
+    /// composite.
     video_mode: bool,
+    /// Video-annotate context: the clip path, so the editor itself can
+    /// re-extract frames when the user scrubs. `None` in screenshot mode.
+    video_path: Option<PathBuf>,
+    /// Clip length in seconds from the ffmpeg banner. `None` when parsing
+    /// failed (broken file) — the timeline hides entirely and the session
+    /// degrades to the pre-timeline static whole-clip editor.
+    duration: Option<f32>,
+    /// Current scrub position in clip seconds. New annotations stamp it
+    /// as their window start; the background frame tracks it.
+    scrub_pos: f32,
+    /// Timestamp `screenshot` was actually extracted at — skips redundant
+    /// ffmpeg spawns when a seek lands on the already-displayed frame.
+    scrub_frame_t: f32,
+    /// True while the user is left-dragging the timeline playhead. Same
+    /// pattern as `dragging_marker_opacity`.
+    dragging_playhead: bool,
+    /// Last mid-drag frame swap. Each swap is a synchronous ffmpeg spawn,
+    /// so mid-drag extraction is rate-limited to one per 200 ms; press
+    /// and release always extract so the resting frame is exact.
+    last_scrub_extract: Option<std::time::Instant>,
+    /// Index into `DURATION_CHOICES` for the chip (default 0 = "End").
+    duration_choice: usize,
 }
 
 impl Drop for Overlay {
@@ -260,22 +336,28 @@ impl Overlay {
         screenshot: ImageBuffer<Rgba<u8>, Vec<u8>>,
         settings: AppSettings,
     ) -> Result<Self> {
-        Self::build(loop_target, screenshot, settings, false)
+        Self::build(loop_target, screenshot, settings, false, None, None)
     }
 
     /// Open the editor to annotate a video frame instead of a screenshot.
     /// The selection is pre-locked to the full frame (no cropping, no
-    /// re-selecting, no edge-resize) and `commit` returns an annotations-
-    /// only transparent overlay (see `compose_video_overlay`) that the
-    /// caller burns over the whole clip with ffmpeg. Copy/Pin still work —
+    /// re-selecting, no edge-resize) and `commit` returns the annotation
+    /// list + committed frame (see `compose_overlay_groups`) that the
+    /// caller turns into annotations-only transparent overlays and burns
+    /// over the clip with ffmpeg. A bottom-center timeline
+    /// bar lets the user scrub the clip and stamp each annotation with a
+    /// visibility window (`duration_secs` feeds it; `None` hides the bar
+    /// and keeps the static whole-clip behavior). Copy/Pin still work —
     /// they produce an annotated *still* of the frame, which is useful on
     /// its own and keeps the action panel free of dead buttons.
     pub fn new_for_video(
         loop_target: &ActiveEventLoop,
         frame: ImageBuffer<Rgba<u8>, Vec<u8>>,
         settings: AppSettings,
+        video: PathBuf,
+        duration_secs: Option<f32>,
     ) -> Result<Self> {
-        Self::build(loop_target, frame, settings, true)
+        Self::build(loop_target, frame, settings, true, Some(video), duration_secs)
     }
 
     fn build(
@@ -283,6 +365,8 @@ impl Overlay {
         screenshot: ImageBuffer<Rgba<u8>, Vec<u8>>,
         settings: AppSettings,
         video_mode: bool,
+        video_path: Option<PathBuf>,
+        duration_secs: Option<f32>,
     ) -> Result<Self> {
         // Plain borderless fullscreen — let the WM manage focus + stacking
         // normally. We tried `override_redirect=true` on X11 to layer above
@@ -365,6 +449,13 @@ impl Overlay {
             settings,
             dragging_marker_opacity: false,
             video_mode,
+            video_path,
+            duration: duration_secs,
+            scrub_pos: 0.0,
+            scrub_frame_t: 0.0,
+            dragging_playhead: false,
+            last_scrub_extract: None,
+            duration_choice: 0,
         })
     }
 
@@ -393,6 +484,46 @@ impl Overlay {
         self.window.request_redraw();
     }
 
+    /// Snap `scrub_pos` to the cursor's X inside the timeline track,
+    /// clamped to [0, duration]. `force_extract` bypasses the mid-drag
+    /// throttle so press and release always land the background on the
+    /// exact frame; mid-drag swaps are rate-limited because each one is
+    /// a synchronous ffmpeg spawn.
+    fn set_scrub_from_cursor(&mut self, force_extract: bool) {
+        let Some(dur) = self.duration else { return; };
+        let win_w = self.window.inner_size().width  as usize;
+        let win_h = self.window.inner_size().height as usize;
+        let bar = timeline_bar_rect(win_w, win_h);
+        let (tx, _ty, tw, _th) = timeline_track(bar, dur);
+        if tw <= 1 { return; }
+        let mut t = (self.cursor.0 - tx) as f32 / (tw - 1) as f32;
+        if !t.is_finite() { t = 0.0; }
+        self.scrub_pos = t.clamp(0.0, 1.0) * dur;
+        let throttle_ok = self.last_scrub_extract
+            .map_or(true, |i| i.elapsed() >= std::time::Duration::from_millis(200));
+        if force_extract || throttle_ok {
+            self.swap_scrub_frame();
+        }
+        self.window.request_redraw();
+    }
+
+    /// Replace the background with the frame at the current scrub
+    /// position. Failures keep the previous frame — a stale background
+    /// beats killing the session mid-drag.
+    fn swap_scrub_frame(&mut self) {
+        let (Some(dur), Some(video)) = (self.duration, self.video_path.as_deref()) else { return; };
+        self.last_scrub_extract = Some(std::time::Instant::now());
+        let t = clamp_extract_t(self.scrub_pos, dur);
+        if t == self.scrub_frame_t { return; }
+        match crate::tray_loop::extract_frame_at(video, t) {
+            Ok(frame) => {
+                self.screenshot    = frame;
+                self.scrub_frame_t = t;
+            }
+            Err(e) => eprintln!("kashot: scrub frame extract failed: {e}"),
+        }
+    }
+
     pub fn window_id(&self) -> WindowId { self.window.id() }
 
     pub fn handle_event(&mut self, event: WindowEvent) -> OverlayOutcome {
@@ -415,6 +546,10 @@ impl Overlay {
                 // when the user drags well outside the slider's own rect.
                 if self.dragging_marker_opacity {
                     self.set_marker_opacity_from_cursor();
+                    return OverlayOutcome::Continue;
+                }
+                if self.dragging_playhead {
+                    self.set_scrub_from_cursor(false);
                     return OverlayOutcome::Continue;
                 }
                 match self.state {
@@ -735,6 +870,26 @@ impl Overlay {
                         }
                     }
                 }
+
+                // Video timeline + duration chip. Gated on `video_mode`
+                // so the bar can never steal clicks in the screenshot
+                // editor, and on a known duration so a broken clip keeps
+                // the old static behavior.
+                if self.video_mode && self.duration.is_some() {
+                    let bar = timeline_bar_rect(win_w, win_h);
+                    if rect_contains(timeline_chip_rect(bar), self.cursor) {
+                        self.duration_choice = (self.duration_choice + 1) % DURATION_CHOICES.len();
+                        self.window.request_redraw();
+                        return OverlayOutcome::Continue;
+                    }
+                    if rect_contains(bar, self.cursor) {
+                        // Click-to-seek + arm drag-tracking until mouseup,
+                        // mirroring the marker-opacity slider.
+                        self.dragging_playhead = true;
+                        self.set_scrub_from_cursor(true);
+                        return OverlayOutcome::Continue;
+                    }
+                }
             }
         }
 
@@ -802,9 +957,25 @@ impl Overlay {
         OverlayOutcome::Continue
     }
 
-    fn add_annotation(&mut self, a: Annotation) {
+    fn add_annotation(&mut self, mut a: Annotation) {
+        // Video mode stamps the visibility window at commit time: start =
+        // the current scrub position, end = start + the chip preset. The
+        // untouched default (scrub 0 + "End") stays `None`, keeping the
+        // zero-interaction session structurally identical to the static
+        // whole-clip behavior.
+        if self.video_mode {
+            a.time = self.annotation_window();
+        }
         self.annotations.push(a);
         self.redo_stack.clear();
+    }
+
+    /// The window a new annotation gets at the current scrub position +
+    /// chip preset (see `stamp_window`). `None` = whole clip.
+    fn annotation_window(&self) -> Option<(f32, f32)> {
+        let dur = self.duration?;
+        stamp_window(self.scrub_pos, dur,
+                     DURATION_CHOICES[self.duration_choice % DURATION_CHOICES.len()])
     }
 
     fn handle_left_release(&mut self) -> OverlayOutcome {
@@ -817,6 +988,12 @@ impl Overlay {
             if let Err(e) = self.settings.save() {
                 eprintln!("kashot: marker opacity save failed: {e}");
             }
+        }
+        if self.dragging_playhead {
+            self.dragging_playhead = false;
+            // Final frame swap so the background matches exactly where
+            // the drag ended (mid-drag swaps are throttled).
+            self.set_scrub_from_cursor(true);
         }
         match self.state {
             State::Selecting => {
@@ -918,6 +1095,17 @@ impl Overlay {
                 }
             }
         }
+        // Video timeline — same gates as the click handler so the tip can
+        // only ever appear where a click would actually land.
+        if self.video_mode && self.duration.is_some() {
+            let bar = timeline_bar_rect(win_w, win_h);
+            if rect_contains(timeline_chip_rect(bar), self.cursor) {
+                return Some(("Annotation duration", self.cursor.0 + 14, self.cursor.1 - 24));
+            }
+            if rect_contains(bar, self.cursor) {
+                return Some(("Seek", self.cursor.0 + 14, self.cursor.1 - 24));
+            }
+        }
         None
     }
 
@@ -963,14 +1151,21 @@ impl Overlay {
     }
 
     fn commit(&mut self) -> OverlayOutcome {
-        // Video mode: Accepted carries the annotations-only transparent
-        // overlay — the tray loop burns it over the clip with ffmpeg.
-        let composed = if self.video_mode {
-            self.compose_video_overlay()
-        } else {
-            self.compose_final()
-        };
-        match composed {
+        // Video mode: AcceptedVideo carries the raw annotation list plus
+        // the committed background frame. The tray loop's burn worker
+        // composes the per-window overlays from it (`compose_overlay_
+        // groups`) — each distinct window start spawns ffmpeg for its
+        // pristine frame, which would freeze the event loop here.
+        if self.video_mode {
+            if self.state != State::Selected { return OverlayOutcome::Continue; }
+            return OverlayOutcome::AcceptedVideo(VideoCommit {
+                annotations: self.annotations.clone(),
+                frame:       self.screenshot.clone(),
+                frame_t:     self.scrub_frame_t,
+                duration:    self.duration,
+            });
+        }
+        match self.compose_final() {
             Some(img) => OverlayOutcome::Accepted(img),
             None      => OverlayOutcome::Continue,
         }
@@ -1010,36 +1205,14 @@ impl Overlay {
         let dy = -rect.1 as f32;
         let mut surf = ImageSurface(&mut img);
         for a in &self.annotations {
+            // Video-mode Copy/Pin produce a still of exactly what is on
+            // screen: only ink visible at the scrub position is burned.
+            // Screenshot mode carries no windows so this never skips.
+            if self.video_mode && !annotation_visible_at(a, self.scrub_pos) { continue; }
             let translated = translate_annotation(a, dx, dy);
             painter::render_annotation(&mut surf, &translated, Some(&pristine));
         }
         Some(img)
-    }
-
-    /// Video-mode counterpart of `compose_final`: render the annotations
-    /// into a fully-transparent RGBA buffer the size of the frame, leaving
-    /// untouched pixels transparent. ffmpeg then overlays that buffer on
-    /// every frame of the clip.
-    ///
-    /// The painter's `blend` pre-composites semi-transparent strokes
-    /// against whatever `read()` returns, so we can't render straight onto
-    /// transparency — Marker would come out as an opaque dark band. Instead
-    /// `DiffSurface` reads from (and writes to) a live copy of the frame —
-    /// so blending and Pixelate sampling behave exactly like the screenshot
-    /// editor — while mirroring every touched pixel, opaque, into the
-    /// transparent out-buffer. WYSIWYG with one caveat: Marker/Pixelate
-    /// pixels carry frame content frozen from the annotated frame.
-    fn compose_video_overlay(&self) -> Option<ImageBuffer<Rgba<u8>, Vec<u8>>> {
-        if self.state != State::Selected { return None; }
-        let (w, h) = (self.screenshot.width(), self.screenshot.height());
-        let pristine  = self.screenshot.clone();
-        let mut frame = self.screenshot.clone();
-        let mut out   = ImageBuffer::from_pixel(w, h, Rgba([0, 0, 0, 0]));
-        let mut surf  = DiffSurface { frame: &mut frame, out: &mut out };
-        for a in &self.annotations {
-            painter::render_annotation(&mut surf, a, Some(&pristine));
-        }
-        Some(out)
     }
 
     /// Force keyboard focus + grab to our window via raw X11 calls. Retries
@@ -1139,6 +1312,9 @@ impl Overlay {
         // a scissor here, but we still skip when there's no selection.
         let mut surf = U32Surface { buf: &mut buf, stride: win_w as i32, height: win_h as i32 };
         for a in &self.annotations {
+            // Timeline preview: only ink whose window contains the scrub
+            // position is visible. Screenshot mode carries no windows.
+            if self.video_mode && !annotation_visible_at(a, self.scrub_pos) { continue; }
             painter::render_annotation(&mut surf, a, Some(&self.screenshot));
         }
         if let Some(a) = self.current.as_ref() {
@@ -1263,6 +1439,19 @@ impl Overlay {
             draw_magnifier(&mut buf, win_w, win_h, &self.screenshot, self.cursor);
         }
 
+        // Pass 6.5: video timeline — video mode only, and only when the
+        // clip length is known (a broken Duration banner hides the bar
+        // and the session behaves like the static whole-clip editor).
+        if self.video_mode {
+            if let Some(dur) = self.duration {
+                let ticks: Vec<f32> = self.annotations.iter()
+                    .filter_map(|a| a.time.map(|(s, _)| s))
+                    .collect();
+                draw_timeline_bar(&mut buf, win_w, win_h, self.scrub_pos, dur,
+                                  duration_chip_label(self.duration_choice), &ticks);
+            }
+        }
+
         // Pass 7: tooltip chip — only when the user is hovering a button
         // in `Selected`. Mirrors C# `MakeButton(tip, ...)` behaviour.
         if let Some((label, x, y)) = self.hover_tip {
@@ -1365,6 +1554,166 @@ fn marker_slider_track(panel: (i32, i32, i32, i32)) -> (i32, i32, i32, i32) {
 fn marker_slider_hit(panel: (i32, i32, i32, i32), (cx, cy): (i32, i32)) -> bool {
     let (px, py, pw, ph) = panel;
     cx >= px && cx < px + pw && cy >= py && cy < py + ph
+}
+
+// ── video timeline bar layout (video mode only) ────────────────────────────
+
+/// Point-in-rect test shared by the timeline bar + duration chip.
+fn rect_contains((x, y, w, h): (i32, i32, i32, i32), (cx, cy): (i32, i32)) -> bool {
+    cx >= x && cx < x + w && cy >= y && cy < y + h
+}
+
+/// Bottom-center timeline bar, video mode only.
+fn timeline_bar_rect(win_w: usize, win_h: usize) -> (i32, i32, i32, i32) {
+    let w = TIMELINE_MAX_W.min(win_w as i32 - TIMELINE_MARGIN * 2).max(120);
+    let x = (win_w as i32 - w) / 2;
+    let y = (win_h as i32 - TIMELINE_MARGIN - TIMELINE_H).max(0);
+    (x, y, w, TIMELINE_H)
+}
+
+/// Duration chip — right end of the bar, inside it, so it can never clip
+/// the screen edge regardless of window size.
+fn timeline_chip_rect(bar: (i32, i32, i32, i32)) -> (i32, i32, i32, i32) {
+    let (bx, by, bw, bh) = bar;
+    (bx + bw - TIMELINE_PAD - TIMELINE_CHIP_W,
+     by + (bh - TIMELINE_CHIP_H) / 2,
+     TIMELINE_CHIP_W, TIMELINE_CHIP_H)
+}
+
+/// Seek track between the clock readout and the chip. The readout slot is
+/// measured from the worst-case "total / total" label so the track does
+/// not jitter as the current-time digits change while scrubbing.
+fn timeline_track(bar: (i32, i32, i32, i32), total_secs: f32) -> (i32, i32, i32, i32) {
+    let (bx, by, _bw, bh) = bar;
+    let label   = format!("{0} / {0}", format_timecode(total_secs));
+    let label_w = crate::bitmap_font::measure(&label, 2);
+    let tx   = bx + TIMELINE_PAD + label_w + 10;
+    let chip = timeline_chip_rect(bar);
+    let tw   = (chip.0 - 8 - tx).max(40);
+    let ty   = by + (bh - TIMELINE_TRACK_H) / 2;
+    (tx, ty, tw, TIMELINE_TRACK_H)
+}
+
+/// "M:SS" clock readout (minutes unpadded; hours roll into minutes —
+/// recordings are short).
+fn format_timecode(secs: f32) -> String {
+    let s = secs.max(0.0).round() as u64;
+    format!("{}:{:02}", s / 60, s % 60)
+}
+
+/// `[start, end)` containment for the timeline preview. `None` = whole
+/// clip; an `f32::INFINITY` end means "until the clip ends".
+fn annotation_visible_at(a: &Annotation, t: f32) -> bool {
+    match a.time { None => true, Some((s, e)) => t >= s && t < e }
+}
+
+/// Seeking at (or past) the clip's end yields no frame from ffmpeg, so
+/// extraction times are nudged just inside the clip.
+fn clamp_extract_t(t: f32, dur: f32) -> f32 { t.min((dur - 0.05).max(0.0)) }
+
+/// Window stamped on a new annotation: start = the scrub position, end =
+/// start + the chip preset. `None` = whole clip. The start is nudged
+/// inside the clip with `clamp_extract_t` because the seek track clamps
+/// to [0, dur] — a stamp at exactly `dur` would gate the burn on
+/// gte(t, dur), which no frame ever reaches (the last frame's timestamp
+/// is one frame-duration short of the container length), silently
+/// dropping ink the preview showed on the displayed (already-nudged)
+/// final frame. A preset that runs past the clip's end means the same as
+/// "End" — open-ended, so the burn emits gte() instead of trusting the
+/// parsed duration to the centisecond.
+fn stamp_window(scrub_pos: f32, dur: f32, preset: Option<f32>) -> Option<(f32, f32)> {
+    let start = clamp_extract_t(scrub_pos, dur);
+    let end = match preset {
+        Some(d) if start + d < dur => start + d,
+        _ => f32::INFINITY,
+    };
+    if start == 0.0 && end == f32::INFINITY { return None; }
+    Some((start, end))
+}
+
+/// Group annotations into runs of identical visibility windows —
+/// consecutive only, so the chained overlays composite in exactly the
+/// editor's draw order. Merging across runs would re-order ink: with
+/// A(whole-clip) B(timed) C(whole-clip), folding C into A's group puts
+/// B's overlay above C in the burn while the preview painted C on top.
+/// Interleaved sequences cost one extra overlay input per run; the
+/// zero-interaction default is still a single run, so the byte-identical
+/// pre-timeline filtergraph is preserved.
+fn group_by_window(annotations: &[Annotation]) -> Vec<(Option<(f32, f32)>, Vec<&Annotation>)> {
+    let mut groups: Vec<(Option<(f32, f32)>, Vec<&Annotation>)> = Vec::new();
+    for a in annotations {
+        match groups.last_mut() {
+            Some((k, list)) if *k == a.time => list.push(a),
+            _ => groups.push((a.time, vec![a])),
+        }
+    }
+    groups
+}
+
+/// Video-mode counterpart of `compose_final`: render the annotations into
+/// fully-transparent RGBA buffers the size of the frame, leaving untouched
+/// pixels transparent — one buffer per run of identical (start, end)
+/// visibility windows. ffmpeg then overlays each buffer on the clip, gated
+/// to its window with `enable=`.
+///
+/// The painter's `blend` pre-composites semi-transparent strokes against
+/// whatever `read()` returns, so we can't render straight onto
+/// transparency — Marker would come out as an opaque dark band. Instead
+/// `DiffSurface` reads from (and writes to) a live copy of the frame — so
+/// blending and Pixelate sampling behave exactly like the screenshot
+/// editor — while mirroring every touched pixel, opaque, into the
+/// transparent out-buffer. WYSIWYG with one caveat: Marker/Pixelate
+/// pixels carry frame content frozen from the annotated frame.
+///
+/// Runs on the burn worker thread (see `burn_annotations`) — each group
+/// whose start differs from the committed scrub frame costs a synchronous
+/// ffmpeg seek for its pristine background, which must not stall the
+/// event loop. Extractions are deduplicated by start time so runs sharing
+/// a position pay for one seek, not one per run.
+pub(crate) fn compose_overlay_groups(commit: &VideoCommit, video: &std::path::Path) -> Vec<OverlayGroup> {
+    let (w, h) = (commit.frame.width(), commit.frame.height());
+    let mut groups = group_by_window(&commit.annotations);
+    // No annotations → keep today's behavior: one fully-transparent
+    // whole-clip overlay; the burn still produces the _annotated copy.
+    if groups.is_empty() { groups.push((None, Vec::new())); }
+
+    let mut extracted: Vec<(f32, ImageBuffer<Rgba<u8>, Vec<u8>>)> = Vec::new();
+    let mut out_groups = Vec::with_capacity(groups.len());
+    for (window, list) in groups {
+        let start = window.map(|(s, _)| s).unwrap_or(0.0);
+        // Pristine background = the frame at the group's START, so
+        // Marker blending + Pixelate sampling are faithful to the
+        // moment the ink first appears. The committed scrub frame is
+        // reused when it already matches; extraction failure falls
+        // back to it — losing blend fidelity for one group beats
+        // failing the whole burn.
+        let pristine = if start == commit.frame_t {
+            commit.frame.clone()
+        } else if let Some((_, f)) = extracted.iter().find(|(t, _)| *t == start) {
+            f.clone()
+        } else {
+            let t = commit.duration.map(|d| clamp_extract_t(start, d)).unwrap_or(start);
+            match crate::tray_loop::extract_frame_at(video, t) {
+                Ok(frame) => {
+                    extracted.push((start, frame.clone()));
+                    frame
+                }
+                Err(e) => {
+                    eprintln!("kashot: group frame extract failed: {e}");
+                    commit.frame.clone()
+                }
+            }
+        };
+        let mut frame = pristine.clone();
+        let mut out   = ImageBuffer::from_pixel(w, h, Rgba([0, 0, 0, 0]));
+        let mut surf  = DiffSurface { frame: &mut frame, out: &mut out };
+        for a in list {
+            painter::render_annotation(&mut surf, a, Some(&pristine));
+        }
+        let end = window.and_then(|(_, e)| e.is_finite().then_some(e));
+        out_groups.push((out, start, end));
+    }
+    out_groups
 }
 
 fn action_panel_origin(win_w: usize, win_h: usize, sel: (i32, i32, i32, i32)) -> (i32, i32) {
@@ -1810,6 +2159,85 @@ fn draw_marker_opacity_slider(
     );
 }
 
+/// Video-mode timeline bar: "current / total" clock, seek track with
+/// elapsed fill + playhead, laser-green ticks at each timed annotation's
+/// start, and the annotation-duration chip. Chrome matches the marker
+/// opacity slider so the two widgets read as one family.
+fn draw_timeline_bar(
+    buf:        &mut [u32],
+    win_w:      usize,
+    win_h:      usize,
+    scrub:      f32,
+    total:      f32,
+    chip_label: &str,
+    tick_times: &[f32],
+) {
+    const BG:       u32 = 0x00_22_22_24;
+    const BTN:      u32 = 0x00_2E_2E_32;
+    const TRACK_BG: u32 = 0x00_0A_0A_0E;     // void-black groove
+    const BORDER:   u32 = 0x00_00_FF_95;     // laser-green frame
+    const FILL:     u32 = 0x00_64_95_ED;     // elapsed portion, selection blue
+    const KNOB:     u32 = 0x00_FF_FF_FF;
+    const TICK:     u32 = 0x00_00_FF_95;     // annotation starts, laser-green
+    const TEXT:     u32 = 0x00_E8_E8_EC;
+
+    let bar = timeline_bar_rect(win_w, win_h);
+    let (bx, by, bw, bh) = bar;
+    draw_rounded_rect(buf, win_w, win_h, bx, by, bx + bw, by + bh, PANEL_RADIUS, BG);
+    draw_rect_border(buf, win_w, win_h, bx, by, bx + bw, by + bh, BORDER);
+
+    // Clock readout, left slot.
+    let label = format!("{} / {}", format_timecode(scrub), format_timecode(total));
+    let ly = by + (bh - crate::bitmap_font::GLYPH_H * 2) / 2;
+    {
+        let mut surf = crate::painter::U32Surface { buf, stride: win_w as i32, height: win_h as i32 };
+        crate::painter::draw_text(&mut surf, bx + TIMELINE_PAD, ly, 2, &label,
+            kashot_core::color::Rgba::new(
+                ((TEXT >> 16) & 0xFF) as u8,
+                ((TEXT >>  8) & 0xFF) as u8,
+                ( TEXT        & 0xFF) as u8,
+                0xFF,
+            ));
+    }
+
+    // Seek track: groove, elapsed fill, frame.
+    let (tx, ty, tw, th) = timeline_track(bar, total);
+    draw_filled_rect(buf, win_w, win_h, tx, ty, tx + tw, ty + th, TRACK_BG);
+    let frac   = if total > 0.0 { (scrub / total).clamp(0.0, 1.0) } else { 0.0 };
+    let head_x = tx + ((tw - 1) as f32 * frac).round() as i32;
+    draw_filled_rect(buf, win_w, win_h, tx, ty, head_x, ty + th, FILL);
+    draw_rect_border(buf, win_w, win_h, tx, ty, tx + tw, ty + th, BORDER);
+
+    // Annotation start ticks — full-height lines through the groove so
+    // the user can find their timed ink without scrubbing for it.
+    for &t in tick_times {
+        let frac = if total > 0.0 { (t / total).clamp(0.0, 1.0) } else { 0.0 };
+        let xn = tx + ((tw - 1) as f32 * frac).round() as i32;
+        for y in (ty + 1)..(ty + th - 1) {
+            if xn >= 0 && (xn as usize) < win_w && y >= 0 && (y as usize) < win_h {
+                buf[y as usize * win_w + xn as usize] = TICK;
+            }
+        }
+    }
+
+    // Playhead knob — taller than the groove like the marker knob.
+    let kx = (head_x - TIMELINE_KNOB_W / 2).clamp(tx - 1, tx + tw - TIMELINE_KNOB_W + 1);
+    let knob_h = th + 6;
+    let ky = ty + (th - knob_h) / 2;
+    draw_filled_rect(buf, win_w, win_h, kx, ky, kx + TIMELINE_KNOB_W, ky + knob_h, KNOB);
+    draw_rect_border(buf, win_w, win_h, kx, ky, kx + TIMELINE_KNOB_W, ky + knob_h, BORDER);
+
+    // Duration chip, right slot.
+    let (cx, cy, cw, ch) = timeline_chip_rect(bar);
+    draw_rounded_rect(buf, win_w, win_h, cx, cy, cx + cw, cy + ch, 6, BTN);
+    draw_rect_border(buf, win_w, win_h, cx, cy, cx + cw, cy + ch, BORDER);
+    let text_w = crate::bitmap_font::measure(chip_label, 2);
+    let text_x = cx + (cw - text_w) / 2;
+    let text_y = cy + (ch - crate::bitmap_font::GLYPH_H * 2) / 2;
+    let mut surf = crate::painter::U32Surface { buf, stride: win_w as i32, height: win_h as i32 };
+    crate::painter::draw_text(&mut surf, text_x, text_y, 2, chip_label, kashot_core::color::Rgba::WHITE);
+}
+
 fn draw_palette_popup(
     buf:           &mut [u32],
     win_w:         usize,
@@ -2100,7 +2528,7 @@ fn translate_annotation(a: &Annotation, dx: f32, dy: f32) -> Annotation {
         K::Text      { color, position, text, font_size } => K::Text { color, position: shift(position), text, font_size },
         K::Step      { color, center, number } => K::Step { color, center: shift(center), number },
     };
-    Annotation { kind }
+    Annotation { kind, time: a.time }
 }
 
 /// Width × height chip rendered just outside the bottom-right corner of the
@@ -2333,6 +2761,71 @@ mod tests {
         assert!(p[0] > 180 && p[1] > 180,
             "marker must blend against the frame, got {p:?}");
         assert!(p[2] < 160, "blue channel should drop under a yellow marker, got {p:?}");
+    }
+
+    #[test]
+    fn time_window_filter_is_half_open() {
+        let mut a = Annotation::pen(Stroke::default(), Point2::new(0.0, 0.0));
+        assert!(annotation_visible_at(&a, 0.0), "None = whole clip");
+        assert!(annotation_visible_at(&a, 99.0));
+        a.time = Some((1.0, 4.0));
+        assert!(!annotation_visible_at(&a, 0.999));
+        assert!( annotation_visible_at(&a, 1.0), "start is inclusive");
+        assert!( annotation_visible_at(&a, 3.999));
+        assert!(!annotation_visible_at(&a, 4.0), "end is exclusive");
+        a.time = Some((2.0, f32::INFINITY));
+        assert!(annotation_visible_at(&a, 9999.0), "open end means until clip end");
+    }
+
+    #[test]
+    fn group_by_window_groups_consecutive_runs_only() {
+        let p = Point2::new(0.0, 0.0);
+        let a  = Annotation::pen(Stroke::default(), p);               // None
+        let a2 = Annotation::pen(Stroke::default(), p);               // None — same run
+        let mut b = Annotation::pen(Stroke::default(), p);
+        b.time = Some((1.0, 4.0));
+        let c = Annotation::pen(Stroke::default(), p);                // None again — new run
+        let all = [a, a2, b, c];
+        let groups = group_by_window(&all);
+        assert_eq!(groups.len(), 3,
+            "the trailing whole-clip stroke must start a new run — folding \
+             it into the first would burn the timed ink on top of it");
+        assert_eq!(groups[0].0, None);
+        assert_eq!(groups[0].1.len(), 2, "consecutive whole-clip strokes share one group");
+        assert_eq!(groups[1].0, Some((1.0, 4.0)));
+        assert_eq!(groups[2].0, None);
+        assert_eq!(groups[2].1.len(), 1);
+    }
+
+    #[test]
+    fn stamp_window_at_clip_end_stays_inside_the_clip() {
+        // Dragging the playhead fully right puts scrub_pos exactly at the
+        // duration. A raw stamp would gate the burn on gte(t, dur), which
+        // no frame ever reaches — frame timestamps stop one frame short
+        // of the container length — so the ink the preview showed would
+        // silently vanish from the burned video.
+        let w = stamp_window(10.0, 10.0, None).expect("end-of-clip stamp is a window");
+        assert!(w.0 < 10.0, "start must sit strictly inside the clip, got {}", w.0);
+        assert_eq!(w.0, 10.0 - 0.05);
+        assert_eq!(w.1, f32::INFINITY);
+        // Presets that run past the end collapse to open-ended too.
+        assert_eq!(stamp_window(10.0, 10.0, Some(3.0)), Some((10.0 - 0.05, f32::INFINITY)));
+    }
+
+    #[test]
+    fn stamp_window_default_collapses_to_whole_clip() {
+        assert_eq!(stamp_window(0.0, 10.0, None), None, "scrub 0 + \"End\" = no window");
+        assert_eq!(stamp_window(0.0, 10.0, Some(3.0)), Some((0.0, 3.0)));
+        assert_eq!(stamp_window(2.0, 10.0, Some(3.0)), Some((2.0, 5.0)));
+        assert_eq!(stamp_window(2.0, 10.0, None), Some((2.0, f32::INFINITY)));
+    }
+
+    #[test]
+    fn timecode_formats_minutes_and_seconds() {
+        assert_eq!(format_timecode(0.0),    "0:00");
+        assert_eq!(format_timecode(12.34),  "0:12");
+        assert_eq!(format_timecode(75.0),   "1:15");
+        assert_eq!(format_timecode(3601.0), "60:01");
     }
 }
 

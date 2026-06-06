@@ -74,23 +74,32 @@ pub enum AnnotationKind {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Annotation {
     pub kind: AnnotationKind,
+    /// Video-mode visibility window in clip seconds: start inclusive, end
+    /// exclusive. `end` may be `f32::INFINITY` for "visible until the clip
+    /// ends". `None` = whole clip — screenshot mode and the static video
+    /// default, so a session that never touches the timeline carries no
+    /// windows at all and burns exactly like before. `#[serde(default)]`
+    /// keeps any future session-file format readable across this change
+    /// (nothing persists `Annotation` today).
+    #[serde(default)]
+    pub time: Option<(f32, f32)>,
 }
 
 impl Annotation {
     pub fn pen(stroke: Stroke, p: Point2) -> Annotation {
-        Annotation { kind: AnnotationKind::Pen { stroke, points: vec![p] } }
+        Annotation { kind: AnnotationKind::Pen { stroke, points: vec![p] }, time: None }
     }
     pub fn line(stroke: Stroke, a: Point2) -> Annotation {
-        Annotation { kind: AnnotationKind::Line { stroke, start: a, end: a } }
+        Annotation { kind: AnnotationKind::Line { stroke, start: a, end: a }, time: None }
     }
     pub fn arrow(stroke: Stroke, a: Point2) -> Annotation {
-        Annotation { kind: AnnotationKind::Arrow { stroke, start: a, end: a } }
+        Annotation { kind: AnnotationKind::Arrow { stroke, start: a, end: a }, time: None }
     }
     pub fn rectangle(stroke: Stroke, a: Point2) -> Annotation {
-        Annotation { kind: AnnotationKind::Rectangle { stroke, start: a, end: a } }
+        Annotation { kind: AnnotationKind::Rectangle { stroke, start: a, end: a }, time: None }
     }
     pub fn ellipse(stroke: Stroke, a: Point2) -> Annotation {
-        Annotation { kind: AnnotationKind::Ellipse { stroke, start: a, end: a } }
+        Annotation { kind: AnnotationKind::Ellipse { stroke, start: a, end: a }, time: None }
     }
     pub fn marker(stroke: Stroke, p: Point2, alpha: u8) -> Annotation {
         // Marker thickness is 6× the configured thickness; alpha is the
@@ -101,16 +110,16 @@ impl Annotation {
             thickness: stroke.thickness * 6.0,
             color:     stroke.color.with_alpha(alpha),
         };
-        Annotation { kind: AnnotationKind::Marker { stroke, points: vec![p] } }
+        Annotation { kind: AnnotationKind::Marker { stroke, points: vec![p] }, time: None }
     }
     pub fn text(color: Rgba, p: Point2, text: impl Into<String>) -> Annotation {
-        Annotation { kind: AnnotationKind::Text { color, position: p, text: text.into(), font_size: 14.0 } }
+        Annotation { kind: AnnotationKind::Text { color, position: p, text: text.into(), font_size: 14.0 }, time: None }
     }
     pub fn step(color: Rgba, center: Point2, number: u32) -> Annotation {
-        Annotation { kind: AnnotationKind::Step { color, center, number } }
+        Annotation { kind: AnnotationKind::Step { color, center, number }, time: None }
     }
     pub fn pixelate(a: Point2) -> Annotation {
-        Annotation { kind: AnnotationKind::Pixelate { start: a, end: a, block_size: 10 } }
+        Annotation { kind: AnnotationKind::Pixelate { start: a, end: a, block_size: 10 }, time: None }
     }
 
     /// Update the in-progress annotation with the latest mouse position.
@@ -282,5 +291,26 @@ mod tests {
                 _ => panic!("wrong variant"),
             }
         }
+    }
+
+    #[test]
+    fn constructors_default_to_whole_clip_time() {
+        // `None` = whole clip; the editor stamps a window only in video
+        // mode. Every constructor must start un-windowed so screenshot
+        // sessions are structurally unchanged.
+        let p = Point2::new(1.0, 2.0);
+        assert_eq!(Annotation::pen(Stroke::default(), p).time, None);
+        assert_eq!(Annotation::marker(Stroke::default(), p, 0x80).time, None);
+        assert_eq!(Annotation::text(Rgba::RED, p, "hi").time, None);
+        assert_eq!(Annotation::step(Rgba::RED, p, 1).time, None);
+        assert_eq!(Annotation::pixelate(p).time, None);
+    }
+
+    #[test]
+    fn extend_leaves_time_window_untouched() {
+        let mut a = Annotation::pen(Stroke::default(), Point2::new(0.0, 0.0));
+        a.time = Some((1.5, 4.5));
+        a.extend(Point2::new(3.0, 3.0));
+        assert_eq!(a.time, Some((1.5, 4.5)));
     }
 }
