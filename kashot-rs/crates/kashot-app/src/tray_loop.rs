@@ -94,6 +94,16 @@ pub fn run() -> Result<()> {
         update_job: Option<std::thread::JoinHandle<Result<(), String>>>,
         last_tick:  Instant,
         capturing:  bool,
+        /// Path of the most recently saved recording this session — the
+        /// target of the tray's "Annotate last recording". Falls back to
+        /// the newest .mp4 in the recordings folder when None (fresh app
+        /// start).
+        last_recording: Option<PathBuf>,
+        /// While `overlay` is a video-annotate session (`new_for_video`),
+        /// the clip it belongs to. `Accepted` then carries an annotations-
+        /// only transparent overlay that gets burned over this file
+        /// instead of being saved as a screenshot.
+        video_annotate: Option<PathBuf>,
     }
 
     impl TrayApp {
@@ -111,6 +121,7 @@ pub fn run() -> Result<()> {
                     TrayEvent::CancelPending         => {} // handled inline by the delay loop
                     TrayEvent::StartRecording(opts)  => self.start_recording(opts, loop_target),
                     TrayEvent::StopRecording         => self.stop_recording(),
+                    TrayEvent::AnnotateLastRecording => self.annotate_last_recording(loop_target),
                     TrayEvent::OpenSaveFolder        => self.open_save_folder(),
                     TrayEvent::OpenRecordingsFolder  => self.open_recordings_folder(),
                     TrayEvent::Settings              => self.show_settings(loop_target),
@@ -323,15 +334,28 @@ pub fn run() -> Result<()> {
                     eprintln!("Recording ({audio_label}) → {}", out.display());
                     if let Some(t) = &self.tray { t.set_recording(true); }
                     // Float a small flashing control panel so the user can
-                    // stop the recording without opening the tray menu.
-                    // Best-effort — log + carry on if the OS won't give us
-                    // another window.
-                    match RecordingIndicator::new(loop_target) {
-                        Ok(v)  => self.recording_view = Some(v),
-                        Err(e) => eprintln!("Recording indicator failed: {e}"),
+                    // stop the recording without opening the tray menu. The
+                    // panel excludes itself from screen capture (Windows /
+                    // macOS) so it never appears inside the video. X11 has
+                    // no capture-exclusion API — x11grab would burn the
+                    // panel into the recording — so on Linux we skip it and
+                    // the tray menu is the stop control. Best-effort — log +
+                    // carry on if the OS won't give us another window.
+                    if cfg!(target_os = "linux") {
+                        eprintln!("Recording indicator skipped on Linux (would be captured by x11grab) — stop via tray menu.");
+                    } else {
+                        match RecordingIndicator::new(loop_target) {
+                            Ok(v)  => self.recording_view = Some(v),
+                            Err(e) => eprintln!("Recording indicator failed: {e} — stop via tray menu."),
+                        }
                     }
+                    let stop_hint = if self.recording_view.is_some() {
+                        "Click the floating STOP button (it won't appear in the video) or use the tray menu to finish."
+                    } else {
+                        "Use the tray menu to finish."
+                    };
                     notify("KAShot — recording started",
-                        &format!("{audio_label}\nSaving to {}\n\nClick the floating STOP button or use the tray menu to finish.",
+                        &format!("{audio_label}\nSaving to {}\n\n{stop_hint}",
                             out.display()),
                         true);
                 }
@@ -371,8 +395,9 @@ pub fn run() -> Result<()> {
                     eprintln!("Saved recording {}", path.display());
                     if let Some(t) = &self.tray { t.set_recording(false); }
                     notify("KAShot — recording saved",
-                        &format!("{}", path.display()),
+                        &format!("{}\n\nTray → \"Annotate last recording\" to draw on it.", path.display()),
                         false);
+                    self.last_recording = Some(path);
                 }
                 Err(e) => {
                     eprintln!("Stop recording failed: {e}");
@@ -398,6 +423,72 @@ pub fn run() -> Result<()> {
                 }
             }
             self.recording_view = None;
+        }
+
+        /// Tray → "Annotate last recording": open the most recent clip in
+        /// the editor. ffmpeg extracts the first frame at video resolution,
+        /// the user draws on it with the normal tools, and `commit` hands
+        /// back an annotations-only transparent overlay that
+        /// `burn_annotations` composites over the whole clip.
+        fn annotate_last_recording(&mut self, loop_target: &ActiveEventLoop) {
+            if self.capturing || self.overlay.is_some() { return; }
+            if self.recorder.is_recording() {
+                notify("KAShot — annotate", "Stop the current recording first.", true);
+                return;
+            }
+            let video = match self.last_recording.clone().filter(|p| p.exists())
+                .or_else(|| newest_recording(&recordings_directory_for(&self.settings)))
+            {
+                Some(p) => p,
+                None => {
+                    notify("KAShot — annotate",
+                        "No recording found — record something first.", true);
+                    return;
+                }
+            };
+            let frame = match extract_first_frame(&video) {
+                Ok(f) => f,
+                Err(e) => {
+                    notify("KAShot — annotate failed", &format!("{e}"), true);
+                    return;
+                }
+            };
+            match Overlay::new_for_video(loop_target, frame, self.settings.clone()) {
+                Ok(ov) => {
+                    self.overlay        = Some(ov);
+                    self.video_annotate = Some(video);
+                }
+                Err(e) => notify("KAShot — annotate failed", &format!("{e}"), true),
+            }
+        }
+
+        /// Burn the annotations-only overlay over every frame of `video`.
+        /// Runs ffmpeg on a background thread — re-encoding a long clip can
+        /// take a while and must not freeze the tray/hotkey loop — and
+        /// notifies on completion. The annotated copy lands next to the
+        /// original as `<stem>_annotated.mp4`; the original is untouched.
+        fn burn_annotations(
+            &mut self,
+            video: PathBuf,
+            overlay: image::ImageBuffer<image::Rgba<u8>, Vec<u8>>,
+        ) {
+            let Some(ffmpeg) = crate::convert_video_form::locate_ffmpeg() else {
+                notify("KAShot — annotate failed",
+                    "ffmpeg not found — bundle it next to kashot or install it on PATH.",
+                    true);
+                return;
+            };
+            let out = annotated_output_path(&video);
+            notify("KAShot — annotating recording",
+                &format!("Re-encoding with your annotations…\n→ {}", out.display()),
+                false);
+            std::thread::spawn(move || {
+                match run_annotation_burn(&ffmpeg, &video, &overlay, &out) {
+                    Ok(()) => notify("KAShot — annotated recording saved",
+                        &out.display().to_string(), false),
+                    Err(e) => notify("KAShot — annotate failed", &format!("{e}"), true),
+                }
+            });
         }
 
         /// Open the configured screenshot save directory in the user's
@@ -762,9 +853,19 @@ pub fn run() -> Result<()> {
                     self.settings.marker_opacity = ov.settings().marker_opacity;
                 }
                 self.overlay = None;
+                // A video-annotate session ends with its overlay. Only
+                // `Accepted` carries the burn payload (routed below) —
+                // Cancelled / Copied / Pinned just end the session.
+                if accepted.is_none() { self.video_annotate = None; }
             }
             if let Some(i) = drop_pin { self.pinned.swap_remove(i); }
-            if let Some(img) = accepted { self.save_final(img); }
+            if let Some(img) = accepted {
+                if let Some(video) = self.video_annotate.take() {
+                    self.burn_annotations(video, img);
+                } else {
+                    self.save_final(img);
+                }
+            }
             if let Some(img) = copied   { self.copy_final(img); }
             if let Some((mut img, pos)) = pinned_payload {
                 apply_watermark(&mut img, &self.settings);
@@ -809,6 +910,8 @@ pub fn run() -> Result<()> {
         update_job: None,
         last_tick: Instant::now(),
         capturing: false,
+        last_recording: None,
+        video_annotate: None,
     };
 
     event_loop.run_app(&mut app).map_err(|e| anyhow!("run_app: {e}"))?;
@@ -899,6 +1002,128 @@ fn recordings_directory_for(s: &AppSettings) -> PathBuf {
         return home;
     }
     std::env::temp_dir()
+}
+
+/// Newest `.mp4` in the recordings folder by modification time — the
+/// "Annotate last recording" fallback when the app was restarted since the
+/// clip was recorded (so `last_recording` is None).
+fn newest_recording(dir: &std::path::Path) -> Option<PathBuf> {
+    let mut best: Option<(std::time::SystemTime, PathBuf)> = None;
+    for entry in std::fs::read_dir(dir).ok()?.flatten() {
+        let path = entry.path();
+        if path.extension().map(|e| e.eq_ignore_ascii_case("mp4")) != Some(true) {
+            continue;
+        }
+        let Ok(modified) = entry.metadata().and_then(|m| m.modified()) else { continue };
+        if best.as_ref().map(|(t, _)| modified > *t).unwrap_or(true) {
+            best = Some((modified, path));
+        }
+    }
+    best.map(|(_, p)| p)
+}
+
+/// Extract the first frame of `video` at native resolution via ffmpeg.
+/// The PNG round-trips through the OS temp dir; the editor gets it as an
+/// RGBA buffer, exactly like a screenshot.
+fn extract_first_frame(
+    video: &std::path::Path,
+) -> Result<image::ImageBuffer<image::Rgba<u8>, Vec<u8>>> {
+    let ffmpeg = crate::convert_video_form::locate_ffmpeg()
+        .ok_or_else(|| anyhow!("ffmpeg not found — bundle it next to kashot or install it on PATH."))?;
+    let frame_png = std::env::temp_dir()
+        .join(format!("kashot_annotate_frame_{}.png", std::process::id()));
+    let mut cmd = std::process::Command::new(&ffmpeg);
+    cmd.args(["-y", "-i"])
+        .arg(video)
+        .args(["-frames:v", "1", "-update", "1"])
+        .arg(&frame_png)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped());
+    // CREATE_NO_WINDOW: don't flash a console on Windows (same as every
+    // other ffmpeg spawn in the app).
+    #[cfg(windows)]
+    { use std::os::windows::process::CommandExt; cmd.creation_flags(0x0800_0000); }
+    let output = cmd.output()
+        .map_err(|e| anyhow!("ffmpeg failed to start: {e}"))?;
+    if !output.status.success() {
+        let tail = stderr_tail(&String::from_utf8_lossy(&output.stderr));
+        let _ = std::fs::remove_file(&frame_png);
+        return Err(anyhow!("could not read a frame from {}: {tail}", video.display()));
+    }
+    let img = image::open(&frame_png)
+        .map_err(|e| anyhow!("decoding extracted frame: {e}"))?
+        .into_rgba8();
+    let _ = std::fs::remove_file(&frame_png);
+    Ok(img)
+}
+
+/// `<dir>/<stem>_annotated.mp4`, next to the original clip.
+fn annotated_output_path(video: &std::path::Path) -> PathBuf {
+    let stem = video.file_stem().map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_else(|| "kashot".to_owned());
+    video.parent().map(|p| p.to_path_buf())
+        .unwrap_or_else(std::env::temp_dir)
+        .join(format!("{stem}_annotated.mp4"))
+}
+
+/// The actual burn: overlay PNG composited over every frame, audio copied
+/// through untouched. Encoder settings mirror the recorder (libx264
+/// ultrafast, yuv420p for player compatibility). Runs on a worker thread —
+/// see `burn_annotations`.
+fn run_annotation_burn(
+    ffmpeg: &std::path::Path,
+    video: &std::path::Path,
+    overlay: &image::ImageBuffer<image::Rgba<u8>, Vec<u8>>,
+    out: &std::path::Path,
+) -> Result<()> {
+    let overlay_png = std::env::temp_dir()
+        .join(format!("kashot_annotate_overlay_{}.png", std::process::id()));
+    overlay.save(&overlay_png)
+        .map_err(|e| anyhow!("writing overlay png: {e}"))?;
+
+    let mut cmd = std::process::Command::new(ffmpeg);
+    cmd.args(["-y", "-i"])
+        .arg(video)
+        .arg("-i")
+        .arg(&overlay_png)
+        // `[0:a?]` — map audio only if the clip has any (video-only
+        // recordings produce no audio stream).
+        .args(["-filter_complex", "[0:v][1:v]overlay=0:0[v]",
+               "-map", "[v]", "-map", "0:a?",
+               "-c:v", "libx264", "-preset", "ultrafast",
+               "-pix_fmt", "yuv420p",
+               "-c:a", "copy",
+               "-movflags", "+faststart"])
+        .arg(out)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped());
+    #[cfg(windows)]
+    { use std::os::windows::process::CommandExt; cmd.creation_flags(0x0800_0000); }
+    let output = cmd.output()
+        .map_err(|e| anyhow!("ffmpeg failed to start: {e}"));
+    let _ = std::fs::remove_file(&overlay_png);
+    let output = output?;
+    if !output.status.success() {
+        let tail = stderr_tail(&String::from_utf8_lossy(&output.stderr));
+        return Err(anyhow!("ffmpeg exited with {}: {tail}", output.status));
+    }
+    match std::fs::metadata(out) {
+        Ok(m) if m.len() > 0 => Ok(()),
+        _ => Err(anyhow!("ffmpeg reported success but {} is missing or empty.", out.display())),
+    }
+}
+
+/// Last few non-empty stderr lines — enough to say *why* ffmpeg bailed
+/// without dumping its whole banner into a notification.
+fn stderr_tail(stderr: &str) -> String {
+    let lines: Vec<&str> = stderr.lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .collect();
+    let n = lines.len();
+    lines[n.saturating_sub(4)..].join(" | ")
 }
 
 fn describe_hotkey(s: &AppSettings) -> String {
@@ -1022,5 +1247,40 @@ fn open_url(url: &str) {
     cmd.args(opener.1);
     if let Err(e) = cmd.spawn() {
         eprintln!("Couldn't open {url}: {e}");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn annotated_path_lands_next_to_source() {
+        let p = annotated_output_path(std::path::Path::new("/tmp/vids/kashot_20260606_101010.mp4"));
+        assert_eq!(p, PathBuf::from("/tmp/vids/kashot_20260606_101010_annotated.mp4"));
+    }
+
+    #[test]
+    fn stderr_tail_keeps_last_lines_only() {
+        let s = "banner\n\nline1\nline2\nline3\nline4\nline5\n";
+        let tail = stderr_tail(s);
+        assert_eq!(tail, "line2 | line3 | line4 | line5");
+        assert_eq!(stderr_tail(""), "");
+    }
+
+    #[test]
+    fn newest_recording_picks_latest_mp4() {
+        let dir = std::env::temp_dir().join(format!("kashot_test_newest_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let old = dir.join("a.mp4");
+        let new = dir.join("b.mp4");
+        let png = dir.join("c.png");
+        std::fs::write(&old, b"x").unwrap();
+        std::fs::write(&png, b"x").unwrap();
+        // Ensure a strictly newer mtime for b.mp4.
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::fs::write(&new, b"x").unwrap();
+        assert_eq!(newest_recording(&dir), Some(new));
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

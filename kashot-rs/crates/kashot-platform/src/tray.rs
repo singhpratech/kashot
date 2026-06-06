@@ -22,6 +22,7 @@ pub struct Tray {
     pub rec_sys_id:    tray_icon::menu::MenuId,
     pub rec_both_id:   tray_icon::menu::MenuId,
     pub stop_rec_id:   tray_icon::menu::MenuId,
+    pub annotate_rec_id: tray_icon::menu::MenuId,
     pub open_folder_id:tray_icon::menu::MenuId,
     pub open_recs_id:  tray_icon::menu::MenuId,
     pub settings_id:   tray_icon::menu::MenuId,
@@ -54,6 +55,9 @@ pub enum TrayEvent {
     /// Begin recording with the given audio sources mixed in.
     StartRecording(crate::recorder::RecordingOptions),
     StopRecording,
+    /// Open the most recent recording in the annotation editor — draw on a
+    /// frame, then ffmpeg burns the drawing over the whole clip.
+    AnnotateLastRecording,
     /// Open the configured screenshot save folder in the user's default
     /// file manager. Mirrors C# TrayContext "Open Save Folder".
     OpenSaveFolder,
@@ -113,6 +117,7 @@ impl Tray {
         let rec_sys   = MenuItem::new("Record + audio",    true,  None);
         let rec_both  = MenuItem::new("Record + mic+audio",true,  None);
         let stop_rec  = MenuItem::new("Stop recording",    false, None);
+        let annotate_rec = MenuItem::new("Annotate last recording", true, None);
 
         let open_fold = MenuItem::new("Open shots",        true,  None);
         let open_recs = MenuItem::new("Open recordings",   true,  None);
@@ -134,6 +139,7 @@ impl Tray {
         let rec_sys_id  = rec_sys.id().clone();
         let rec_both_id = rec_both.id().clone();
         let stop_rec_id = stop_rec.id().clone();
+        let annotate_rec_id = annotate_rec.id().clone();
         let open_folder_id = open_fold.id().clone();
         let open_recs_id   = open_recs.id().clone();
         let settings_id = settings.id().clone();
@@ -155,6 +161,7 @@ impl Tray {
         menu.append(&rec_sys).map_err(|e| Error::Tray(e.to_string()))?;
         menu.append(&rec_both).map_err(|e| Error::Tray(e.to_string()))?;
         menu.append(&stop_rec).map_err(|e| Error::Tray(e.to_string()))?;
+        menu.append(&annotate_rec).map_err(|e| Error::Tray(e.to_string()))?;
         menu.append(&PredefinedMenuItem::separator()).map_err(|e| Error::Tray(e.to_string()))?;
         menu.append(&open_fold).map_err(|e| Error::Tray(e.to_string()))?;
         menu.append(&open_recs).map_err(|e| Error::Tray(e.to_string()))?;
@@ -189,6 +196,7 @@ impl Tray {
             rec_sys_id,
             rec_both_id,
             stop_rec_id,
+            annotate_rec_id,
             open_folder_id,
             open_recs_id,
             settings_id,
@@ -221,6 +229,7 @@ impl Tray {
             Ok(ev) if ev.id == self.rec_sys_id   => TrayEvent::StartRecording(crate::recorder::RecordingOptions::SYSTEM_ONLY),
             Ok(ev) if ev.id == self.rec_both_id  => TrayEvent::StartRecording(crate::recorder::RecordingOptions::MIC_AND_SYS),
             Ok(ev) if ev.id == self.stop_rec_id  => TrayEvent::StopRecording,
+            Ok(ev) if ev.id == self.annotate_rec_id => TrayEvent::AnnotateLastRecording,
             Ok(ev) if ev.id == self.open_folder_id => TrayEvent::OpenSaveFolder,
             Ok(ev) if ev.id == self.open_recs_id  => TrayEvent::OpenRecordingsFolder,
             Ok(ev) if ev.id == self.settings_id  => TrayEvent::Settings,

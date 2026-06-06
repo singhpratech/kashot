@@ -16,6 +16,18 @@
 //! `Option<RecordingIndicator>`, dispatches `WindowEvent`s by `WindowId`,
 //! and reads `stop_requested` after each event to learn when the STOP
 //! button was clicked.
+//!
+//! The panel must NEVER appear inside the recorded video, so `new()`
+//! excludes the window from screen capture before returning:
+//!   - Windows: `SetWindowDisplayAffinity(WDA_EXCLUDEFROMCAPTURE)` — DWM
+//!     omits the window from BitBlt/DXGI screen reads (what gdigrab sees).
+//!   - macOS: `NSWindow.sharingType = NSWindowSharingNone` — `screencapture`
+//!     skips windows that opt out of sharing.
+//!   - Linux/X11: no such API exists (x11grab reads the composited root
+//!     window), so the tray loop never creates the panel while recording —
+//!     see `start_recording` in tray_loop.rs.
+//! If exclusion fails (e.g. Windows 10 before 2004), `new()` returns Err and
+//! the caller records without a panel rather than burning it into the video.
 
 use std::num::NonZeroU32;
 use std::rc::Rc;
@@ -84,6 +96,10 @@ impl RecordingIndicator {
             .create_window(attrs)
             .map(Rc::new)
             .map_err(|e| anyhow!("create_window (recording indicator): {e}"))?;
+
+        // Keep the panel out of the recording itself. Hard-fail on error:
+        // no panel beats a panel burned into the user's video.
+        exclude_from_capture(&window)?;
 
         window.set_cursor(CursorIcon::Default);
 
@@ -221,6 +237,112 @@ impl RecordingIndicator {
             eprintln!("recording indicator: buf.present: {e}");
         }
     }
+}
+
+/// Exclude the indicator window from screen capture so it never shows up
+/// inside the recorded video. Windows 10 2004+ (build 19041): the DWM
+/// drops the window from BitBlt/DXGI screen reads — exactly what ffmpeg's
+/// gdigrab performs (same trick OBS and KeePassXC ship).
+///
+/// MUST be version-gated, not just error-checked: on older builds the call
+/// *succeeds* but degrades to WDA_MONITOR semantics — the panel would show
+/// as a solid black box in the recording, strictly worse than showing it.
+/// On gate/API failure we bubble the Err up; the tray loop then records
+/// without a floating panel (tray menu still stops).
+#[cfg(windows)]
+fn exclude_from_capture(window: &Rc<Window>) -> Result<()> {
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::UI::WindowsAndMessaging::{
+        SetWindowDisplayAffinity, WDA_EXCLUDEFROMCAPTURE,
+    };
+    use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+
+    // First Windows build where WDA_EXCLUDEFROMCAPTURE means "exclude"
+    // rather than "black box" (Windows 10 2004).
+    const MIN_BUILD: u32 = 19041;
+    let build = windows_build_number();
+    if build < MIN_BUILD {
+        return Err(anyhow!(
+            "Windows build {build} < {MIN_BUILD}: capture exclusion unavailable \
+             (would record a black box) — recording without the floating panel."
+        ));
+    }
+
+    let handle = window
+        .window_handle()
+        .map_err(|e| anyhow!("window_handle (recording indicator): {e}"))?;
+    let RawWindowHandle::Win32(h) = handle.as_raw() else {
+        return Err(anyhow!("recording indicator: not a Win32 window handle"));
+    };
+    let hwnd = HWND(h.hwnd.get() as *mut core::ffi::c_void);
+    unsafe { SetWindowDisplayAffinity(hwnd, WDA_EXCLUDEFROMCAPTURE) }
+        .map_err(|e| anyhow!("SetWindowDisplayAffinity(WDA_EXCLUDEFROMCAPTURE): {e}"))
+}
+
+/// Build number from the registry (`CurrentBuildNumber`). `GetVersionEx`
+/// lies without a compatibility manifest; the registry value doesn't.
+/// Returns 0 when unreadable — callers treat that as "too old".
+#[cfg(windows)]
+fn windows_build_number() -> u32 {
+    use windows::core::w;
+    use windows::Win32::System::Registry::{
+        RegGetValueW, HKEY_LOCAL_MACHINE, RRF_RT_REG_SZ,
+    };
+
+    let mut buf = [0u16; 32];
+    let mut size = (buf.len() * 2) as u32;
+    let status = unsafe {
+        RegGetValueW(
+            HKEY_LOCAL_MACHINE,
+            w!("SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion"),
+            w!("CurrentBuildNumber"),
+            RRF_RT_REG_SZ,
+            None,
+            Some(buf.as_mut_ptr().cast()),
+            Some(&mut size),
+        )
+    };
+    if status.is_err() {
+        return 0;
+    }
+    let len = (size as usize / 2).saturating_sub(1).min(buf.len());
+    String::from_utf16_lossy(&buf[..len]).trim().parse().unwrap_or(0)
+}
+
+/// macOS: `NSWindow.sharingType = NSWindowSharingNone` — the window keeps
+/// rendering on the monitor but opts out of being read by capture APIs,
+/// including the `screencapture -v` process the recorder spawns.
+#[cfg(target_os = "macos")]
+fn exclude_from_capture(window: &Rc<Window>) -> Result<()> {
+    use objc2::msg_send;
+    use objc2::runtime::AnyObject;
+    use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+
+    let handle = window
+        .window_handle()
+        .map_err(|e| anyhow!("window_handle (recording indicator): {e}"))?;
+    let RawWindowHandle::AppKit(h) = handle.as_raw() else {
+        return Err(anyhow!("recording indicator: not an AppKit window handle"));
+    };
+    unsafe {
+        let view = h.ns_view.as_ptr() as *mut AnyObject;
+        let ns_window: *mut AnyObject = msg_send![&*view, window];
+        if ns_window.is_null() {
+            return Err(anyhow!("recording indicator: NSView has no NSWindow"));
+        }
+        // 0 = NSWindowSharingNone (NSUInteger).
+        let _: () = msg_send![&*ns_window, setSharingType: 0usize];
+    }
+    Ok(())
+}
+
+/// Linux/X11: x11grab records the composited root window — there is no
+/// per-window capture-exclusion API, so the tray loop never creates the
+/// panel while recording (see `start_recording`). This stub keeps the
+/// call site uniform if it's ever reached.
+#[cfg(not(any(windows, target_os = "macos")))]
+fn exclude_from_capture(_window: &Rc<Window>) -> Result<()> {
+    Ok(())
 }
 
 fn stop_rect() -> (i32, i32, i32, i32) {

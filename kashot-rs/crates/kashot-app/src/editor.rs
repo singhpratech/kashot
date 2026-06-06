@@ -232,6 +232,11 @@ pub struct Overlay {
     /// until `MouseInput::Released` flips it off, at which point the new
     /// value is flushed to `settings.json`.
     dragging_marker_opacity: bool,
+    /// True when annotating a video frame (`new_for_video`): the selection
+    /// is locked to the full frame, Esc cancels outright, and `commit`
+    /// returns the annotations-only transparent overlay instead of a
+    /// cropped composite.
+    video_mode: bool,
 }
 
 impl Drop for Overlay {
@@ -254,6 +259,30 @@ impl Overlay {
         loop_target: &ActiveEventLoop,
         screenshot: ImageBuffer<Rgba<u8>, Vec<u8>>,
         settings: AppSettings,
+    ) -> Result<Self> {
+        Self::build(loop_target, screenshot, settings, false)
+    }
+
+    /// Open the editor to annotate a video frame instead of a screenshot.
+    /// The selection is pre-locked to the full frame (no cropping, no
+    /// re-selecting, no edge-resize) and `commit` returns an annotations-
+    /// only transparent overlay (see `compose_video_overlay`) that the
+    /// caller burns over the whole clip with ffmpeg. Copy/Pin still work —
+    /// they produce an annotated *still* of the frame, which is useful on
+    /// its own and keeps the action panel free of dead buttons.
+    pub fn new_for_video(
+        loop_target: &ActiveEventLoop,
+        frame: ImageBuffer<Rgba<u8>, Vec<u8>>,
+        settings: AppSettings,
+    ) -> Result<Self> {
+        Self::build(loop_target, frame, settings, true)
+    }
+
+    fn build(
+        loop_target: &ActiveEventLoop,
+        screenshot: ImageBuffer<Rgba<u8>, Vec<u8>>,
+        settings: AppSettings,
+        video_mode: bool,
     ) -> Result<Self> {
         // Plain borderless fullscreen — let the WM manage focus + stacking
         // normally. We tried `override_redirect=true` on X11 to layer above
@@ -278,7 +307,7 @@ impl Overlay {
         let primary = loop_target.primary_monitor()
             .or_else(|| loop_target.available_monitors().next());
         let attrs = WindowAttributes::default()
-            .with_title("KAShot")
+            .with_title(if video_mode { "KAShot — annotate recording" } else { "KAShot" })
             .with_decorations(false)
             .with_resizable(false)
             .with_inner_size(monitor_size)
@@ -305,15 +334,18 @@ impl Overlay {
         let surface = Surface::new(&ctx, window.clone())
             .map_err(|e| anyhow!("softbuffer Surface::new: {e}"))?;
 
+        // Video mode opens with the whole frame locked in as the selection
+        // so every tool is immediately usable and nothing can be cropped.
+        let (full_w, full_h) = (screenshot.width() as i32, screenshot.height() as i32);
         Ok(Overlay {
             screenshot,
             window,
             _ctx:        ctx,
             surface,
-            state:       State::Idle,
+            state:       if video_mode { State::Selected } else { State::Idle },
             cursor:      (0, 0),
             anchor:      (0, 0),
-            selection:   None,
+            selection:   if video_mode { Some((0, 0, full_w, full_h)) } else { None },
             tool:        Tool::Pen,
             stroke:      Stroke::default(),
             annotations: Vec::new(),
@@ -332,6 +364,7 @@ impl Overlay {
             opened_at:           std::time::Instant::now(),
             settings,
             dragging_marker_opacity: false,
+            video_mode,
         })
     }
 
@@ -472,6 +505,11 @@ impl Overlay {
                     self.window.request_redraw();
                     OverlayOutcome::Continue
                 } else if self.state == State::Selected {
+                    // Video mode has no "no selection" state to fall back
+                    // to — the frame IS the selection — so Esc just closes.
+                    if self.video_mode {
+                        return OverlayOutcome::Cancelled;
+                    }
                     self.state       = State::Idle;
                     self.selection   = None;
                     self.annotations.clear();
@@ -710,8 +748,11 @@ impl Overlay {
             State::Selected => {
                 // Edge-resize takes priority over starting a draw — if the
                 // cursor is sitting on an edge or corner of the selection,
-                // clicking there grabs that edge for resizing.
-                if let Some(sel) = self.selection {
+                // clicking there grabs that edge for resizing. Video mode
+                // locks the selection to the full frame: resizing it would
+                // desync the annotation coordinates from the video, so the
+                // edges are not grabbable there.
+                if let Some(sel) = self.selection.filter(|_| !self.video_mode) {
                     let hit = hit_test_edge(
                         (sel.0 as f32, sel.1 as f32, sel.2 as f32, sel.3 as f32),
                         (self.cursor.0 as f32, self.cursor.1 as f32),
@@ -922,7 +963,14 @@ impl Overlay {
     }
 
     fn commit(&mut self) -> OverlayOutcome {
-        match self.compose_final() {
+        // Video mode: Accepted carries the annotations-only transparent
+        // overlay — the tray loop burns it over the clip with ffmpeg.
+        let composed = if self.video_mode {
+            self.compose_video_overlay()
+        } else {
+            self.compose_final()
+        };
+        match composed {
             Some(img) => OverlayOutcome::Accepted(img),
             None      => OverlayOutcome::Continue,
         }
@@ -966,6 +1014,32 @@ impl Overlay {
             painter::render_annotation(&mut surf, &translated, Some(&pristine));
         }
         Some(img)
+    }
+
+    /// Video-mode counterpart of `compose_final`: render the annotations
+    /// into a fully-transparent RGBA buffer the size of the frame, leaving
+    /// untouched pixels transparent. ffmpeg then overlays that buffer on
+    /// every frame of the clip.
+    ///
+    /// The painter's `blend` pre-composites semi-transparent strokes
+    /// against whatever `read()` returns, so we can't render straight onto
+    /// transparency — Marker would come out as an opaque dark band. Instead
+    /// `DiffSurface` reads from (and writes to) a live copy of the frame —
+    /// so blending and Pixelate sampling behave exactly like the screenshot
+    /// editor — while mirroring every touched pixel, opaque, into the
+    /// transparent out-buffer. WYSIWYG with one caveat: Marker/Pixelate
+    /// pixels carry frame content frozen from the annotated frame.
+    fn compose_video_overlay(&self) -> Option<ImageBuffer<Rgba<u8>, Vec<u8>>> {
+        if self.state != State::Selected { return None; }
+        let (w, h) = (self.screenshot.width(), self.screenshot.height());
+        let pristine  = self.screenshot.clone();
+        let mut frame = self.screenshot.clone();
+        let mut out   = ImageBuffer::from_pixel(w, h, Rgba([0, 0, 0, 0]));
+        let mut surf  = DiffSurface { frame: &mut frame, out: &mut out };
+        for a in &self.annotations {
+            painter::render_annotation(&mut surf, a, Some(&pristine));
+        }
+        Some(out)
     }
 
     /// Force keyboard focus + grab to our window via raw X11 calls. Retries
@@ -1959,6 +2033,28 @@ fn draw_magnifier(
 
 // ── helpers ──────────────────────────────────────────────────────────────
 
+/// Paint surface for `compose_video_overlay`. Reads (and writes) a live
+/// copy of the video frame so alpha blending + Pixelate source-sampling
+/// match the screenshot editor pixel-for-pixel, while mirroring every
+/// touched pixel — opaque — into a transparent out-buffer that becomes the
+/// ffmpeg overlay. Pixels no annotation touches stay (0,0,0,0).
+struct DiffSurface<'a> {
+    frame: &'a mut ImageBuffer<Rgba<u8>, Vec<u8>>,
+    out:   &'a mut ImageBuffer<Rgba<u8>, Vec<u8>>,
+}
+
+impl painter::Surface for DiffSurface<'_> {
+    fn width(&self)  -> i32 { self.frame.width()  as i32 }
+    fn height(&self) -> i32 { self.frame.height() as i32 }
+    fn read(&self, x: i32, y: i32) -> [u8; 4] {
+        self.frame.get_pixel(x as u32, y as u32).0
+    }
+    fn write(&mut self, x: i32, y: i32, rgba: [u8; 4]) {
+        self.frame.put_pixel(x as u32, y as u32, Rgba(rgba));
+        self.out.put_pixel(x as u32, y as u32, Rgba([rgba[0], rgba[1], rgba[2], 255]));
+    }
+}
+
 fn rect_from(a: (i32, i32), b: (i32, i32)) -> (i32, i32, i32, i32) {
     let x = a.0.min(b.0);
     let y = a.1.min(b.1);
@@ -2179,6 +2275,64 @@ fn draw_diagonal_stripe(
                 buf[yy * stride + x as usize] = rgb;
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use kashot_core::annotation::{Annotation, Point2, Stroke};
+    use kashot_core::color::Rgba as KRgba;
+
+    fn frame(w: u32, h: u32, px: [u8; 4]) -> ImageBuffer<Rgba<u8>, Vec<u8>> {
+        ImageBuffer::from_pixel(w, h, Rgba(px))
+    }
+
+    /// Untouched pixels of the video-annotate overlay must stay fully
+    /// transparent so ffmpeg shows the clip through them.
+    #[test]
+    fn diff_surface_untouched_pixels_stay_transparent() {
+        let mut f   = frame(32, 32, [50, 60, 70, 255]);
+        let mut out = frame(32, 32, [0, 0, 0, 0]);
+        let mut surf = DiffSurface { frame: &mut f, out: &mut out };
+
+        let mut pen = Annotation::pen(
+            Stroke { color: KRgba { r: 255, g: 0, b: 0, a: 255 }, thickness: 1.0 },
+            Point2::new(4.0, 4.0),
+        );
+        pen.extend(Point2::new(10.0, 4.0));
+        painter::render_annotation(&mut surf, &pen, None);
+
+        assert_eq!(out.get_pixel(4, 4).0[3], 255, "stroked pixel must be opaque");
+        assert_eq!(out.get_pixel(4, 4).0[0], 255, "stroked pixel keeps stroke color");
+        assert_eq!(out.get_pixel(20, 20).0, [0, 0, 0, 0], "untouched pixel stays transparent");
+    }
+
+    /// Semi-transparent strokes (Marker) must blend against the FRAME, not
+    /// against transparency — the regression this surface exists to stop:
+    /// blending against (0,0,0,0) renders an opaque near-black band.
+    #[test]
+    fn diff_surface_marker_blends_against_frame() {
+        let mut f   = frame(32, 32, [200, 200, 200, 255]);
+        let mut out = frame(32, 32, [0, 0, 0, 0]);
+        let mut surf = DiffSurface { frame: &mut f, out: &mut out };
+
+        // 50%-alpha yellow marker over light grey.
+        let mut marker = Annotation::marker(
+            Stroke { color: KRgba { r: 255, g: 255, b: 0, a: 255 }, thickness: 4.0 },
+            Point2::new(8.0, 8.0),
+            128,
+        );
+        marker.extend(Point2::new(16.0, 8.0));
+        painter::render_annotation(&mut surf, &marker, None);
+
+        let p = out.get_pixel(10, 8).0;
+        assert_eq!(p[3], 255, "marker pixel is opaque in the overlay");
+        // Yellow@50% over grey(200) ≈ (227, 227, 100) — must NOT be the
+        // near-black (127, 127, 0) that blending against transparency gives.
+        assert!(p[0] > 180 && p[1] > 180,
+            "marker must blend against the frame, got {p:?}");
+        assert!(p[2] < 160, "blue channel should drop under a yellow marker, got {p:?}");
     }
 }
 

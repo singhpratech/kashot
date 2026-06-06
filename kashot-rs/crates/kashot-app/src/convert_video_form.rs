@@ -626,8 +626,9 @@ impl ConvertVideoView {
 
 /// Find a usable ffmpeg. Order: next to our binary (installer bundle),
 /// macOS `.app/Contents/Resources/ffmpeg`, then `PATH`. Returns the full
-/// path so we can pass it straight to `Command::new`.
-fn locate_ffmpeg() -> Option<PathBuf> {
+/// path so we can pass it straight to `Command::new`. `pub(crate)` because
+/// the tray loop's annotate-recording burn step reuses the same lookup.
+pub(crate) fn locate_ffmpeg() -> Option<PathBuf> {
     let exe = std::env::current_exe().ok()?;
     let dir = exe.parent()?;
     let bundle_name = if cfg!(windows) { "ffmpeg.exe" } else { "ffmpeg" };
