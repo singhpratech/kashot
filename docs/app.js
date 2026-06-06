@@ -228,15 +228,15 @@
   // as fallback for the Windows acquire-card "INSTALLER" buttons.
   const OS_CONFIG = {
     windows: {
-      label:    'WINDOWS · ZIP',
-      pickers:  [/windows.*x86_64\.zip$/i, /\.msi$/i, /\.exe$/i, /-portable\.zip$/i],
-      fallback: 'https://github.com/singhpratech/kashot/releases/latest/download/kashot-windows-x86_64.zip',
+      label:    'WINDOWS · MSI',
+      pickers:  [/\.msi$/i, /windows.*x86_64\.zip$/i, /\.exe$/i, /-portable\.zip$/i],
+      fallback: 'https://github.com/singhpratech/kashot/releases/latest/download/Kashot.msi',
       cardId:   'WINDOWS',
     },
     macos: {
       label:    'MACOS · APPLE SILICON',
-      pickers:  [/macos.*arm64/i, /macos.*aarch64/i, /macos.*x64/i, /macos/i, /\.dmg$/i],
-      fallback: 'https://github.com/singhpratech/kashot/releases/latest/download/Kashot-macos-arm64',
+      pickers:  [/macos.*arm64\.dmg$/i, /macos.*arm64/i, /macos.*aarch64/i, /macos.*x64\.dmg$/i, /macos.*x64/i, /\.dmg$/i],
+      fallback: 'https://github.com/singhpratech/kashot/releases/latest/download/Kashot-macos-arm64.dmg',
       cardId:   'MACOS',
     },
     linux: {

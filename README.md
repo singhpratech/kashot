@@ -78,9 +78,10 @@ That's KAShot. Lightweight. One workflow. Everywhere.
 <tr>
 <td valign="top">
 
-[**Download .zip**](https://github.com/singhpratech/kashot/releases/latest/download/kashot-windows-x86_64.zip)
+[**Download .msi**](https://github.com/singhpratech/kashot/releases/latest/download/Kashot.msi) &nbsp;·&nbsp;
+[portable .zip](https://github.com/singhpratech/kashot/releases/latest/download/kashot-windows-x86_64.zip)
 
-Unzip → run `kashot.exe`. Same Rust binary that ships on Linux and macOS.
+MSI installs + self-updates in-app. The .zip is the same binary, no install. Same Rust binary that ships on Linux and macOS.
 
 ```powershell
 # one-liner
@@ -88,10 +89,10 @@ iwr -useb https://kashot.org/install.ps1 | iex
 ```
 
 ```powershell
-# coming soon
-winget install singhpratech.Kashot
-choco  install kashot
-scoop  install kashot
+# scoop — manifest ships in-repo today
+scoop install https://raw.githubusercontent.com/singhpratech/kashot/main/dist/scoop/kashot.json
+# chocolatey (queued)
+choco install kashot
 ```
 
 </td>
@@ -116,19 +117,21 @@ curl -L https://github.com/singhpratech/kashot/releases/latest/download/kashot-l
 flatpak remote-add --if-not-exists kashot https://repo.kashot.org/kashot.flatpakrepo
 flatpak install kashot org.kashot.Kashot
 
-yay -S kashot         # AUR (coming soon)
+# AppImage — single file, no install
+curl -fLO https://github.com/singhpratech/kashot/releases/latest/download/kashot-x86_64.AppImage
+chmod +x kashot-x86_64.AppImage && ./kashot-x86_64.AppImage
+
+sudo snap install kashot --edge   # Snap (edge channel)
+yay -S kashot                     # AUR (coming soon)
 ```
 
 </td>
 <td valign="top">
 
-[**Apple Silicon**](https://github.com/singhpratech/kashot/releases/latest/download/Kashot-macos-arm64) &nbsp;·&nbsp;
-[Intel](https://github.com/singhpratech/kashot/releases/latest/download/Kashot-macos-x64)
+[**Apple Silicon .dmg**](https://github.com/singhpratech/kashot/releases/latest/download/Kashot-macos-arm64.dmg) &nbsp;·&nbsp;
+[Intel .dmg](https://github.com/singhpratech/kashot/releases/latest/download/Kashot-macos-x64.dmg)
 
-```bash
-chmod +x Kashot-macos-arm64
-./Kashot-macos-arm64
-```
+Drag to Applications. Unsigned today — right-click → Open on first launch.
 
 ```bash
 # coming soon
@@ -147,11 +150,13 @@ brew install --cask kashot
 
 |  | Feature |
 |:---:|:---|
-| 🎯 | **Pixel-accurate region select** — 7× live magnifier, drag any edge to resize, `Alt`+drag to move |
+| 🎯 | **Pixel-accurate region select** — 7× live magnifier, drag any edge or corner to resize |
+| ⚡ | **One-click full-screen capture** — tray → *Capture Full Screen* → auto-saved, no editor in the way |
 | ✏️ | **9 annotation tools** — pen, line, arrow, rectangle, ellipse, marker, text, numbered steps, blur / pixelate |
 | 🎨 | **4 palettes × 16 swatches** — Vivid · Highlighter · Pastel · Pro, plus a custom color picker |
 | 📌 | **Pin to screen** — borderless top-most window, drag anywhere on the desktop |
-| 🎬 | **Screen recording** — MP4 with floating STOP control, microphone **and system audio on every platform** (PulseAudio monitor on Linux, WASAPI loopback on Windows, ScreenCaptureKit on macOS) — no Stereo Mix / BlackHole driver needed. Wayland capture is queued |
+| 🎬 | **Screen recording** — MP4 with microphone **and system audio on every platform** (PulseAudio monitor on Linux, WASAPI loopback on Windows, ScreenCaptureKit on macOS) — no Stereo Mix / BlackHole driver needed. The floating STOP control keeps itself out of the recording (Windows / macOS; on Linux/X11 stop via the tray). Wayland capture is queued |
+| 🖊️ | **Annotate recordings** — tray → *Annotate last recording*: draw on a finished clip with the full editor; annotations burn into an `_annotated.mp4` copy, original untouched |
 | 🔄 | **Format conversion** — PNG ↔ JPG / WEBP / BMP · MP4 → MOV / WEBM / MKV / GIF |
 | 🏷️ | **Watermark** — editable text, 4 anchors, 0–100 % opacity slider |
 | ⌨️ | **Global hotkey** — defaults to `PrintScreen`; remappable via settings |
@@ -180,11 +185,11 @@ Once a region is selected:
 </tr>
 <tr>
 <td><kbd>A</kbd> Arrow</td><td><kbd>N</kbd> Numbered step</td>
-<td><kbd>Esc</kbd> Cancel / close</td><td><kbd>Alt</kbd>+drag Move</td>
+<td><kbd>Esc</kbd> Cancel / close</td><td>Drag edges Resize</td>
 </tr>
 <tr>
 <td><kbd>R</kbd> Rectangle</td><td><kbd>B</kbd> Blur / pixelate</td>
-<td>Drag edges Resize</td><td></td>
+<td></td><td></td>
 </tr>
 <tr>
 <td><kbd>E</kbd> Ellipse</td><td></td>
@@ -256,7 +261,7 @@ icons/                 branded icon pack (every platform size, one source PNG)
 | Screen recording (MP4) | ✅ mic + system | ✅ mic + system | ✅ mic + system |
 | Themed Settings · About · Updates | ✅ | ✅ | ✅ |
 | Image + video format conversion | ✅ | ✅ | ✅ |
-| Release artifact | `.zip` | `.tar.gz` (x86_64 + arm64) + AppImage | raw binary (`.dmg` queued) |
+| Release artifact | `.msi` + portable `.zip` | `.tar.gz` (x86_64 + arm64) + AppImage + snap + Flatpak repo | `.dmg` (Apple Silicon + Intel) |
 
 **One Rust binary, three platforms.** Same source, same editor, same feature set — the `kashot-rs/` workspace is the canonical build on Windows, Linux, and macOS as of v0.3.0. The original C# / WinForms build is retired (history retained in git). See [`PLAN.md`](PLAN.md) § "Architecture invariants" for the settings JSON shape and hotkey wire format.
 

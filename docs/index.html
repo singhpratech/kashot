@@ -58,7 +58,7 @@
     <span class="dot dot-audio" aria-hidden="true"></span> AUDIO::<span id="audio-state">OFF</span>
   </button>
   <span class="topbar-cell" aria-hidden="true">kashot.org</span>
-  <span class="topbar-cell" aria-hidden="true"><span class="dot"></span> <span data-version>v0.4.2</span></span>
+  <span class="topbar-cell" aria-hidden="true"><span class="dot"></span> <span data-version>v0.4.3</span></span>
 </div>
 
 <header class="nav">
@@ -67,7 +67,7 @@
       <img src="assets/kashot-64.png" alt="" width="32" height="32" />
     </span>
     <span class="brand-text">KAShot</span>
-    <span class="brand-tag">_<span data-version>v0.4.2</span></span>
+    <span class="brand-tag">_<span data-version>v0.4.3</span></span>
   </a>
 
   <nav class="nav-links" aria-label="Primary">
@@ -189,12 +189,12 @@
     <div class="hero-cta reveal">
       <a id="download-btn"
          class="btn btn-primary"
-         href="https://github.com/singhpratech/kashot/releases/latest/download/kashot-windows-x86_64.zip"
+         href="https://github.com/singhpratech/kashot/releases/latest/download/Kashot.msi"
          data-fallback="https://github.com/singhpratech/kashot/releases/latest">
         <span class="btn-bracket">[</span>
         <span class="btn-text">
           <span class="btn-line">DOWNLOAD KAShot</span>
-          <span class="btn-sub" id="download-sub">v0.4.2 · WINDOWS · ZIP</span>
+          <span class="btn-sub" id="download-sub">v0.4.3 · WINDOWS · MSI</span>
         </span>
         <span class="btn-bracket">]</span>
         <span class="btn-sweep" aria-hidden="true"></span>
@@ -672,7 +672,7 @@
   <section id="modules" class="modules section">
     <div class="section-head reveal">
       <span class="eyebrow">// MODULES</span>
-      <h2>Six on the grid.</h2>
+      <h2>Eight on the grid.</h2>
       <p class="section-sub">Built for speed, sized to disappear.</p>
     </div>
 
@@ -710,7 +710,7 @@
           <span class="module-tag">[04]</span>
           <h3>PIXEL-LOCK</h3>
         </div>
-        <p>Live magnifier with 7× zoom and pixel coordinates. Drag any edge or corner to resize. Hold <kbd>Alt</kbd> and drag to reposition the whole selection.</p>
+        <p>Live magnifier with 7× zoom and pixel coordinates. Drag any edge or corner to resize the selection before you commit.</p>
         <span class="module-corner" aria-hidden="true"></span>
       </article>
 
@@ -726,6 +726,24 @@
       <article class="module reveal">
         <div class="module-head">
           <span class="module-tag">[06]</span>
+          <h3>RECORD THE SCREEN</h3>
+        </div>
+        <p>One click in the tray → full-screen MP4 with microphone <em>and</em> system audio on every platform — PulseAudio monitor, WASAPI loopback, ScreenCaptureKit. No Stereo Mix, no BlackHole. The floating STOP control stays out of your video.</p>
+        <span class="module-corner" aria-hidden="true"></span>
+      </article>
+
+      <article class="module reveal">
+        <div class="module-head">
+          <span class="module-tag">[07]</span>
+          <h3>DRAW ON THE CLIP</h3>
+        </div>
+        <p>Finished recording? Tray → <em>Annotate last recording</em>: arrows, text, highlights with the full editor — burned into a clean <code>_annotated.mp4</code> copy. The original stays untouched.</p>
+        <span class="module-corner" aria-hidden="true"></span>
+      </article>
+
+      <article class="module reveal">
+        <div class="module-head">
+          <span class="module-tag">[08]</span>
           <h3>OPEN ON THE GRID</h3>
         </div>
         <p>~7 MB stripped native Rust binary on Windows, Linux, and macOS — same source on all three. No Electron. No Wine. No accounts, no telemetry. Apache-2.0 licensed, source on GitHub.</p>
@@ -755,12 +773,15 @@
 
         <div class="dl-options">
           <a class="btn btn-primary"
-             href="https://github.com/singhpratech/kashot/releases/latest/download/kashot-windows-x86_64.zip">
+             href="https://github.com/singhpratech/kashot/releases/latest/download/Kashot.msi">
             <span class="btn-bracket">[</span>
-            <span>DOWNLOAD .ZIP</span>
+            <span>DOWNLOAD .MSI</span>
             <span class="btn-bracket">]</span>
             <span class="btn-sweep" aria-hidden="true"></span>
           </a>
+          <p class="dl-alt">
+            Prefer portable? <a href="https://github.com/singhpratech/kashot/releases/latest/download/kashot-windows-x86_64.zip">Download .zip →</a>
+          </p>
         </div>
 
         <p class="dl-oneliner">// ONE-LINER · PowerShell</p>
@@ -771,17 +792,14 @@
 
         <details class="dl-more">
           <summary>// MORE INSTALL CHANNELS</summary>
-          <pre><code># MSI installer (queued — shipping in a future CI cycle;
-# until then, use the .zip above)
+          <pre><code># MSI · silent install (in-app self-updates)
+msiexec /i Kashot.msi /quiet
 
-# winget   (queued)
-winget install singhpratech.Kashot
+# scoop — manifest ships in-repo today
+scoop install https://raw.githubusercontent.com/singhpratech/kashot/main/dist/scoop/kashot.json
 
 # chocolatey (queued)
-choco install kashot
-
-# scoop    (queued)
-scoop install kashot</code></pre>
+choco install kashot</code></pre>
         </details>
 
         <a class="dl-link"
@@ -816,13 +834,16 @@ scoop install kashot</code></pre>
 
         <details class="dl-more">
           <summary>// MORE INSTALL CHANNELS</summary>
-          <pre><code># AppImage (queued)
-chmod +x kashot-x86_64.AppImage
-./kashot-x86_64.AppImage
+          <pre><code># AppImage — single file, no install
+curl -fLO https://github.com/singhpratech/kashot/releases/latest/download/kashot-x86_64.AppImage
+chmod +x kashot-x86_64.AppImage && ./kashot-x86_64.AppImage
 
 # Flatpak (official self-hosted repo)
 flatpak remote-add --if-not-exists kashot https://repo.kashot.org/kashot.flatpakrepo
 flatpak install kashot org.kashot.Kashot
+
+# Snap (edge channel)
+sudo snap install kashot --edge
 
 # AUR (queued)
 yay -S kashot</code></pre>
@@ -840,18 +861,18 @@ yay -S kashot</code></pre>
           <h3>MACOS</h3>
           <span class="dl-status">// NATIVE · RUST</span>
         </header>
-        <p class="dl-desc">Native on Apple Silicon and Intel.<br>Same Rust binary that ships on Windows and Linux — notarized .dmg packaging coming next.</p>
+        <p class="dl-desc">Native on Apple Silicon and Intel — .dmg disk images for both.<br>Same Rust binary that ships on Windows and Linux. Unsigned today: right-click → Open on first launch (notarization queued).</p>
 
         <div class="dl-options">
           <a class="btn btn-primary"
-             href="https://github.com/singhpratech/kashot/releases/latest/download/Kashot-macos-arm64">
+             href="https://github.com/singhpratech/kashot/releases/latest/download/Kashot-macos-arm64.dmg">
             <span class="btn-bracket">[</span>
-            <span>APPLE SILICON</span>
+            <span>APPLE SILICON · DMG</span>
             <span class="btn-bracket">]</span>
             <span class="btn-sweep" aria-hidden="true"></span>
           </a>
           <p class="dl-alt">
-            On Intel? <a href="https://github.com/singhpratech/kashot/releases/latest/download/Kashot-macos-x64">Download x64 build →</a>
+            On Intel? <a href="https://github.com/singhpratech/kashot/releases/latest/download/Kashot-macos-x64.dmg">Download x64 .dmg →</a>
           </p>
         </div>
 
@@ -908,7 +929,6 @@ brew install --cask kashot</code></pre>
           <div><dt><kbd>Ctrl</kbd>+<kbd>C</kbd></dt><dd>Copy to clipboard</dd></div>
           <div><dt><kbd>Ctrl</kbd>+<kbd>S</kbd></dt><dd>Save image</dd></div>
           <div><dt><kbd>Esc</kbd></dt><dd>Cancel / close</dd></div>
-          <div><dt><kbd>Alt</kbd>+drag</dt><dd>Move selection</dd></div>
           <div><dt>Drag edges</dt><dd>Resize selection</dd></div>
         </dl>
       </div>

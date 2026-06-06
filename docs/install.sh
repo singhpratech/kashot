@@ -5,7 +5,7 @@
 #   curl -fsSL https://kashot.org/install.sh | sh
 #
 # Pin a specific version:
-#   curl -fsSL https://kashot.org/install.sh | sh -s -- --tag v0.4.2
+#   curl -fsSL https://kashot.org/install.sh | sh -s -- --tag v0.4.3
 #
 # Pick a custom install dir:
 #   curl -fsSL https://kashot.org/install.sh | sh -s -- --dir /opt/kashot/bin
@@ -167,6 +167,16 @@ fi
 # install(1) is the portable copy-with-mode utility.
 install -m 0755 "$BIN" "${DIR}/kashot"
 
+# The tarball bundles a static ffmpeg built with pulse support — recording
+# and video conversion need it (`locate_ffmpeg` looks next to the kashot
+# binary first). Distro ffmpeg often works too, but the bundled one is the
+# build we actually test against, so install it alongside.
+FFMPEG_BIN=$(find . -type f -name 'ffmpeg' 2>/dev/null | head -1)
+if [ -n "$FFMPEG_BIN" ] && [ -f "$FFMPEG_BIN" ]; then
+  install -m 0755 "$FFMPEG_BIN" "${DIR}/ffmpeg"
+  echo "[ok] bundled ffmpeg installed -> ${DIR}/ffmpeg" >&2
+fi
+
 echo
 echo "[ok] kashot installed -> ${DIR}/kashot"
 
@@ -181,5 +191,5 @@ esac
 
 echo
 echo '  run:        kashot'
-echo '  uninstall:  rm '"${DIR}/kashot"
+echo '  uninstall:  rm '"${DIR}/kashot ${DIR}/ffmpeg"
 echo '  docs:       https://kashot.org'
