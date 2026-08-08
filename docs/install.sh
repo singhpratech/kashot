@@ -5,7 +5,7 @@
 #   curl -fsSL https://kashot.org/install.sh | sh
 #
 # Pin a specific version:
-#   curl -fsSL https://kashot.org/install.sh | sh -s -- --tag v0.5.0
+#   curl -fsSL https://kashot.org/install.sh | sh -s -- --tag v0.6.0
 #
 # Pick a custom install dir:
 #   curl -fsSL https://kashot.org/install.sh | sh -s -- --dir /opt/kashot/bin
@@ -75,11 +75,15 @@ case "$(uname -m)" in
   *) echo "kashot: unsupported architecture: $(uname -m)" >&2; exit 1 ;;
 esac
 
+# macOS ships no bare binary as a release asset (a browser-downloaded Mach-O
+# is quarantined and unlaunchable from Finder), so we pull the same tarball
+# the in-app updater uses. Note the label mismatch: uname reports x86_64,
+# the macOS asset is tagged x64.
 case "$OS-$ARCH" in
   linux-x86_64) ARTIFACT='kashot-linux-x86_64.tar.gz' ;;
   linux-arm64)  ARTIFACT='kashot-linux-arm64.tar.gz' ;;
-  macos-arm64)  ARTIFACT='Kashot-macos-arm64' ;;
-  macos-x86_64) ARTIFACT='Kashot-macos-x64' ;;
+  macos-arm64)  ARTIFACT='kashot-macos-arm64-update.tar.gz' ;;
+  macos-x86_64) ARTIFACT='kashot-macos-x64-update.tar.gz' ;;
   *) echo "kashot: no release artifact for $OS-$ARCH" >&2; exit 1 ;;
 esac
 
@@ -175,6 +179,16 @@ FFMPEG_BIN=$(find . -type f -name 'ffmpeg' 2>/dev/null | head -1)
 if [ -n "$FFMPEG_BIN" ] && [ -f "$FFMPEG_BIN" ]; then
   install -m 0755 "$FFMPEG_BIN" "${DIR}/ffmpeg"
   echo "[ok] bundled ffmpeg installed -> ${DIR}/ffmpeg" >&2
+fi
+
+# The macOS updater tarball carries only the kashot binary; the bundled
+# ffmpeg lives inside the .dmg's Kashot.app. Recording with audio and video
+# conversion both need one, so say so rather than let them fail later.
+if [ "$OS" = 'macos' ] && ! command -v ffmpeg >/dev/null 2>&1; then
+  echo
+  echo '  note: no ffmpeg on PATH. Recording with audio and video conversion' >&2
+  echo '        need it. Either "brew install ffmpeg", or install the .dmg' >&2
+  echo '        from https://kashot.org, which bundles its own copy.' >&2
 fi
 
 echo

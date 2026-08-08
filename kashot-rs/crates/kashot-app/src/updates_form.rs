@@ -130,6 +130,10 @@ impl UpdatesView {
             .map(Rc::new)
             .map_err(|e| anyhow!("create_window (updates): {e}"))?;
 
+        // KAShot runs as a menu-bar/tray agent, so on macOS there is no Dock
+        // icon to click if this opens behind the frontmost app. Ask for focus
+        // explicitly; on Windows/Linux it is a harmless raise.
+        window.focus_window();
         window.set_cursor(CursorIcon::Default);
         let ctx = Context::new(window.clone())
             .map_err(|e| anyhow!("softbuffer Context::new (updates): {e}"))?;
@@ -612,9 +616,11 @@ fn pick_asset_url(assets: &[RawAsset]) -> Option<String> {
     } else if cfg!(all(target_os = "linux", target_arch = "aarch64")) {
         "kashot-linux-arm64.tar.gz"
     } else if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
-        "Kashot-macos-arm64"
+        // The updater payload, not the .dmg: an update replaces only the
+        // binary inside an already-installed Kashot.app.
+        "kashot-macos-arm64-update.tar.gz"
     } else if cfg!(all(target_os = "macos", target_arch = "x86_64")) {
-        "Kashot-macos-x64"
+        "kashot-macos-x64-update.tar.gz"
     } else if cfg!(all(target_os = "windows", target_arch = "x86_64")) {
         "kashot-windows-x86_64.zip"
     } else {

@@ -12,7 +12,9 @@
 //!   7. draw the floating tool-picker toolbar at the top of the screen
 //!   8. on Enter / right-click: composite annotations onto the cropped
 //!      bitmap and return it
-//!   9. on Esc: clear the selection if there is one, else cancel
+//!   9. on Esc: clear the selection if there is one, else cancel. Clearing
+//!      moves the annotations onto the redo stack instead of dropping them,
+//!      so Ctrl+Y brings the work back after a mis-hit Esc.
 //!
 //! The window must share the tray's `EventLoop` (winit forbids two), so
 //! this exposes an `Overlay` struct rather than running its own event
@@ -129,9 +131,19 @@ const PANEL_PAD:    i32 = 5;
 const PANEL_RADIUS: i32 = 8;
 /// Wide gap between visually distinct groups inside the tool panel.
 const PANEL_GROUP_GAP: i32 = 8;
-/// Stroke widths the thickness button cycles through. Default is index 1
-/// (4 px) — matches `Stroke::default().thickness` in kashot-core.
+/// Stroke widths the thickness button cycles through. The editor seeds
+/// `stroke.thickness` from index 1 (4 px) in `Overlay::build` rather than
+/// taking `Stroke::default().thickness`, which is off-list — starting off
+/// the list makes the first click on the Thickness button skip to the
+/// nearest entry above instead of advancing one step.
 const THICKNESSES: [f32; 3] = [2.0, 4.0, 8.0];
+
+/// Frame interval for the overlay's self-driven animations (the tool-panel
+/// glow and the action-panel attention pulse). Nothing in the event stream
+/// drives those, so `redraw` asks for its own next frame — paced to the
+/// same ~30 Hz the tray loop polls at, because re-arming unconditionally
+/// makes winit hand back the next redraw immediately and spins a core.
+const ANIM_FRAME: std::time::Duration = std::time::Duration::from_millis(33);
 
 // ── marker-opacity slider geometry ──────────────────────────────────────────
 // Tucked underneath the tool panel and only painted when `Tool::Marker` is
@@ -313,6 +325,20 @@ pub struct Overlay {
     last_scrub_extract: Option<std::time::Instant>,
     /// Index into `DURATION_CHOICES` for the chip (default 0 = "End").
     duration_choice: usize,
+    /// Cached pass-1 composite: the capture with everything outside the
+    /// selection dimmed. Depends only on the window size, the selection
+    /// rect and the captured frame, so it survives across frames and gets
+    /// copied into the softbuffer instead of being re-shaded pixel by
+    /// pixel — the animated chrome on top would otherwise re-dim the whole
+    /// screen ~30 times a second.
+    dim_cache: Vec<u32>,
+    /// Key the cache above was built for: `(win_w, win_h, sel_rect)`.
+    /// `None` forces a rebuild — that's how `swap_scrub_frame` invalidates
+    /// the cache when it swaps the background to a new video frame.
+    dim_cache_key: Option<(usize, usize, Option<(i32, i32, i32, i32)>)>,
+    /// When the last self-driven animation frame was presented. Paces the
+    /// redraw re-arm to `ANIM_FRAME`.
+    last_anim_frame: Option<std::time::Instant>,
 }
 
 impl Drop for Overlay {
@@ -431,7 +457,9 @@ impl Overlay {
             anchor:      (0, 0),
             selection:   if video_mode { Some((0, 0, full_w, full_h)) } else { None },
             tool:        Tool::Pen,
-            stroke:      Stroke::default(),
+            // Seeded from the cycle list so the Thickness button steps
+            // 4 -> 8 -> 2 from a known position (see `THICKNESSES`).
+            stroke:      Stroke { thickness: THICKNESSES[1], ..Stroke::default() },
             annotations: Vec::new(),
             redo_stack:  Vec::new(),
             current:     None,
@@ -456,6 +484,9 @@ impl Overlay {
             dragging_playhead: false,
             last_scrub_extract: None,
             duration_choice: 0,
+            dim_cache: Vec::new(),
+            dim_cache_key: None,
+            last_anim_frame: None,
         })
     }
 
@@ -519,6 +550,8 @@ impl Overlay {
             Ok(frame) => {
                 self.screenshot    = frame;
                 self.scrub_frame_t = t;
+                // The dimmed composite is built from the old frame.
+                self.dim_cache_key = None;
             }
             Err(e) => eprintln!("kashot: scrub frame extract failed: {e}"),
         }
@@ -647,8 +680,7 @@ impl Overlay {
                     }
                     self.state       = State::Idle;
                     self.selection   = None;
-                    self.annotations.clear();
-                    self.redo_stack.clear();
+                    self.stash_annotations_for_redo();
                     self.step_count  = 1;
                     self.window.request_redraw();
                     OverlayOutcome::Continue
@@ -765,6 +797,21 @@ impl Overlay {
             }
             self.annotations.push(a);
             self.window.request_redraw();
+        }
+    }
+
+    /// Drop the committed annotations off the canvas without destroying
+    /// them: both ways of clearing a selection (Esc, or clicking outside it
+    /// to start a fresh drag) used to throw the whole vector away, so one
+    /// stray keypress could wipe minutes of annotating with no way back.
+    /// Everything moves onto the redo stack instead, so re-selecting a
+    /// region and pressing Ctrl+Y once per annotation replays them in the
+    /// order they were drawn. `redo` pops from the back, so the vector goes
+    /// on reversed. Anything already on the stack stays underneath and
+    /// keeps its own order.
+    fn stash_annotations_for_redo(&mut self) {
+        for a in self.annotations.drain(..).rev() {
+            self.redo_stack.push(a);
         }
     }
 
@@ -946,8 +993,7 @@ impl Overlay {
                     self.state     = State::Selecting;
                     self.anchor    = self.cursor;
                     self.selection = Some((self.cursor.0, self.cursor.1, 0, 0));
-                    self.annotations.clear();
-                    self.redo_stack.clear();
+                    self.stash_annotations_for_redo();
                     self.step_count = 1;
                     self.window.request_redraw();
                 }
@@ -1284,27 +1330,39 @@ impl Overlay {
         let dim_denom: u32 = 100;
         let sel_rect = self.selection.map(|(x, y, w, h)| (x, y, x + w, y + h));
 
-        // Pass 1: screenshot + dim outside selection.
-        for y in 0..win_h {
-            for x in 0..win_w {
-                let dst_idx = y * win_w + x;
-                let (r, g, b) = if x < shot_w && y < shot_h {
-                    let src = (y * shot_w + x) * 4;
-                    (shot[src] as u32, shot[src + 1] as u32, shot[src + 2] as u32)
-                } else {
-                    (0, 0, 0)
-                };
-                let inside = if let Some((x0, y0, x1, y1)) = sel_rect {
-                    (x as i32) >= x0 && (x as i32) < x1 && (y as i32) >= y0 && (y as i32) < y1
-                } else { false };
-                let (rr, gg, bb) = if inside {
-                    (r, g, b)
-                } else {
-                    (r * dim_num / dim_denom, g * dim_num / dim_denom, b * dim_num / dim_denom)
-                };
-                buf[dst_idx] = (rr << 16) | (gg << 8) | bb;
+        // Pass 1: screenshot + dim outside selection. Cached — see
+        // `dim_cache`: the shading depends only on the window size, the
+        // selection rect and the captured frame, none of which move on an
+        // animation frame, so a full-screen memcpy replaces a full-screen
+        // per-pixel multiply on every frame but the first.
+        let cache_key = (win_w, win_h, sel_rect);
+        if self.dim_cache_key != Some(cache_key) || self.dim_cache.len() != win_w * win_h {
+            self.dim_cache.clear();
+            self.dim_cache.resize(win_w * win_h, 0);
+            let cache = &mut self.dim_cache;
+            for y in 0..win_h {
+                for x in 0..win_w {
+                    let dst_idx = y * win_w + x;
+                    let (r, g, b) = if x < shot_w && y < shot_h {
+                        let src = (y * shot_w + x) * 4;
+                        (shot[src] as u32, shot[src + 1] as u32, shot[src + 2] as u32)
+                    } else {
+                        (0, 0, 0)
+                    };
+                    let inside = if let Some((x0, y0, x1, y1)) = sel_rect {
+                        (x as i32) >= x0 && (x as i32) < x1 && (y as i32) >= y0 && (y as i32) < y1
+                    } else { false };
+                    let (rr, gg, bb) = if inside {
+                        (r, g, b)
+                    } else {
+                        (r * dim_num / dim_denom, g * dim_num / dim_denom, b * dim_num / dim_denom)
+                    };
+                    cache[dst_idx] = (rr << 16) | (gg << 8) | bb;
+                }
             }
+            self.dim_cache_key = Some(cache_key);
         }
+        buf.copy_from_slice(&self.dim_cache);
 
         // Pass 2: annotations, clipped to the selection. We render into the
         // shared u32 buffer through `U32Surface`. Bounds-clipping happens at
@@ -1394,9 +1452,6 @@ impl Overlay {
                 // on top of the button background but under the icon glyph.
                 let elapsed = self.opened_at.elapsed().as_secs_f32();
                 draw_tool_panel_glow(&mut buf, win_w, win_h, sel, elapsed);
-                // The glow is a continuous animation — ask for another frame
-                // so it keeps cycling while the editor is idle.
-                self.window.request_redraw();
                 draw_action_panel(&mut buf, win_w, win_h, sel);
                 // Attention pulse on the action panel for the first 3 s after
                 // it appears — the panel auto-positions based on selection +
@@ -1407,7 +1462,6 @@ impl Overlay {
                         let elapsed = start.elapsed().as_secs_f32();
                         if elapsed < 3.0 {
                             draw_action_panel_pulse(&mut buf, win_w, win_h, sel, elapsed);
-                            self.window.request_redraw();
                         } else {
                             self.panel_pulse_started = None;
                         }
@@ -1432,9 +1486,18 @@ impl Overlay {
             }
         }
 
+        // Pass 5.5: idle hint — before any selection exists the overlay is
+        // just a dimmed desktop with a lens on it, which says nothing about
+        // dragging a region or about the way back out. One dim line spells
+        // both out; it disappears the moment the drag starts.
+        if matches!(self.state, State::Idle) {
+            draw_idle_hint(&mut buf, win_w, win_h);
+        }
+
         // Pass 6: magnifier — only useful when the user is positioning the
         // selection edge by individual pixels. Once a region is locked in,
         // the toolbar+palette take over and the lens just gets in the way.
+        // Drawn after the hint so the lens is never covered by it.
         if matches!(self.state, State::Idle | State::Selecting) {
             draw_magnifier(&mut buf, win_w, win_h, &self.screenshot, self.cursor);
         }
@@ -1462,6 +1525,24 @@ impl Overlay {
 
         if let Err(e) = buf.present() {
             eprintln!("overlay: buf.present: {e}");
+        }
+
+        // The tool-panel glow and the action-panel pulse have no event
+        // behind them, so this frame has to ask for the next one. Only the
+        // resting `Selected` state self-drives: while the user is drawing,
+        // resizing or typing, their input already produces frames, and
+        // pacing those would just add latency. Sleeping out the remainder
+        // of the interval is what keeps this from becoming a hot loop —
+        // winit hands back a redraw requested here the instant we return,
+        // so without the wait the overlay renders as fast as the CPU
+        // allows for an animation that only steps 30 times a second.
+        if is_selected_now && self.selection.is_some() {
+            let since = self.last_anim_frame.map_or(ANIM_FRAME, |t| t.elapsed());
+            if since < ANIM_FRAME {
+                std::thread::sleep(ANIM_FRAME - since);
+            }
+            self.last_anim_frame = Some(std::time::Instant::now());
+            self.window.request_redraw();
         }
     }
 
@@ -2406,6 +2487,39 @@ fn draw_tooltip(
     draw_rect_border(buf, win_w, win_h, x0, y0, x1, y1, 0x00_4A_4A_50);
     let mut surf = crate::painter::U32Surface { buf, stride: win_w as i32, height: win_h as i32 };
     crate::painter::draw_text(&mut surf, x0 + pad_x, y0 + pad_y, scale, label, kashot_core::color::Rgba::WHITE);
+}
+
+/// The one-line hint shown while nothing is selected yet. Plain ASCII —
+/// the 5x7 bitmap font substitutes '?' for anything outside 0x20..=0x7E,
+/// so no dashes or arrows beyond the keyboard set.
+const IDLE_HINT: &str = "drag to select a region  -  Esc to close";
+
+/// Bottom-center hint chip, painted only in `State::Idle`. Same dark fill +
+/// hairline border as the tooltip chip so it reads as overlay chrome, but
+/// in a muted grey: it's a nudge for first-time users, not something that
+/// should pull attention away from the region they're about to pick.
+fn draw_idle_hint(buf: &mut [u32], win_w: usize, win_h: usize) {
+    const SCALE:  i32 = 2;
+    const PAD_X:  i32 = 12;
+    const PAD_Y:  i32 = 8;
+    const MARGIN: i32 = 48;          // gap from the bottom screen edge
+
+    let chip_w = crate::bitmap_font::measure(IDLE_HINT, SCALE) + PAD_X * 2;
+    let chip_h = crate::bitmap_font::GLYPH_H * SCALE + PAD_Y * 2;
+    let x0 = ((win_w as i32) - chip_w) / 2;
+    let y0 = (win_h as i32) - chip_h - MARGIN;
+    // Screens too small to hold the chip get no hint rather than a clipped
+    // one — it would land on top of the user's content either way.
+    if x0 < 0 || y0 < 0 { return; }
+    let x1 = x0 + chip_w;
+    let y1 = y0 + chip_h;
+    draw_filled_rect(buf, win_w, win_h, x0, y0, x1, y1, 0x00_10_10_14);
+    draw_rect_border(buf, win_w, win_h, x0, y0, x1, y1, 0x00_3A_3A_40);
+    let mut surf = crate::painter::U32Surface { buf, stride: win_w as i32, height: win_h as i32 };
+    crate::painter::draw_text(
+        &mut surf, x0 + PAD_X, y0 + PAD_Y, SCALE, IDLE_HINT,
+        kashot_core::color::Rgba::new_opaque(0x9A, 0x9A, 0xA2),
+    );
 }
 
 /// Magnifier lens. Samples the original screenshot in a (2·R+1)² window

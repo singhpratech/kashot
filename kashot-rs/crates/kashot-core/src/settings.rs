@@ -38,15 +38,17 @@ impl<'de> Deserialize<'de> for Modifiers {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Hotkey {
     pub modifiers:   Modifiers,
-    /// Win32 virtual-key code. `0x2C` (`VK_SNAPSHOT` / Print Screen) is the default.
+    /// Win32 virtual-key code. `0x2C` (`VK_SNAPSHOT` / Print Screen) is the
+    /// default on Windows and Linux; macOS defaults to `0x37` (`7`) instead,
+    /// because Apple keyboards have no Print Screen key at all.
     pub virtual_key: u32,
 }
 
 impl Default for Hotkey {
     fn default() -> Self {
         Hotkey {
-            modifiers: Modifiers::empty(),
-            virtual_key: 0x2C,
+            modifiers: default_hotkey_modifiers_flags(),
+            virtual_key: default_vk(),
         }
     }
 }
@@ -68,12 +70,28 @@ impl Modifiers {
     /// Render the active modifier set as `"Ctrl + Shift + Alt + Win"` (in the
     /// order Windows users expect). Returns the empty string when no modifiers
     /// are set.
+    ///
+    /// macOS uses that platform's names and ordering instead --
+    /// `"Cmd + Ctrl + Opt + Shift"`. Names are spelled out rather than drawn
+    /// with the Apple modifier glyphs because every string here goes through a
+    /// 5x7 ASCII bitmap font.
+    #[cfg(not(target_os = "macos"))]
     pub fn describe(&self) -> String {
         let mut parts: Vec<&str> = Vec::new();
         if self.contains(Modifiers::CONTROL) { parts.push("Ctrl"); }
         if self.contains(Modifiers::SHIFT)   { parts.push("Shift"); }
         if self.contains(Modifiers::ALT)     { parts.push("Alt"); }
         if self.contains(Modifiers::SUPER)   { parts.push("Win"); }
+        parts.join(" + ")
+    }
+
+    #[cfg(target_os = "macos")]
+    pub fn describe(&self) -> String {
+        let mut parts: Vec<&str> = Vec::new();
+        if self.contains(Modifiers::SUPER)   { parts.push("Cmd"); }
+        if self.contains(Modifiers::CONTROL) { parts.push("Ctrl"); }
+        if self.contains(Modifiers::ALT)     { parts.push("Opt"); }
+        if self.contains(Modifiers::SHIFT)   { parts.push("Shift"); }
         parts.join(" + ")
     }
 }
@@ -139,7 +157,7 @@ pub struct AppSettings {
     #[serde(rename = "RecordingsDirectory", default)]
     pub recordings_directory: String,
 
-    #[serde(rename = "HotkeyModifiers", default)]
+    #[serde(rename = "HotkeyModifiers", default = "default_hotkey_modifiers")]
     pub hotkey_modifiers: u32,
 
     #[serde(rename = "HotkeyVirtualKey", default = "default_vk")]
@@ -181,7 +199,7 @@ impl Default for AppSettings {
             last_thickness:      default_thickness(),
             save_directory:      String::new(),
             recordings_directory: String::new(),
-            hotkey_modifiers:    0,
+            hotkey_modifiers:    default_hotkey_modifiers(),
             hotkey_virtual_key:  default_vk(),
             start_with_windows:  false,
             watermark_enabled:   true,
@@ -198,7 +216,28 @@ impl Default for AppSettings {
 fn default_tool()        -> String  { "Pen".to_owned() }
 fn default_color_argb()  -> i32     { 0xFFFF_0000_u32 as i32 }
 fn default_thickness()   -> f32     { 3.0 }
+/// Default capture key, as a Win32 VK.
+///
+/// Windows and Linux use Print Screen. Apple keyboards have no such key, and
+/// `global-hotkey` would translate `0x2C` to Carbon keycode `0x46`, which no
+/// Mac keyboard can produce -- so a Print Screen default there is a hotkey
+/// that can never fire. macOS uses `7` instead, with Cmd+Shift as modifiers
+/// (Cmd+Shift+5 already belongs to the system Screenshot app).
+#[cfg(not(target_os = "macos"))]
 fn default_vk()          -> u32     { 0x2C }
+#[cfg(target_os = "macos")]
+fn default_vk()          -> u32     { 0x37 }
+
+/// Modifiers paired with [`default_vk`], as a Win32 `MOD_*` mask.
+#[cfg(not(target_os = "macos"))]
+fn default_hotkey_modifiers() -> u32 { Modifiers::empty().bits() }
+#[cfg(target_os = "macos")]
+fn default_hotkey_modifiers() -> u32 { (Modifiers::SUPER | Modifiers::SHIFT).bits() }
+
+fn default_hotkey_modifiers_flags() -> Modifiers {
+    Modifiers::from_bits_truncate(default_hotkey_modifiers())
+}
+
 fn default_true()        -> bool    { true }
 fn default_watermark()   -> String  { "KAShot".to_owned() }
 fn default_theme()       -> String  { "Light".to_owned() }
@@ -294,7 +333,8 @@ mod tests {
         let s: AppSettings = serde_json::from_str("{}").unwrap();
         assert_eq!(s.last_tool, "Pen");
         assert_eq!(s.theme, "Light");
-        assert_eq!(s.hotkey_virtual_key, 0x2C);
+        assert_eq!(s.hotkey_virtual_key, default_vk());
+        assert_eq!(s.hotkey(), Hotkey::default());
     }
 
     #[test]
@@ -321,6 +361,7 @@ mod tests {
         assert_eq!(hk2.describe(), "Ctrl + Shift + P");
     }
 
+    #[cfg(not(target_os = "macos"))]
     #[test]
     fn default_hotkey_is_printscreen() {
         let s = AppSettings::default();
@@ -329,6 +370,37 @@ mod tests {
         assert_eq!(hk.virtual_key, 0x2C);
         assert_eq!(hk.describe(), "PrintScreen");
         assert_eq!(Hotkey::default(), hk);
+    }
+
+    /// Apple keyboards have no Print Screen key, so the macOS default is
+    /// Cmd+Shift+7 (Cmd+Shift+5 is the system Screenshot app's).
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn default_hotkey_is_cmd_shift_7() {
+        let s = AppSettings::default();
+        let hk = s.hotkey();
+        assert_eq!(hk.modifiers, Modifiers::SUPER | Modifiers::SHIFT);
+        assert_eq!(hk.virtual_key, 0x37);
+        assert_eq!(hk.describe(), "Cmd + Shift + 7");
+        assert_eq!(Hotkey::default(), hk);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_modifier_labels_are_ascii_mac_names() {
+        let all = Modifiers::SUPER | Modifiers::CONTROL | Modifiers::ALT | Modifiers::SHIFT;
+        assert_eq!(all.describe(), "Cmd + Ctrl + Opt + Shift");
+        assert!(all.describe().is_ascii());
+    }
+
+    #[test]
+    fn default_hotkey_label_is_ascii() {
+        assert!(Hotkey::default().describe().is_ascii());
+    }
+
+    #[test]
+    fn default_vk_has_a_label() {
+        assert!(vk_label(default_vk()).is_some());
     }
 
     #[test]

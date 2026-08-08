@@ -22,7 +22,7 @@ title: Kashot
 # pulls `pipewire 0.9.2` + `libspa 0.9.2`, which expect PipeWire 1.x
 # headers. core22 ships PipeWire 0.3.58 and fails to compile.
 base: core24
-version: '0.5.0'
+version: '0.6.0'
 summary: Fast screenshots with annotations — tray-resident, hotkey-driven
 description: |
   Kashot is a tray-resident screenshot tool with a built-in annotation editor.
@@ -110,6 +110,12 @@ parts:
       - libayatana-appindicator3-1
       - libxdo3
       - libpulse0
+      # `pactl` (from pulseaudio-utils) is how the recorder probes PulseAudio:
+      # it runs `pactl info` before wiring any audio input and, if that fails,
+      # records video with NO audio track and no error. Without this package
+      # pactl is absent inside the confinement and every snap recording is
+      # silent, however correct libpulse0 and the audio plugs are.
+      - pulseaudio-utils
       # ffmpeg provides screen recording + format conversion. Ubuntu's build is
       # GPL (libx264) and includes libpulse, so mic + system-audio capture work
       # inside the snap (the audio-record/audio-playback plugs + libpulse0 are

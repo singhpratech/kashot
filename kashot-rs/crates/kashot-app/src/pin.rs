@@ -51,6 +51,10 @@ impl PinView {
             .map(Rc::new)
             .map_err(|e| anyhow!("create_window (pin): {e}"))?;
 
+        // KAShot runs as a menu-bar/tray agent, so on macOS there is no Dock
+        // icon to click if this opens behind the frontmost app. Ask for focus
+        // explicitly; on Windows/Linux it is a harmless raise.
+        window.focus_window();
         window.set_cursor(CursorIcon::Move);
 
         let ctx = Context::new(window.clone())

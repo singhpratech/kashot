@@ -1,6 +1,12 @@
 //! Global hotkey registration via the `global-hotkey` crate, which wraps
-//! `RegisterHotKey` (Win32), X11 `XGrabKey` / Wayland portals (Linux), and
+//! `RegisterHotKey` (Win32), X11 `XGrabKey` (Linux), and
 //! `RegisterEventHotKey` (macOS).
+//!
+//! On Linux the X11 grab is the only backend `global-hotkey` 0.7 has -- there
+//! is no Wayland implementation and no portal fallback. Under a Wayland
+//! session registration still reports success (XWayland answers the grab) but
+//! the key is never delivered, so the hotkey silently cannot fire; those users
+//! have to trigger captures from the tray menu.
 
 use crate::{Error, Result};
 use global_hotkey::{
@@ -78,7 +84,9 @@ fn translate_mods(m: Modifiers) -> GhMods {
 /// The Win32 VK space is the canonical wire format we share with the C# version
 /// (settings.json stores `HotkeyVirtualKey` as a Win32 VK). On non-Windows
 /// platforms `global-hotkey` re-translates these to the OS's native codes
-/// internally.
+/// internally. That translation is purely mechanical: `0x2C` becomes Carbon
+/// keycode `0x46` on macOS, which no Apple keyboard can produce, which is why
+/// the default hotkey there is Cmd+Shift+`7` (`0x37`) rather than Print Screen.
 fn vk_to_code(vk: u32) -> Option<Code> {
     Some(match vk {
         0x08 => Code::Backspace,

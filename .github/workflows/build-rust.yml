@@ -7,8 +7,9 @@
 #   Windows : kashot-windows-x86_64.zip, Kashot.msi
 #   Linux   : kashot-linux-x86_64.tar.gz, kashot-linux-arm64.tar.gz,
 #             kashot-x86_64.AppImage
-#   macOS   : Kashot-macos-arm64, Kashot-macos-x64,
-#             Kashot-macos-arm64.dmg, Kashot-macos-x64.dmg
+#   macOS   : Kashot-macos-arm64.dmg, Kashot-macos-x64.dmg,
+#             kashot-macos-arm64-update.tar.gz,
+#             kashot-macos-x64-update.tar.gz
 #   Verify  : SHA256SUMS (sha256 of every asset in the release)
 name: Build Rust
 
@@ -301,26 +302,46 @@ jobs:
         if: matrix.target == 'aarch64-apple-darwin'
         run: cargo test --workspace --release
 
-      - name: Stage binary
+      - name: Stage update tarball
+        # We deliberately do NOT ship a bare Mach-O binary as a release
+        # asset: a browser-downloaded bare executable is quarantined and
+        # has no way to be launched from Finder, so it reads as a broken
+        # download. The .dmg below is the only human-facing macOS asset;
+        # this tarball exists purely as the in-app updater's payload
+        # (hence the `-update` suffix), holding the `kashot` binary that
+        # replaces the one inside the installed Kashot.app.
+        #
+        # Accepted one-time cost: macOS builds released before this naming
+        # look for the retired `Kashot-macos-<label>` asset, find nothing,
+        # and fall back to offering the releases page instead of a one-click
+        # update. Re-adding the bare asset for one transition release would
+        # hand those users the exact quarantined download this step exists
+        # to avoid, so they update once by hand from the .dmg — the release
+        # notes must say so (see PLAN.md, release step 6).
         run: |
-          mkdir -p dist
-          cp target/${{ matrix.target }}/release/kashot dist/Kashot-macos-${{ matrix.label }}
+          set -eux
+          mkdir -p dist/update
+          cp target/${{ matrix.target }}/release/kashot dist/update/kashot
+          chmod +x dist/update/kashot
+          tar -czf "dist/kashot-macos-${{ matrix.label }}-update.tar.gz" \
+            -C dist/update kashot
 
       - uses: actions/upload-artifact@v4
         with:
-          name: Kashot-macos-${{ matrix.label }}
-          path: kashot-rs/dist/Kashot-macos-${{ matrix.label }}
+          name: kashot-macos-${{ matrix.label }}-update
+          path: kashot-rs/dist/kashot-macos-${{ matrix.label }}-update.tar.gz
           if-no-files-found: error
 
       # ── .app bundle + .dmg ──────────────────────────────────────────────
-      # Additive packaging: the raw binary above still ships unchanged
-      # (anyone scripting against the old asset name keeps working). On
-      # top of that we wrap it in a minimal `Kashot.app` bundle and let
-      # `create-dmg` produce a drag-to-Applications installer.
+      # The human-facing macOS artifact: a minimal `Kashot.app` bundle
+      # wrapped by `create-dmg` into a drag-to-Applications installer.
       #
-      # The .icns is built on the fly from the existing PNG iconset
-      # under icons/macos_iconset/Kashot.iconset/ via `iconutil`, which
-      # ships with the macOS runner image.
+      # The bundle layout + Info.plist live in dist/macos/ so that a local
+      # build produces the exact same .app as CI — see
+      # dist/macos/make-app.sh. The .icns it emits is built on the fly
+      # from the existing PNG iconset under
+      # icons/macos_iconset/Kashot.iconset/ via `iconutil`, which ships
+      # with the macOS runner image.
       - name: Install create-dmg
         run: brew install create-dmg
 
@@ -359,62 +380,29 @@ jobs:
           fi
           echo "version=$v" >> "$GITHUB_OUTPUT"
 
-      - name: Build Kashot.icns from existing iconset
-        working-directory: .
-        # The iconset directory already lives in the repo at
-        # icons/macos_iconset/Kashot.iconset/; iconutil takes it
-        # straight to .icns with no extra tooling.
-        run: |
-          iconutil -c icns \
-            -o kashot-rs/dist/Kashot.icns \
-            icons/macos_iconset/Kashot.iconset
-
       - name: Assemble Kashot.app bundle
+        # The bundle definition (layout, Info.plist, icns + ffmpeg steps)
+        # is dist/macos/make-app.sh — CI and a local `cargo build` go
+        # through the same script so the two can't drift. Paths stay
+        # relative to kashot-rs/ (the workflow-level working-directory).
         run: |
           set -eux
-          APP="dist/Kashot.app"
-          rm -rf "$APP"
-          mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
-          # Binary inside the bundle is always named `kashot` (matches
-          # CFBundleExecutable below + the Info.plist contract).
-          cp target/${{ matrix.target }}/release/kashot "$APP/Contents/MacOS/kashot"
-          chmod +x "$APP/Contents/MacOS/kashot"
-          cp dist/Kashot.icns "$APP/Contents/Resources/kashot.icns"
-          # Bundle the static ffmpeg next to the binary so locate_ffmpeg()
-          # finds it (Contents/MacOS/ffmpeg) — powers audio recording +
-          # video conversion without a system ffmpeg install.
-          cp dist/ffmpeg-bundle/ffmpeg "$APP/Contents/MacOS/ffmpeg"
-          chmod +x "$APP/Contents/MacOS/ffmpeg"
-
-          cat > "$APP/Contents/Info.plist" <<PLIST
-          <?xml version="1.0" encoding="UTF-8"?>
-          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
-                                  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-          <plist version="1.0">
-          <dict>
-            <key>CFBundleName</key>            <string>Kashot</string>
-            <key>CFBundleDisplayName</key>     <string>Kashot</string>
-            <key>CFBundleIdentifier</key>      <string>org.kashot.Kashot</string>
-            <key>CFBundleVersion</key>         <string>${{ steps.ver.outputs.version }}</string>
-            <key>CFBundleShortVersionString</key><string>${{ steps.ver.outputs.version }}</string>
-            <key>CFBundleExecutable</key>      <string>kashot</string>
-            <key>CFBundleIconFile</key>        <string>kashot</string>
-            <key>CFBundlePackageType</key>     <string>APPL</string>
-            <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
-            <key>LSMinimumSystemVersion</key>  <string>11.0</string>
-            <key>LSUIElement</key>             <true/>
-            <key>NSHighResolutionCapable</key> <true/>
-            <key>NSMicrophoneUsageDescription</key><string>Kashot records your microphone when you choose a microphone audio source for a screen recording.</string>
-          </dict>
-          </plist>
-          PLIST
+          ../dist/macos/make-app.sh \
+            --binary "target/${{ matrix.target }}/release/kashot" \
+            --version "${{ steps.ver.outputs.version }}" \
+            --arch "${{ matrix.label }}" \
+            --ffmpeg dist/ffmpeg-bundle/ffmpeg \
+            --iconset ../icons/macos_iconset/Kashot.iconset \
+            --out-dir dist
 
       - name: Build Kashot-macos-${{ matrix.label }}.dmg
         # Drag-to-Applications layout: 500x320 window with the .app icon
         # on the left (125,125) and the /Applications drop-link on the
-        # right (375,125). Gatekeeper quarantine is stripped by the user
-        # on first launch (`xattr -dr com.apple.quarantine`); we aren't
-        # codesigning in CI today.
+        # right (375,125). We aren't codesigning or notarizing in CI
+        # today, so the first launch goes through Gatekeeper's "Open
+        # Anyway" button under System Settings > Privacy & Security
+        # (right-click > Open stopped working in macOS 15), or the user
+        # strips quarantine with `xattr -dr com.apple.quarantine`.
         #
         # create-dmg returns 0 on success and 2 on the recoverable
         # "couldn't detach hdiutil" warning that happens on hosted

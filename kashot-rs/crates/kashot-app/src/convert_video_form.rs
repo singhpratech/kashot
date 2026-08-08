@@ -278,6 +278,10 @@ impl ConvertVideoView {
             .create_window(attrs)
             .map(Rc::new)
             .map_err(|e| anyhow!("create_window (convert-video): {e}"))?;
+        // KAShot runs as a menu-bar/tray agent, so on macOS there is no Dock
+        // icon to click if this opens behind the frontmost app. Ask for focus
+        // explicitly; on Windows/Linux it is a harmless raise.
+        window.focus_window();
         window.set_cursor(CursorIcon::Default);
 
         let ctx = Context::new(window.clone())
@@ -864,18 +868,30 @@ fn centered_origin(loop_target: &ActiveEventLoop, w: u32, h: u32) -> (i32, i32) 
     (x.max(mon_x), y.max(mon_y))
 }
 
+/// Shrink `s` until it fits in `max_px` at scale 1, eliding the middle instead
+/// of the tail: these fields mostly hold filesystem paths, and the leaf name at
+/// the end is the part worth reading.
 fn truncate_for(s: &str, max_px: i32) -> String {
     if bitmap_font::measure(s, 1) <= max_px { return s.to_owned(); }
     let ellipsis = "..";
-    let ell_w = bitmap_font::measure(ellipsis, 1);
-    let mut out = String::new();
-    let mut w = 0;
-    for ch in s.chars() {
-        let cw = bitmap_font::measure(&ch.to_string(), 1);
-        if w + cw + ell_w > max_px { break; }
-        out.push(ch);
-        w += cw;
+    // A glyph advances GLYPH_W plus the one-pixel gap that follows it; `measure`
+    // drops that gap only after the very last glyph, so a run of `n` chars is
+    // `n * advance - 1` wide and `n` chars fit while `n * advance - 1 <= max_px`.
+    let advance = bitmap_font::GLYPH_W + 1;
+    let fits = (max_px + 1) / advance;
+    let ell_n = ellipsis.chars().count() as i32;
+    if fits <= ell_n {
+        return ellipsis.chars().take(fits.max(0) as usize).collect();
     }
+    // Split the remaining budget two-thirds in favour of the tail.
+    let keep = fits - ell_n;
+    let tail = (keep * 2 / 3).max(1) as usize;
+    let head = keep as usize - tail;
+    // `fits < s.chars().count()` here (the early return covers the rest), so the
+    // head and tail slices can never overlap.
+    let chars: Vec<char> = s.chars().collect();
+    let mut out: String = chars[..head].iter().collect();
     out.push_str(ellipsis);
+    out.extend(&chars[chars.len() - tail..]);
     out
 }

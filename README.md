@@ -131,9 +131,15 @@ yay -S kashot                     # AUR (coming soon)
 [**Apple Silicon .dmg**](https://github.com/singhpratech/kashot/releases/latest/download/Kashot-macos-arm64.dmg) &nbsp;·&nbsp;
 [Intel .dmg](https://github.com/singhpratech/kashot/releases/latest/download/Kashot-macos-x64.dmg)
 
-Drag to Applications. Unsigned today — right-click → Open on first launch.
+Drag to Applications. Unsigned today, so macOS blocks the first launch: open
+Kashot once, dismiss the warning, then go to **System Settings → Privacy &
+Security** and click **Open Anyway**. (Right-click → Open no longer bypasses
+Gatekeeper as of macOS 15.)
 
 ```bash
+# terminal alternative to the Open Anyway button
+xattr -dr com.apple.quarantine /Applications/Kashot.app
+
 # coming soon
 brew install --cask kashot
 ```

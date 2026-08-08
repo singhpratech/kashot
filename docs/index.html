@@ -58,7 +58,7 @@
     <span class="dot dot-audio" aria-hidden="true"></span> AUDIO::<span id="audio-state">OFF</span>
   </button>
   <span class="topbar-cell" aria-hidden="true">kashot.org</span>
-  <span class="topbar-cell" aria-hidden="true"><span class="dot"></span> <span data-version>v0.5.0</span></span>
+  <span class="topbar-cell" aria-hidden="true"><span class="dot"></span> <span data-version>v0.6.0</span></span>
 </div>
 
 <header class="nav">
@@ -67,7 +67,7 @@
       <img src="assets/kashot-64.png" alt="" width="32" height="32" />
     </span>
     <span class="brand-text">KAShot</span>
-    <span class="brand-tag">_<span data-version>v0.5.0</span></span>
+    <span class="brand-tag">_<span data-version>v0.6.0</span></span>
   </a>
 
   <nav class="nav-links" aria-label="Primary">
@@ -194,7 +194,7 @@
         <span class="btn-bracket">[</span>
         <span class="btn-text">
           <span class="btn-line">DOWNLOAD KAShot</span>
-          <span class="btn-sub" id="download-sub">v0.5.0 · WINDOWS · MSI</span>
+          <span class="btn-sub" id="download-sub">v0.6.0 · WINDOWS · MSI</span>
         </span>
         <span class="btn-bracket">]</span>
         <span class="btn-sweep" aria-hidden="true"></span>
@@ -651,7 +651,7 @@
             <li class="showcase-step" data-step="2">
               <span class="showcase-step-tag">[02]</span>
               <h3>Drag the region.</h3>
-              <p>Pixel-accurate selection with a 7× live magnifier. Drag any edge to resize, <kbd>Alt</kbd>-drag to move.</p>
+              <p>Pixel-accurate selection with a 7× live magnifier. Drag any edge or corner to resize.</p>
             </li>
             <li class="showcase-step" data-step="3">
               <span class="showcase-step-tag">[03]</span>
@@ -861,7 +861,7 @@ yay -S kashot</code></pre>
           <h3>MACOS</h3>
           <span class="dl-status">// NATIVE · RUST</span>
         </header>
-        <p class="dl-desc">Native on Apple Silicon and Intel — .dmg disk images for both.<br>Same Rust binary that ships on Windows and Linux. Unsigned today: right-click → Open on first launch (notarization queued).</p>
+        <p class="dl-desc">Native on Apple Silicon and Intel — .dmg disk images for both.<br>Same Rust binary that ships on Windows and Linux. Unsigned today: open it once, then click "Open Anyway" under System Settings → Privacy &amp; Security (notarization queued).</p>
 
         <div class="dl-options">
           <a class="btn btn-primary"
@@ -883,8 +883,14 @@ yay -S kashot</code></pre>
         </div>
 
         <details class="dl-more">
-          <summary>// MORE INSTALL CHANNELS</summary>
-          <pre><code># Homebrew Cask (queued)
+          <summary>// FIRST LAUNCH + MORE CHANNELS</summary>
+          <pre><code># Gatekeeper: open Kashot, dismiss the warning, then
+# System Settings -&gt; Privacy &amp; Security -&gt; "Open Anyway".
+# Right-click -&gt; Open stopped working in macOS 15.
+# Terminal alternative:
+xattr -dr com.apple.quarantine /Applications/Kashot.app
+
+# Homebrew Cask (queued)
 brew install --cask kashot</code></pre>
         </details>
 

@@ -21,6 +21,7 @@ mod about_form;
 mod brand_icon;
 mod convert_image_form;
 mod convert_video_form;
+mod firstrun_form;
 mod pin;
 mod recording_indicator;
 mod self_updater;

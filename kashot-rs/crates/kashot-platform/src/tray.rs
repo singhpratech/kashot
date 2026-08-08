@@ -10,7 +10,7 @@ use tray_icon::menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem};
 use tray_icon::{Icon as TrayIconImage, TrayIcon, TrayIconBuilder};
 
 pub struct Tray {
-    _icon: TrayIcon,
+    icon: TrayIcon,
     pub capture_id:    tray_icon::menu::MenuId,
     pub capture_full_id: tray_icon::menu::MenuId,
     pub delay3_id:     tray_icon::menu::MenuId,
@@ -31,6 +31,7 @@ pub struct Tray {
     pub convert_img_id: tray_icon::menu::MenuId,
     pub convert_vid_id: tray_icon::menu::MenuId,
     pub exit_id:       tray_icon::menu::MenuId,
+    capture_item:      MenuItem,
     rec_none_item:     MenuItem,
     rec_mic_item:      MenuItem,
     rec_sys_item:      MenuItem,
@@ -78,14 +79,24 @@ pub enum TrayEvent {
 
 impl Tray {
     /// Build the tray icon with the default Kashot menu. `tooltip` shows the
-    /// current hotkey, e.g. `"KAShot — press PrintScreen to capture"`.
+    /// current hotkey, e.g. `"KAShot — press PrintScreen to capture"`, and
+    /// `capture_label` is the text of the first menu row — the caller folds
+    /// the hotkey into it (`"Capture (PrintScreen)"`) so the binding is
+    /// discoverable without opening Settings. Both are plain strings rather
+    /// than a settings handle so this crate stays free of UI policy; use
+    /// `set_tooltip` / `set_capture_label` to refresh them after a rebind.
+    ///
+    /// Must be called only once the OS event loop is already running. On macOS
+    /// an `NSStatusItem` created before `NSApplication` finishes launching is
+    /// silently discarded, so the caller builds the tray from the first
+    /// event-loop tick rather than from `main`.
     ///
     /// On Linux this calls `gtk::init()` first — the tray-icon backend uses
     /// libayatana-appindicator which requires GTK to be initialized on the
     /// main thread before any menu item is constructed. `gtk::init()` is
     /// idempotent and returns Err only if no display server is reachable, in
     /// which case we surface that as a regular `Tray` init failure.
-    pub fn new(tooltip: impl Into<String>) -> Result<Self> {
+    pub fn new(tooltip: impl Into<String>, capture_label: impl Into<String>) -> Result<Self> {
         #[cfg(target_os = "linux")]
         {
             gtk::init().map_err(|e| Error::Tray(format!("gtk::init: {e}")))?;
@@ -101,7 +112,7 @@ impl Tray {
         // Labels intentionally kept tight — Cinnamon's DBusMenu renderer
         // (and a few KDE plasmoids) truncates wider strings with an ellipsis.
         // Every label here is one or two readable phrases at most.
-        let capture   = MenuItem::new("Capture",           true,  None);
+        let capture   = MenuItem::new(capture_label.into(), true,  None);
         let capture_full = MenuItem::new("Capture Full Screen", true, None);
         let delay_3s  = MenuItem::new("Capture in 3s",     true,  None);
         let delay_5s  = MenuItem::new("Capture in 5s",     true,  None);
@@ -184,7 +195,7 @@ impl Tray {
             .map_err(|e| Error::Tray(e.to_string()))?;
 
         Ok(Tray {
-            _icon: tray_icon,
+            icon: tray_icon,
             capture_id,
             capture_full_id,
             delay3_id,
@@ -205,6 +216,7 @@ impl Tray {
             convert_img_id,
             convert_vid_id,
             exit_id,
+            capture_item:  capture,
             rec_none_item: rec_none,
             rec_mic_item:  rec_mic,
             rec_sys_item:  rec_sys,
@@ -240,6 +252,24 @@ impl Tray {
             Ok(ev) if ev.id == self.exit_id      => TrayEvent::Exit,
             _ => TrayEvent::None,
         }
+    }
+
+    /// Replace the hover tooltip. Called after the user rebinds the capture
+    /// hotkey so the tray stops advertising the old one; the tray-icon
+    /// backends can refuse (a Linux panel with no tooltip support), which is
+    /// cosmetic, so the error is returned rather than swallowed and callers
+    /// log it.
+    pub fn set_tooltip(&self, tooltip: &str) -> Result<()> {
+        self.icon
+            .set_tooltip(Some(tooltip))
+            .map_err(|e| Error::Tray(e.to_string()))
+    }
+
+    /// Relabel the first menu row, e.g. after a hotkey rebind changes the
+    /// `"Capture (PrintScreen)"` suffix. Infallible in `muda`, so no restart
+    /// is needed to see a new binding.
+    pub fn set_capture_label(&self, label: &str) {
+        self.capture_item.set_text(label);
     }
 
     /// Toggle the "Cancel pending capture" item — enabled only while a

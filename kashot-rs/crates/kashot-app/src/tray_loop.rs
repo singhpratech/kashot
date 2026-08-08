@@ -22,6 +22,7 @@ use crate::about_form::{AboutOutcome, AboutView};
 use crate::convert_image_form::{ConvertImageOutcome, ConvertImageView};
 use crate::convert_video_form::{ConvertVideoOutcome, ConvertVideoView};
 use crate::editor::{Overlay, OverlayGroup, OverlayOutcome, VideoCommit};
+use crate::firstrun_form::{FirstRunOutcome, FirstRunView};
 use crate::pin::PinView;
 use crate::recording_indicator::RecordingIndicator;
 use crate::self_updater;
@@ -33,16 +34,24 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::window::WindowId;
 
 pub fn run() -> Result<()> {
+    // Must be sampled before `load()` and before anything can call `save()`:
+    // the settings file is written on first save/exit, so its absence is the
+    // only "this user has never run KAShot" signal we have. A missing config
+    // dir (no HOME) reads as "not first run" — better to skip the welcome
+    // than to show it on every launch.
+    let first_run = AppSettings::settings_path().map(|p| !p.exists()).unwrap_or(false);
+
     let settings = AppSettings::load();
 
-    // Tray + hotkey init are best-effort. If either fails (no DBus / no desktop
-    // env / hotkey already taken) the app stays running so the user can fix the
-    // issue and try again from the menu later.
-    let tray = match Tray::new(tray_tooltip(&settings)) {
-        Ok(t) => Some(t),
-        Err(e) => { eprintln!("tray init failed: {e}"); None }
-    };
+    // Asked once, at startup, and threaded through the app: the answer can't
+    // change without a new login session, and both the startup notice and the
+    // Capture row label need it.
+    let wayland = kashot_platform::session::is_wayland();
 
+    // Hotkey init is best-effort. If it fails (no display server / the binding
+    // is already taken) the app stays running so the user can fix the issue and
+    // try again from the menu later. The tray is built later still — see
+    // `TrayApp::ensure_tray`.
     let mut hotkeys = match HotkeyManager::new() {
         Ok(mut hk) => {
             if let Err(e) = hk.register(settings.hotkey()) {
@@ -53,13 +62,27 @@ pub fn run() -> Result<()> {
         Err(e) => { eprintln!("hotkey init failed: {e} — use tray menu to capture"); None }
     };
 
-    eprintln!("KAShot is running. Press {} or use the tray menu to capture.",
-        describe_hotkey(&settings));
+    if wayland {
+        eprintln!("KAShot is running. Wayland session — the global hotkey can't be \
+                   grabbed; use the tray menu to capture.");
+    } else {
+        eprintln!("KAShot is running. Press {} or use the tray menu to capture.",
+            settings.hotkey().describe());
+    }
 
     struct TrayApp {
         settings:   AppSettings,
         hotkeys:    Option<HotkeyManager>,
+        /// Built on the first event-loop tick, not in `run()` — see
+        /// `ensure_tray`. Stays `None` for the whole session if the build
+        /// failed, in which case the fallback About window is the only
+        /// surface and closing it quits.
         tray:       Option<Tray>,
+        /// Whether `ensure_tray` has already run. Distinguishes "not built
+        /// yet" from "built and failed", which `tray: None` alone can't.
+        tray_built: bool,
+        /// Wayland session — the global hotkey can't be grabbed here.
+        wayland:    bool,
         recorder:   Recorder,
         /// Active overlay editor window, if a capture-and-edit is in flight.
         /// Holds the captured screenshot and the user's selection state until
@@ -80,6 +103,13 @@ pub fn run() -> Result<()> {
         recording_view: Option<RecordingIndicator>,
         /// Themed About modal — replaces the prior rfd MessageDialog.
         about_view:    Option<AboutView>,
+        /// Set when the settings file didn't exist at startup; cleared by
+        /// `maybe_show_first_run` once the welcome window has had its one
+        /// chance to open.
+        first_run:     bool,
+        /// One-time welcome window. Closing it only drops the view — unlike
+        /// the tray-failure About fallback, it never exits the app.
+        firstrun_view: Option<FirstRunView>,
         /// Themed Check-for-updates modal — replaces the prior open-url.
         updates_view:  Option<UpdatesView>,
         /// Themed Convert-image dialog.
@@ -107,6 +137,52 @@ pub fn run() -> Result<()> {
     }
 
     impl TrayApp {
+        /// Build the tray icon, once, from inside the running event loop.
+        ///
+        /// `tray-icon` requires the status item to be created after the loop
+        /// is up: on macOS an `NSStatusItem` built before `NSApplication`
+        /// finishes launching is dropped on the floor and the menu bar stays
+        /// empty. Windows and Linux tolerate the early build, but running the
+        /// same deferred path everywhere means one code path to reason about
+        /// instead of a macOS special case.
+        ///
+        /// A failure here is not survivable in silence: with no tray there is
+        /// no menu, and the tray's Exit item is the app's only exit — the user
+        /// would be left with an invisible process they can't quit. So we put
+        /// the About window up as a visible, dismissable surface (closing it
+        /// exits, see the `AboutOutcome::Closed` arm) and toast the reason.
+        fn ensure_tray(&mut self, loop_target: &ActiveEventLoop) {
+            if self.tray_built { return; }
+            self.tray_built = true;
+
+            match Tray::new(tray_tooltip(&self.settings),
+                            capture_label(&self.settings, self.wayland)) {
+                Ok(t) => self.tray = Some(t),
+                Err(e) => {
+                    eprintln!("tray init failed: {e}");
+                    notify("KAShot — no tray icon",
+                        &format!("{e}\n\nThe About window is open instead; closing it quits KAShot."),
+                        true);
+                    self.show_about(loop_target);
+                    if self.about_view.is_none() {
+                        // No tray and no window either — nothing on screen can
+                        // ever reach this process. Quit instead of idling
+                        // forever at 30 Hz.
+                        eprintln!("No tray and no fallback window — exiting.");
+                        loop_target.exit();
+                    }
+                }
+            }
+
+            if self.wayland {
+                notify("KAShot — hotkey unavailable on Wayland",
+                    "Wayland doesn't let an application grab a global hotkey, so the \
+                     capture shortcut won't fire in this session. Everything else works \
+                     — capture from the tray menu instead.",
+                    true);
+            }
+        }
+
         fn poll(&mut self, loop_target: &ActiveEventLoop) {
             // Drive any platform-native loop the tray depends on (GTK on
             // Linux). Must run before try_recv so menu-click signals have a
@@ -142,6 +218,19 @@ pub fn run() -> Result<()> {
                 if hk.drain_pressed() {
                     self.capture(loop_target);
                 }
+            }
+            // Nothing else watches the encoder between start and stop, so an
+            // encoder that dies mid-recording (disk filled, capture device
+            // unplugged, OOM kill) would otherwise leave the app flashing REC
+            // over a dead process. `poll_health` has already returned the
+            // recorder to idle by the time it errs, so we only clean up the UI
+            // — calling `stop()` here would just report "not currently
+            // recording" over the real reason.
+            if let Err(e) = self.recorder.poll_health() {
+                eprintln!("Recording stopped unexpectedly: {e}");
+                if let Some(t) = &self.tray { t.set_recording(false); }
+                self.recording_view = None;
+                notify("KAShot — recording stopped unexpectedly", &format!("{e}"), true);
             }
             // Keep the recording indicator's flashing dot animating even
             // when there's no mouse activity over its window.
@@ -214,12 +303,22 @@ pub fn run() -> Result<()> {
             #[cfg(not(target_os = "windows"))]
             std::thread::sleep(Duration::from_millis(250));
 
+            // Both failure arms are toasted, not just logged: the user pressed
+            // the hotkey and nothing appeared on screen, and stderr is not a
+            // surface a tray-resident app's user ever reads.
             match capture_all_screens() {
                 Ok(shot) => match Overlay::new(loop_target, shot.bitmap, self.settings.clone()) {
                     Ok(ov) => self.overlay = Some(ov),
-                    Err(e) => eprintln!("Overlay open failed: {e}"),
+                    Err(e) => {
+                        eprintln!("Overlay open failed: {e}");
+                        notify("KAShot — capture failed",
+                            &format!("The editor window wouldn't open: {e}"), true);
+                    }
                 },
-                Err(e) => eprintln!("Capture failed: {e}"),
+                Err(e) => {
+                    eprintln!("Capture failed: {e}");
+                    notify("KAShot — capture failed", &format!("{e}"), true);
+                }
             }
 
             self.capturing = false;
@@ -272,11 +371,23 @@ pub fn run() -> Result<()> {
         /// Persist a final image (already cropped to the user's selection in
         /// the overlay editor) to the configured save directory. Applies
         /// the watermark first if `WatermarkEnabled` is set in settings.
+        ///
+        /// Notifies on both outcomes, like `capture_full_screen`: the overlay
+        /// has already closed by the time this runs, so the toast naming the
+        /// path is the only confirmation the shot landed anywhere — and a
+        /// failed write used to look exactly like a successful one.
         fn save_final(&mut self, mut img: image::ImageBuffer<image::Rgba<u8>, Vec<u8>>) {
             apply_watermark(&mut img, &self.settings);
             match save_capture(&mut self.settings, &img) {
-                Ok(path) => eprintln!("Saved {}", path.display()),
-                Err(e)   => eprintln!("Save failed: {e}"),
+                Ok(path) => {
+                    eprintln!("Saved {}", path.display());
+                    notify("KAShot — screenshot saved",
+                        &format!("{}", path.display()), false);
+                }
+                Err(e) => {
+                    eprintln!("Save failed: {e}");
+                    notify("KAShot — save failed", &format!("{e}"), true);
+                }
             }
         }
 
@@ -323,14 +434,15 @@ pub fn run() -> Result<()> {
             let dir   = recordings_directory_for(&self.settings);
             let stamp = Local::now().format("%Y%m%d_%H%M%S");
             let out   = dir.join(format!("kashot_{stamp}.mp4"));
-            let audio_label = match (opts.mic, opts.system_audio) {
-                (false, false) => "video only",
-                (true,  false) => "with microphone",
-                (false, true)  => "with system audio",
-                (true,  true)  => "with mic + system audio",
-            };
             match self.recorder.start(out.clone(), opts) {
-                Ok(()) => {
+                Ok(effective) => {
+                    // Describe what's actually in the file, not what the menu
+                    // row asked for: audio capture is best-effort, so a box
+                    // with no reachable audio server still records video, and
+                    // promising a mic track that isn't there is worse than
+                    // recording without one.
+                    let audio_label = audio_label_for(effective);
+                    let dropped     = audio_downgrade_note(opts, effective);
                     eprintln!("Recording ({audio_label}) → {}", out.display());
                     if let Some(t) = &self.tray { t.set_recording(true); }
                     // Float a small flashing control panel so the user can
@@ -355,7 +467,7 @@ pub fn run() -> Result<()> {
                         "Use the tray menu to finish."
                     };
                     notify("KAShot — recording started",
-                        &format!("{audio_label}\nSaving to {}\n\n{stop_hint}",
+                        &format!("{audio_label}{dropped}\nSaving to {}\n\n{stop_hint}",
                             out.display()),
                         true);
                 }
@@ -390,6 +502,10 @@ pub fn run() -> Result<()> {
         /// Stop the active recording, finalize the file, and tear down the
         /// floating indicator if one is present.
         fn stop_recording(&mut self) {
+            // Grabbed before `stop()` consumes it: when finalizing fails the
+            // clip is often still on disk and playable, and this is the only
+            // handle left to offer it to "Annotate last recording".
+            let pending = self.recorder.output_path().map(|p| p.to_path_buf());
             match self.recorder.stop() {
                 Ok(path) => {
                     eprintln!("Saved recording {}", path.display());
@@ -402,6 +518,15 @@ pub fn run() -> Result<()> {
                 Err(e) => {
                     eprintln!("Stop recording failed: {e}");
                     if let Some(t) = &self.tray { t.set_recording(false); }
+                    // A killed encoder still leaves bytes behind, and the error
+                    // text now names the file — so make the menu able to reach
+                    // it. Anything empty or missing is not offered: those are
+                    // the failures where there is genuinely nothing to open.
+                    if let Some(p) = pending.filter(|p| {
+                        std::fs::metadata(p).map(|m| m.len() > 0).unwrap_or(false)
+                    }) {
+                        self.last_recording = Some(p);
+                    }
                     // Surface it — a recording the user thought was running
                     // produced no usable file. Same non-blocking pattern as
                     // start_recording: threaded modal on Windows, toast elsewhere.
@@ -563,11 +688,15 @@ pub fn run() -> Result<()> {
                             eprintln!("Re-register hotkey failed: {e}");
                         }
                     }
-                    // Tray tooltip is set at startup; the tray-icon crate has
-                    // no live mutator, so any new hotkey text only appears
-                    // after a restart. Not worth a tray rebuild for the
-                    // tooltip alone.
-                    let _ = tray_tooltip;
+                    // Both surfaces that quote the hotkey — the hover tooltip
+                    // and the Capture row label — are rebuilt in place, so a
+                    // rebind is visible without restarting the app.
+                    if let Some(t) = &self.tray {
+                        if let Err(e) = t.set_tooltip(&tray_tooltip(&self.settings)) {
+                            eprintln!("Tray tooltip update failed: {e}");
+                        }
+                        t.set_capture_label(&capture_label(&self.settings, self.wayland));
+                    }
                     true
                 }
                 SettingsOutcome::Cancelled => {
@@ -603,6 +732,28 @@ pub fn run() -> Result<()> {
             match AboutView::new(loop_target) {
                 Ok(v)  => self.about_view = Some(v),
                 Err(e) => eprintln!("About dialog failed to open: {e}"),
+            }
+        }
+
+        /// Put the welcome window up on the first launch, once.
+        ///
+        /// Sequenced after `ensure_tray` on purpose: the window's whole job is
+        /// to point at the tray icon, so it must not open before the icon
+        /// exists. When the tray failed to build, `ensure_tray` has already
+        /// raised the About window as the fallback surface and closing that
+        /// one quits — stacking a second window on top of it would only give
+        /// the user two things to dismiss and one misleading instruction.
+        fn maybe_show_first_run(&mut self, loop_target: &ActiveEventLoop) {
+            if !self.first_run || !self.tray_built { return; }
+            self.first_run = false;
+            if self.tray.is_none() { return; }
+            let save_dir = save_directory(&self.settings).to_string_lossy().to_string();
+            match FirstRunView::new(loop_target,
+                                    &self.settings.hotkey().describe(),
+                                    &save_dir,
+                                    self.wayland) {
+                Ok(v)  => self.firstrun_view = Some(v),
+                Err(e) => eprintln!("Welcome window failed to open: {e}"),
             }
         }
 
@@ -721,7 +872,11 @@ pub fn run() -> Result<()> {
     }
 
     impl ApplicationHandler for TrayApp {
-        fn resumed(&mut self, _: &ActiveEventLoop) {}
+        fn resumed(&mut self, loop_target: &ActiveEventLoop) {
+            // Earliest point at which the platform event loop is guaranteed to
+            // be running, which is what the tray status item needs.
+            self.ensure_tray(loop_target);
+        }
 
         fn window_event(&mut self, _loop_target: &ActiveEventLoop, id: WindowId, ev: WindowEvent) {
             // Route the event into the overlay editor if it owns the window.
@@ -730,7 +885,7 @@ pub fn run() -> Result<()> {
             // Decide the routing target *before* consuming the event so we
             // only dispatch once. Overlay wins if it owns the id; otherwise
             // search the pinned-window list.
-            enum Target { Overlay, Pinned(usize), Settings, Recording, About, Updates, ConvertImage, ConvertVideo, Unknown }
+            enum Target { Overlay, Pinned(usize), Settings, Recording, About, FirstRun, Updates, ConvertImage, ConvertVideo, Unknown }
             let target = if self.overlay.as_ref().map(|ov| ov.window_id() == id).unwrap_or(false) {
                 Target::Overlay
             } else if self.settings_view.as_ref().map(|s| s.window_id() == id).unwrap_or(false) {
@@ -739,6 +894,8 @@ pub fn run() -> Result<()> {
                 Target::Recording
             } else if self.about_view.as_ref().map(|a| a.window_id() == id).unwrap_or(false) {
                 Target::About
+            } else if self.firstrun_view.as_ref().map(|f| f.window_id() == id).unwrap_or(false) {
+                Target::FirstRun
             } else if self.updates_view.as_ref().map(|u| u.window_id() == id).unwrap_or(false) {
                 Target::Updates
             } else if self.convert_image_view.as_ref().map(|c| c.window_id() == id).unwrap_or(false) {
@@ -796,14 +953,45 @@ pub fn run() -> Result<()> {
                     }
                     if let Some(o) = outcome {
                         match o {
-                            AboutOutcome::Closed => { self.about_view = None; }
+                            AboutOutcome::Closed => {
+                                self.about_view = None;
+                                // When the tray failed to build, this window
+                                // was the app's only visible surface and the
+                                // tray's Exit item — the sole exit path in the
+                                // crate — doesn't exist. Dismissing it has to
+                                // quit, or the process lingers unkillable from
+                                // the UI.
+                                if self.tray_built && self.tray.is_none() {
+                                    _loop_target.exit();
+                                }
+                            }
                             AboutOutcome::OpenProject => open_url("https://kashot.org"),
                             AboutOutcome::OpenAuthor  => open_url("https://theaivibe.org/about"),
                             AboutOutcome::OpenUpdates => {
                                 self.about_view = None;
                                 self.show_updates(_loop_target);
+                                // Handing the fallback surface over to the
+                                // Updates dialog only works if that dialog
+                                // actually opened; if it didn't, nothing is
+                                // left on screen to quit from.
+                                if self.tray_built && self.tray.is_none()
+                                    && self.updates_view.is_none() {
+                                    _loop_target.exit();
+                                }
                             }
                         }
+                    }
+                }
+                Target::FirstRun => {
+                    let mut outcome: Option<FirstRunOutcome> = None;
+                    if let Some(view) = self.firstrun_view.as_mut() {
+                        view.handle_event(ev);
+                        outcome = view.outcome.take();
+                    }
+                    // Dismissing the welcome window leaves the app running in
+                    // the tray — that is the whole point of the window.
+                    if matches!(outcome, Some(FirstRunOutcome::Closed)) {
+                        self.firstrun_view = None;
                     }
                 }
                 Target::Updates => {
@@ -814,7 +1002,18 @@ pub fn run() -> Result<()> {
                     }
                     if let Some(o) = outcome {
                         match o {
-                            UpdatesOutcome::Closed => { self.updates_view = None; }
+                            UpdatesOutcome::Closed => {
+                                self.updates_view = None;
+                                // Same last-surface rule as the About window:
+                                // reaching here from the no-tray fallback (About
+                                // -> "Check for updates" closes About) leaves
+                                // this dialog as the only way to reach the
+                                // process, so dismissing it has to quit.
+                                if self.tray_built && self.tray.is_none()
+                                    && self.about_view.is_none() {
+                                    _loop_target.exit();
+                                }
+                            }
                             UpdatesOutcome::OpenReleases => open_url("https://github.com/singhpratech/kashot/releases"),
                             UpdatesOutcome::OpenAsset(url) => open_url(&url),
                             UpdatesOutcome::DownloadAndInstall { asset_url, expected_sha256 } => {
@@ -893,6 +1092,13 @@ pub fn run() -> Result<()> {
         }
 
         fn about_to_wait(&mut self, loop_target: &ActiveEventLoop) {
+            // Backstop for platforms/versions where `resumed` never fires:
+            // no-op once the tray has been built.
+            self.ensure_tray(loop_target);
+            // Always after `ensure_tray`, and only here rather than in
+            // `resumed` too, so the welcome window can never be raised on a
+            // tick where the tray icon doesn't exist yet.
+            self.maybe_show_first_run(loop_target);
             // Poll roughly 30Hz when idle.
             let now = Instant::now();
             if now.duration_since(self.last_tick) >= Duration::from_millis(33) {
@@ -909,13 +1115,17 @@ pub fn run() -> Result<()> {
     let mut app = TrayApp {
         settings,
         hotkeys: hotkeys.take(),
-        tray,
+        tray: None,
+        tray_built: false,
+        wayland,
         recorder: Recorder::new(),
         overlay: None,
         pinned:  Vec::new(),
         settings_view:  None,
         recording_view: None,
         about_view:     None,
+        first_run,
+        firstrun_view:  None,
         updates_view:   None,
         convert_image_view: None,
         convert_video_view: None,
@@ -1259,30 +1469,49 @@ fn stderr_tail(stderr: &str) -> String {
     lines[n.saturating_sub(4)..].join(" | ")
 }
 
-fn describe_hotkey(s: &AppSettings) -> String {
-    let vk = s.hotkey_virtual_key;
-    let mut parts = Vec::new();
-    if s.hotkey_modifiers & 0x0002 != 0 { parts.push("Ctrl"); }
-    if s.hotkey_modifiers & 0x0004 != 0 { parts.push("Shift"); }
-    if s.hotkey_modifiers & 0x0001 != 0 { parts.push("Alt"); }
-    if s.hotkey_modifiers & 0x0008 != 0 { parts.push("Win"); }
-    let key = vk_name(vk);
-    if parts.is_empty() { key.into() } else { format!("{} + {}", parts.join(" + "), key) }
+fn tray_tooltip(s: &AppSettings) -> String {
+    format!("KAShot — press {} to capture", s.hotkey().describe())
 }
 
-fn vk_name(vk: u32) -> &'static str {
-    match vk {
-        0x2C => "PrintScreen",
-        0x70 => "F1",  0x71 => "F2",  0x72 => "F3",
-        0x73 => "F4",  0x74 => "F5",  0x75 => "F6",
-        0x76 => "F7",  0x77 => "F8",  0x78 => "F9",
-        0x79 => "F10", 0x7A => "F11", 0x7B => "F12",
-        _    => "(custom)",
+/// Text of the tray's first menu row. The hotkey rides along in parentheses
+/// so the binding is discoverable from the menu the user is already in,
+/// instead of only from the Settings dialog.
+///
+/// Under Wayland the binding can't be grabbed at all (see
+/// `kashot_platform::session`), so the label says so rather than advertising
+/// a shortcut that silently does nothing.
+fn capture_label(s: &AppSettings, wayland: bool) -> String {
+    let key = s.hotkey().describe();
+    if wayland {
+        format!("Capture ({key} - X11 only)")
+    } else {
+        format!("Capture ({key})")
     }
 }
 
-fn tray_tooltip(s: &AppSettings) -> String {
-    format!("KAShot — press {} to capture", describe_hotkey(s))
+/// One-phrase summary of the audio tracks a recording actually carries.
+fn audio_label_for(o: kashot_platform::recorder::RecordingOptions) -> &'static str {
+    match (o.mic, o.system_audio) {
+        (false, false) => "video only",
+        (true,  false) => "with microphone",
+        (false, true)  => "with system audio",
+        (true,  true)  => "with mic + system audio",
+    }
+}
+
+/// Names the audio sources the user asked for that the recorder couldn't
+/// actually open, for appending to the "recording started" toast. Empty
+/// string when the recording is exactly what was requested.
+fn audio_downgrade_note(requested: kashot_platform::recorder::RecordingOptions,
+                        effective: kashot_platform::recorder::RecordingOptions) -> String {
+    let lost_mic = requested.mic          && !effective.mic;
+    let lost_sys = requested.system_audio && !effective.system_audio;
+    match (lost_mic, lost_sys) {
+        (false, false) => String::new(),
+        (true,  true)  => "\n(no audio - neither source could be opened)".to_owned(),
+        (true,  false) => "\n(no microphone - the input device could not be opened)".to_owned(),
+        (false, true)  => "\n(no system audio - the audio server was not reachable)".to_owned(),
+    }
 }
 
 /// Open `url` in the user's default browser. Best-effort — failures are

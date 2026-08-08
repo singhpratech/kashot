@@ -45,11 +45,17 @@
 //!
 //! Stop is graceful per platform: write `q` to `ffmpeg`'s stdin (Linux,
 //! Windows) or send SIGINT to `screencapture` (macOS) so the MP4 moov atom
-//! is finalized. `Drop` polls `try_wait` for up to ~2 s after the graceful
-//! signal — only if the child is still alive at that point do we fall back
-//! to SIGKILL, so the file is playable on every normal teardown. ffmpeg
-//! treats `q` on stdin the same on Windows as it does on Linux, so the
-//! `recording_indicator` STOP button needs no platform-specific tweaks.
+//! is finalized. Every wait after that signal is bounded — ~15 s for an
+//! explicit `stop()`, ~2 s in `Drop` — and escalates to a kill, so a normal
+//! teardown always yields a playable file while a wedged encoder can never
+//! freeze the UI thread. ffmpeg treats `q` on stdin the same on Windows as it
+//! does on Linux, so the `recording_indicator` STOP button needs no
+//! platform-specific tweaks.
+//!
+//! Between start and stop the encoder is watched rather than trusted:
+//! `Recorder::poll_health()` reaps a child that died on its own, and the last
+//! lines of its stderr are kept in a ring buffer so the failure can be
+//! reported with its actual cause instead of a bare exit code.
 
 use crate::{Error, Result};
 use std::path::{Path, PathBuf};
@@ -95,6 +101,8 @@ pub struct Recorder {
 enum Backend {
     Process {
         child: Child,
+        /// Rolling tail of the child's stderr, kept by the drain thread.
+        stderr: StderrTail,
         /// Windows-only: WASAPI capture pumps feeding ffmpeg over loopback TCP.
         /// The field only exists on Windows so every other platform keeps a
         /// single-field `Process` backend with nothing to join.
@@ -107,24 +115,62 @@ enum Backend {
     },
 }
 
+/// How long `Recorder::stop()` waits for the encoder to finalize the container
+/// before escalating to a kill, in 100 ms polls. Generous: a long 4K recording
+/// can spend several seconds writing the moov atom, and killing early corrupts
+/// exactly the file the user asked us to save. Still bounded, because this runs
+/// on the UI thread and a wedged encoder must not freeze the app forever.
+const STOP_POLL_STEPS: u32 = 150;
+
+/// Same escalation ladder for `Drop`, but ~2 s: nobody is waiting on the file
+/// at that point and the process is on its way out.
+const DROP_POLL_STEPS: u32 = 20;
+
 impl Backend {
-    /// Graceful stop for `Recorder::stop()`: signal, then block until the child
-    /// has finalized the container.
-    fn stop_blocking(self) {
+    /// Graceful stop for `Recorder::stop()`: signal, wait up to
+    /// `STOP_POLL_STEPS` for the child to finalize the container, then kill.
+    /// `Ok` means the encoder exited on its own and the file is whole; `Err`
+    /// means we escalated and whatever is on disk is very likely truncated.
+    ///
+    /// `output` rides along only so the failure message can name the file: a
+    /// killed encoder usually still leaves a playable clip behind, and an
+    /// error that doesn't say where it is sends the user hunting for it.
+    /// Pass an empty path when there is none to name.
+    fn stop_blocking(self, output: &Path) -> Result<()> {
         match self {
             Backend::Process {
                 mut child,
+                stderr,
                 #[cfg(target_os = "windows")] mut pumps,
                 #[cfg(target_os = "macos")] sck,
             } => {
                 graceful_signal(&mut child);
                 #[cfg(target_os = "windows")]
                 for p in &pumps { p.signal_stop(); }
+                let exited = wait_bounded(&mut child, STOP_POLL_STEPS);
+                if !exited { let _ = child.kill(); }
                 let _ = child.wait();
                 #[cfg(target_os = "windows")]
                 for p in &mut pumps { p.join(); }
                 #[cfg(target_os = "macos")]
                 if let Some(s) = sck { s.stop(); }
+                if exited {
+                    Ok(())
+                } else {
+                    let where_ = if output.as_os_str().is_empty() {
+                        String::new()
+                    } else {
+                        format!(" Whatever was written so far is at {}.", output.display())
+                    };
+                    Err(Error::Recording(format!(
+                        "the encoder didn't finish within {} seconds of being asked to \
+                         stop, so it was killed. The saved file may be truncated or \
+                         unplayable.{}{}",
+                        STOP_POLL_STEPS / 10,
+                        where_,
+                        stderr.as_error_suffix()
+                    )))
+                }
             }
         }
     }
@@ -136,21 +182,14 @@ impl Backend {
         match self {
             Backend::Process {
                 mut child,
+                stderr: _,
                 #[cfg(target_os = "windows")] mut pumps,
                 #[cfg(target_os = "macos")] sck,
             } => {
                 graceful_signal(&mut child);
                 #[cfg(target_os = "windows")]
                 for p in &pumps { p.signal_stop(); }
-                let mut exited = false;
-                for _ in 0..20 {
-                    match child.try_wait() {
-                        Ok(Some(_)) => { exited = true; break; }
-                        Ok(None)    => std::thread::sleep(std::time::Duration::from_millis(100)),
-                        Err(_)      => break,
-                    }
-                }
-                if !exited { let _ = child.kill(); }
+                if !wait_bounded(&mut child, DROP_POLL_STEPS) { let _ = child.kill(); }
                 let _ = child.wait();
                 #[cfg(target_os = "windows")]
                 for p in &mut pumps { p.join(); }
@@ -159,6 +198,120 @@ impl Backend {
             }
         }
     }
+
+    /// Has the child already exited on its own? `None` while it's still running
+    /// (the healthy case) or if the status can't be read.
+    fn exited(&mut self) -> Option<std::process::ExitStatus> {
+        match self {
+            Backend::Process { child, .. } => child.try_wait().ok().flatten(),
+        }
+    }
+
+    /// Tear down a backend whose child is already known to be dead: reap it and
+    /// release the audio capture threads. No graceful signal — there's nothing
+    /// left to signal.
+    fn discard_dead(self) {
+        match self {
+            Backend::Process {
+                mut child,
+                stderr: _,
+                #[cfg(target_os = "windows")] mut pumps,
+                #[cfg(target_os = "macos")] sck,
+            } => {
+                let _ = child.wait();
+                #[cfg(target_os = "windows")]
+                for p in &mut pumps { p.signal_stop(); p.join(); }
+                #[cfg(target_os = "macos")]
+                if let Some(s) = sck { s.stop(); }
+            }
+        }
+    }
+
+    fn stderr_tail(&self) -> StderrTail {
+        match self {
+            Backend::Process { stderr, .. } => stderr.clone(),
+        }
+    }
+}
+
+/// Poll `child` for up to `steps` × 100 ms. Returns whether it exited. A
+/// `try_wait` error is reported as "did not exit" so the caller escalates
+/// rather than assuming a clean finalize it can't actually confirm.
+fn wait_bounded(child: &mut Child, steps: u32) -> bool {
+    for _ in 0..steps {
+        match child.try_wait() {
+            Ok(Some(_)) => return true,
+            Ok(None)    => std::thread::sleep(std::time::Duration::from_millis(100)),
+            Err(_)      => return false,
+        }
+    }
+    false
+}
+
+// ── stderr ring buffer ──────────────────────────────────────────────────────
+
+/// How many stderr lines we keep. The encoder's actionable message ("No space
+/// left on device", "Device or resource busy") lands within the last handful of
+/// lines before it dies; sixteen is enough context without holding a log.
+const STDERR_TAIL_LINES: usize = 16;
+
+/// The tail of a running recorder's stderr.
+///
+/// Something has to read that pipe for the whole recording — an unread pipe
+/// fills its kernel buffer and stalls the encoder mid-write — so the drain
+/// thread is not optional. Keeping the last few lines instead of discarding
+/// them costs one small ring buffer and is the difference between telling the
+/// user "recording stopped unexpectedly" and telling them the disk is full.
+#[derive(Clone)]
+struct StderrTail {
+    lines: std::sync::Arc<std::sync::Mutex<std::collections::VecDeque<String>>>,
+}
+
+impl StderrTail {
+    fn new() -> Self {
+        Self {
+            lines: std::sync::Arc::new(std::sync::Mutex::new(
+                std::collections::VecDeque::with_capacity(STDERR_TAIL_LINES))),
+        }
+    }
+
+    /// Record one stderr line, dropping the oldest once the ring is full.
+    /// Blank lines and ffmpeg's per-second progress counters are skipped —
+    /// they'd otherwise push every real diagnostic out of a 16-line window.
+    fn push_line(&self, raw: &[u8]) {
+        let line = sanitize_ascii(&String::from_utf8_lossy(raw));
+        let line = line.trim();
+        if line.is_empty() { return; }
+        if line.starts_with("frame=") || line.starts_with("size=") { return; }
+        if let Ok(mut q) = self.lines.lock() {
+            if q.len() == STDERR_TAIL_LINES { q.pop_front(); }
+            q.push_back(line.to_string());
+        }
+    }
+
+    fn text(&self) -> String {
+        match self.lines.lock() {
+            Ok(q)  => q.iter().cloned().collect::<Vec<_>>().join("\n"),
+            Err(_) => String::new(),
+        }
+    }
+
+    /// The tail formatted for appending to an error message, or nothing at all
+    /// when the encoder said nothing worth repeating.
+    fn as_error_suffix(&self) -> String {
+        let t = self.text();
+        if t.is_empty() { String::new() } else { format!("\n\n{t}") }
+    }
+}
+
+/// Fold arbitrary encoder output down to printable ASCII. Kashot renders text
+/// with a 5x7 ASCII bitmap font, so anything else would reach the user as '?'
+/// anyway — and control bytes would corrupt the layout. Doing it here means
+/// every consumer of the tail gets renderable text.
+fn sanitize_ascii(s: &str) -> String {
+    s.chars()
+        .map(|c| if c.is_ascii_graphic() || c == ' ' { c } else { '?' })
+        .collect()
 }
 
 /// A background thread streaming captured PCM into ffmpeg over a loopback TCP
@@ -202,36 +355,80 @@ impl Recorder {
     pub fn is_recording(&self) -> bool { self.backend.is_some() }
     pub fn output_path(&self) -> Option<&Path> { self.output.as_deref() }
 
-    /// Begin recording the primary display to `output`. Errors if a recording
-    /// is already in progress, if the parent directory can't be created, or
-    /// if the platform's recording tool isn't available.
-    pub fn start(&mut self, output: PathBuf, options: RecordingOptions) -> Result<()> {
+    /// Begin recording the primary display to `output`.
+    ///
+    /// Returns the **effective** options — what's actually being recorded, not
+    /// what was asked for. Audio is best-effort by design: a box with no
+    /// PulseAudio server, or no default sink to monitor, still records video
+    /// rather than failing outright. Callers must render their "recording
+    /// started" toast from this value, otherwise they promise the user a
+    /// microphone track that isn't in the file.
+    ///
+    /// Errors if a recording is already in progress, if the parent directory
+    /// can't be created, or if the platform's recording tool isn't available.
+    pub fn start(&mut self, output: PathBuf, options: RecordingOptions)
+        -> Result<RecordingOptions>
+    {
         if self.is_recording() {
             return Err(Error::Recording("a recording is already in progress".into()));
         }
         if let Some(parent) = output.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let backend = spawn_recorder(&output, options)?;
+        let (backend, effective) = spawn_recorder(&output, options)?;
         self.backend = Some(backend);
         self.output  = Some(output);
-        Ok(())
+        Ok(effective)
+    }
+
+    /// Check whether the recording is still alive, cheaply enough to call from
+    /// the event loop every tick.
+    ///
+    /// Everything between `start()` and `stop()` used to be unobserved: if the
+    /// encoder died at minute three (disk filled, capture device yanked, OOM
+    /// kill) the app kept flashing its REC dot and `stop()` reported success
+    /// over a truncated file. On a dead child this tears the backend down —
+    /// `is_recording()` is false afterwards, so the caller can drop straight
+    /// back to idle — and returns the reason, encoder stderr included.
+    ///
+    /// `Ok(())` while the recording is healthy, and when there's no recording
+    /// at all: polling an idle recorder is not an error.
+    pub fn poll_health(&mut self) -> Result<()> {
+        let Some(backend) = self.backend.as_mut() else { return Ok(()) };
+        let Some(status) = backend.exited() else { return Ok(()) };
+
+        let tail = backend.stderr_tail();
+        // `exited()` borrowed self.backend mutably; it's finished with it now.
+        if let Some(b) = self.backend.take() { b.discard_dead(); }
+        let path = self.output.take();
+
+        let where_ = match &path {
+            Some(p) => format!(" Whatever was written so far is at {}.", p.display()),
+            None    => String::new(),
+        };
+        Err(Error::Recording(format!(
+            "recording stopped unexpectedly: the encoder exited on its own ({status}).{}{}",
+            where_, tail.as_error_suffix()
+        )))
     }
 
     /// Stop the active recording. Returns the output file path on success.
     /// The OS recorder needs a moment to flush the trailing frames + finalize
-    /// the container — we block on it so the file is playable when this returns.
+    /// the container — we block on it (bounded; see `STOP_POLL_STEPS`) so the
+    /// file is playable when this returns.
     pub fn stop(&mut self) -> Result<PathBuf> {
         let backend = self.backend.take()
             .ok_or_else(|| Error::Recording("not currently recording".into()))?;
         let path = self.output.take()
             .unwrap_or_else(PathBuf::new);
 
-        backend.stop_blocking();
+        let finalized = backend.stop_blocking(&path);
 
         // Late-failure catch: the encoder can clear the startup window yet still
         // fail to produce a file (it died mid-recording, or a downstream mux
         // error left nothing on disk). Don't hand back a path to nothing.
+        // Checked before the finalize verdict because "no file at all" is the
+        // more actionable of the two messages.
         if !path.as_os_str().is_empty() {
             match std::fs::metadata(&path) {
                 Ok(m) if m.len() > 0 => {}
@@ -243,6 +440,7 @@ impl Recorder {
                      encoder likely failed to start.", path.display()))),
             }
         }
+        finalized?;
         Ok(path)
     }
 }
@@ -296,17 +494,13 @@ fn locate_ffmpeg() -> Option<PathBuf> {
 // ── platform spawn / signal ─────────────────────────────────────────────────
 
 #[cfg(target_os = "linux")]
-fn spawn_recorder(output: &Path, options: RecordingOptions) -> Result<Backend> {
+fn spawn_recorder(output: &Path, options: RecordingOptions)
+    -> Result<(Backend, RecordingOptions)>
+{
     // Reject Wayland up-front — `-f x11grab` against XWayland silently
     // captures only XWayland clients (typically a black frame), and on
     // Wayland-only sessions DISPLAY may be unset entirely.
-    let wayland_typed = std::env::var("XDG_SESSION_TYPE")
-        .map(|s| s.eq_ignore_ascii_case("wayland"))
-        .unwrap_or(false);
-    let wayland_socket = std::env::var("WAYLAND_DISPLAY")
-        .map(|s| !s.is_empty())
-        .unwrap_or(false);
-    if wayland_typed || wayland_socket {
+    if crate::session::is_wayland() {
         return Err(Error::Recording(
             "screen recording on Wayland isn't wired up yet \
              (xdg-desktop-portal / PipeWire path is planned — see PLAN.md R10). \
@@ -328,18 +522,16 @@ fn spawn_recorder(output: &Path, options: RecordingOptions) -> Result<Backend> {
         .status()
         .map(|s| s.success())
         .unwrap_or(false);
-    let opt = if pulse_ok { options } else { RecordingOptions::NONE };
+    let mut opt = if pulse_ok { options } else { RecordingOptions::NONE };
 
     // System-audio source is the default sink's monitor (`<sink>.monitor`).
+    // If we can't name one, drop system audio and keep the rest: video and a
+    // requested mic are still perfectly recordable without it.
     let monitor_source: Option<String> = if opt.system_audio {
-        Command::new("pactl")
-            .arg("get-default-sink")
-            .stdin(Stdio::null())
-            .stderr(Stdio::null())
-            .output()
-            .ok()
-            .and_then(|o| String::from_utf8(o.stdout).ok())
-            .map(|s| format!("{}.monitor", s.trim()))
+        match default_pulse_monitor_source() {
+            Some(m) => Some(m),
+            None    => { opt.system_audio = false; None }
+        }
     } else { None };
 
     let args = build_linux_ffmpeg_args(&display, path, opt, monitor_source.as_deref());
@@ -352,12 +544,38 @@ fn spawn_recorder(output: &Path, options: RecordingOptions) -> Result<Backend> {
         .spawn();
 
     match res {
-        Ok(c) => Ok(Backend::Process { child: watch_recorder_startup(c)? }),
+        Ok(c) => {
+            let (child, stderr) = watch_recorder_startup(c)?;
+            Ok((Backend::Process { child, stderr }, opt))
+        }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Err(Error::Recording(
             "ffmpeg not found in PATH — install with: sudo apt install ffmpeg".into()
         )),
         Err(e) => Err(Error::Recording(format!("failed to spawn ffmpeg: {e}"))),
     }
+}
+
+/// Name the PulseAudio monitor source for the current default sink, i.e. the
+/// pseudo-input that carries what the speakers are playing.
+///
+/// `pactl get-default-sink` can exit non-zero, or exit zero and print nothing,
+/// when there's no server or no default sink. Both used to be folded into a
+/// literal `".monitor"` source name, which ffmpeg can't open — and since a
+/// failed input aborts the whole command, a missing sink took the video down
+/// with it. `None` here means "record without system audio".
+#[cfg(target_os = "linux")]
+fn default_pulse_monitor_source() -> Option<String> {
+    let out = Command::new("pactl")
+        .arg("get-default-sink")
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+        .ok()?;
+    if !out.status.success() { return None; }
+    let sink = String::from_utf8(out.stdout).ok()?;
+    let sink = sink.trim();
+    if sink.is_empty() { return None; }
+    Some(format!("{sink}.monitor"))
 }
 
 /// Build the ffmpeg argv for Linux X11 capture. Pure function so the test
@@ -415,7 +633,9 @@ pub(crate) fn build_linux_ffmpeg_args(
 // works with no BlackHole / Aggregate device. ffmpeg muxes (and `amix`es when
 // both mic and system audio are present), exactly like the Linux path.
 #[cfg(target_os = "macos")]
-fn spawn_recorder(output: &Path, options: RecordingOptions) -> Result<Backend> {
+fn spawn_recorder(output: &Path, options: RecordingOptions)
+    -> Result<(Backend, RecordingOptions)>
+{
     let path = output.to_str().ok_or_else(||
         Error::Recording("non-UTF-8 output path".into()))?;
 
@@ -429,7 +649,8 @@ fn spawn_recorder(output: &Path, options: RecordingOptions) -> Result<Backend> {
             .stderr(Stdio::piped())
             .spawn()
             .map_err(|e| Error::Recording(format!("failed to spawn screencapture: {e}")))?;
-        return Ok(Backend::Process { child: watch_recorder_startup(child)?, sck: None });
+        let (child, stderr) = watch_recorder_startup(child)?;
+        return Ok((Backend::Process { child, stderr, sck: None }, RecordingOptions::NONE));
     }
 
     // Audio requested → ffmpeg avfoundation (video + optional mic).
@@ -453,6 +674,13 @@ fn spawn_recorder(output: &Path, options: RecordingOptions) -> Result<Backend> {
     };
     let sck_port = sck.as_ref().map(|s| s.port);
 
+    // What we're actually about to record: a requested mic that avfoundation
+    // never listed isn't in the file, whatever the caller asked for.
+    let effective = RecordingOptions {
+        mic:          mic_idx.is_some(),
+        system_audio: sck.is_some(),
+    };
+
     let args = build_macos_ffmpeg_args(screen_idx, mic_idx, sck_port, path);
     let res = Command::new(&ffmpeg)
         .args(&args)
@@ -463,8 +691,8 @@ fn spawn_recorder(output: &Path, options: RecordingOptions) -> Result<Backend> {
 
     match res {
         Ok(child) => match watch_recorder_startup(child) {
-            Ok(child) => Ok(Backend::Process { child, sck }),
-            Err(e)    => { if let Some(s) = sck { s.stop(); } Err(e) }
+            Ok((child, stderr)) => Ok((Backend::Process { child, stderr, sck }, effective)),
+            Err(e)              => { if let Some(s) = sck { s.stop(); } Err(e) }
         },
         Err(e) => {
             if let Some(s) = sck { s.stop(); }
@@ -641,7 +869,9 @@ pub(crate) fn pick_macos_mic_device(audio: &[(usize, String)]) -> Option<usize> 
 // the resample + amix, exactly like the Linux pulse + monitor path.
 
 #[cfg(target_os = "windows")]
-fn spawn_recorder(output: &Path, options: RecordingOptions) -> Result<Backend> {
+fn spawn_recorder(output: &Path, options: RecordingOptions)
+    -> Result<(Backend, RecordingOptions)>
+{
     use windows_audio::SourceKind;
 
     let path = output.to_str().ok_or_else(||
@@ -684,9 +914,11 @@ fn spawn_recorder(output: &Path, options: RecordingOptions) -> Result<Backend> {
 
     match res {
         Ok(child) => match watch_recorder_startup(child) {
-            Ok(child) => {
+            Ok((child, stderr)) => {
                 let pumps = started.into_iter().map(|s| s.pump).collect();
-                Ok(Backend::Process { child, pumps })
+                // Every requested source started or we'd have bailed above, so
+                // the effective options are the requested ones.
+                Ok((Backend::Process { child, stderr, pumps }, options))
             }
             Err(e) => {
                 for mut s in started { s.pump.signal_stop(); s.pump.join(); }
@@ -774,7 +1006,9 @@ pub(crate) fn build_windows_ffmpeg_args(
 // ── unreachable on the platforms above, kept so non-tier-1 OSes still build ──
 
 #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
-fn spawn_recorder(_output: &Path, _options: RecordingOptions) -> Result<Backend> {
+fn spawn_recorder(_output: &Path, _options: RecordingOptions)
+    -> Result<(Backend, RecordingOptions)>
+{
     Err(Error::Recording(
         "screen recording is not implemented on this platform yet".into()))
 }
@@ -822,12 +1056,14 @@ fn graceful_signal(_child: &mut Child) {}
 /// cheery "recording started" toast and silently left no file behind.
 ///
 /// Instead: poll for ~400 ms. If the child already died, hand back the tail of
-/// its stderr as an actionable error. If it survived the window, drain stderr to
-/// EOF on a detached thread so ffmpeg's periodic stats output can never fill the
-/// pipe buffer and stall a long recording. Caller must spawn with
-/// `stderr(Stdio::piped())` for the diagnostic capture to work.
+/// its stderr as an actionable error. If it survived the window, keep draining
+/// stderr to EOF on a detached thread — an unread pipe eventually fills and
+/// stalls a long recording — but into a `StderrTail` ring rather than a sink,
+/// so a *later* death (`Recorder::poll_health`, `Recorder::stop`) can still name
+/// its cause. Caller must spawn with `stderr(Stdio::piped())` for either
+/// diagnostic to work.
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
-fn watch_recorder_startup(mut child: Child) -> Result<Child> {
+fn watch_recorder_startup(mut child: Child) -> Result<(Child, StderrTail)> {
     use std::io::Read;
     let mut stderr = child.stderr.take();
 
@@ -846,13 +1082,44 @@ fn watch_recorder_startup(mut child: Child) -> Result<Child> {
         }
     }
 
-    if let Some(mut e) = stderr.take() {
-        std::thread::spawn(move || {
-            let mut sink = [0u8; 8192];
-            while matches!(e.read(&mut sink), Ok(n) if n > 0) {}
-        });
+    let tail = StderrTail::new();
+    if let Some(e) = stderr.take() {
+        let sink = tail.clone();
+        std::thread::spawn(move || drain_stderr_into(e, sink));
     }
-    Ok(child)
+    Ok((child, tail))
+}
+
+/// Read a recorder child's stderr to EOF, keeping the last few lines in `tail`.
+///
+/// Split on both `\n` and `\r`: ffmpeg overwrites its progress counter with a
+/// carriage return, so a newline-only reader would treat an entire recording's
+/// stats as one unbounded line and never see the error printed after it.
+/// Over-long lines are clipped rather than grown without limit — nothing
+/// actionable lives past a few hundred characters.
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+fn drain_stderr_into(mut src: std::process::ChildStderr, tail: StderrTail) {
+    use std::io::Read;
+    const MAX_LINE: usize = 512;
+    let mut buf  = [0u8; 8192];
+    let mut line = Vec::with_capacity(MAX_LINE);
+    loop {
+        let n = match src.read(&mut buf) {
+            Ok(0) | Err(_) => break,
+            Ok(n) => n,
+        };
+        for &b in &buf[..n] {
+            if b == b'\n' || b == b'\r' {
+                tail.push_line(&line);
+                line.clear();
+            } else if line.len() < MAX_LINE {
+                line.push(b);
+            }
+        }
+    }
+    // Whatever the encoder printed without a trailing newline before dying is
+    // usually the most interesting line of all.
+    tail.push_line(&line);
 }
 
 /// Pull the most useful lines out of an encoder's startup stderr. The actionable
@@ -1096,5 +1363,79 @@ mod tests {
     #[test]
     fn pick_macos_mic_none_when_no_audio_devices() {
         assert_eq!(pick_macos_mic_device(&[]), None);
+    }
+
+    // stderr ring buffer: what turns "recording stopped unexpectedly" into a
+    // message that names the cause.
+
+    #[test]
+    fn stderr_tail_keeps_only_the_last_lines() {
+        let t = StderrTail::new();
+        for i in 0..(STDERR_TAIL_LINES + 20) {
+            t.push_line(format!("line {i}").as_bytes());
+        }
+        let text = t.text();
+        assert_eq!(text.lines().count(), STDERR_TAIL_LINES);
+        assert!(text.contains(&format!("line {}", STDERR_TAIL_LINES + 19)),
+                "newest line must survive: {text}");
+        assert!(!text.contains("line 0\n"), "oldest line must be evicted: {text}");
+    }
+
+    #[test]
+    fn stderr_tail_skips_progress_and_blank_lines() {
+        // ffmpeg emits one of these per second; sixteen of them would push the
+        // real diagnostic out of the window before anyone reads it.
+        let t = StderrTail::new();
+        t.push_line(b"No space left on device");
+        for _ in 0..40 {
+            t.push_line(b"frame= 1234 fps= 30 q=28.0 size=   65536kB");
+            t.push_line(b"   ");
+        }
+        assert_eq!(t.text(), "No space left on device");
+    }
+
+    #[test]
+    fn stderr_tail_reduces_output_to_printable_ascii() {
+        // The bitmap font can't render anything else, and control bytes would
+        // wreck the toast layout.
+        let t = StderrTail::new();
+        t.push_line("caf\u{e9}.mp4: \u{7} Invalid\targument".as_bytes());
+        assert_eq!(t.text(), "caf?.mp4: ? Invalid?argument");
+        assert!(t.text().is_ascii());
+    }
+
+    #[test]
+    fn stderr_tail_error_suffix_is_empty_without_diagnostics() {
+        let t = StderrTail::new();
+        assert_eq!(t.as_error_suffix(), "");
+        t.push_line(b"Device or resource busy");
+        assert!(t.as_error_suffix().starts_with("\n\n"));
+        assert!(t.as_error_suffix().contains("Device or resource busy"));
+    }
+
+    // Effective-options accounting: a caller that toasts what it asked for
+    // instead of what it got promises audio tracks that aren't in the file.
+
+    #[test]
+    fn recording_options_none_when_no_audio_requested() {
+        assert!(!RecordingOptions::NONE.has_audio());
+        assert!(RecordingOptions::MIC_ONLY.has_audio());
+        assert!(RecordingOptions::SYSTEM_ONLY.has_audio());
+        assert!(RecordingOptions::MIC_AND_SYS.has_audio());
+    }
+
+    #[test]
+    fn dropping_system_audio_keeps_the_mic() {
+        // Mirrors the Linux path when `pactl get-default-sink` names nothing:
+        // system audio goes, the mic and video stay.
+        let mut opt = RecordingOptions::MIC_AND_SYS;
+        opt.system_audio = false;
+        assert_eq!(opt, RecordingOptions::MIC_ONLY);
+        let a = build_linux_ffmpeg_args(":0", "/tmp/out.mp4", opt, None);
+        assert!(a.windows(2).any(|w| w == ["-i", "default"]), "mic must survive: {a:?}");
+        assert!(!a.iter().any(|s| s.ends_with(".monitor")),
+                "no monitor source should be passed: {a:?}");
+        assert!(!a.iter().any(|s| s == "-filter_complex"),
+                "single source needs no amix: {a:?}");
     }
 }

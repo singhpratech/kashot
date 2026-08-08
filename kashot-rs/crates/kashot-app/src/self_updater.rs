@@ -269,7 +269,10 @@ fn extract_binary(archive: &Path) -> Result<PathBuf, String> {
     } else if name.ends_with(".zip") {
         extract_zip(archive)
     } else {
-        // Raw binary (current macOS shape): nothing to do.
+        // Unrecognized shape — treat the download as the binary itself. Every
+        // platform we ship now hands us an archive (macOS moved from a bare
+        // Mach-O to `kashot-macos-<arch>-update.tar.gz`), so this is a
+        // fallback for an asset naming scheme we don't know yet.
         Ok(archive.to_path_buf())
     }
 }
@@ -609,7 +612,7 @@ mod tests {
         let doc = "\
 abc123def4567890abc123def4567890abc123def4567890abc123def4567890  kashot-linux-x86_64.tar.gz
 1111111111111111111111111111111111111111111111111111111111111111  kashot-windows-x86_64.zip
-2222222222222222222222222222222222222222222222222222222222222222  Kashot-macos-arm64
+2222222222222222222222222222222222222222222222222222222222222222  kashot-macos-arm64-update.tar.gz
 ";
         assert_eq!(
             parse_sha256sums(doc, "kashot-linux-x86_64.tar.gz"),
@@ -676,8 +679,15 @@ abc123def4567890abc123def4567890abc123def4567890abc123def4567890  kashot-linux-x
             guess_suffix_from_url("https://example.com/kashot-windows-x86_64.zip?token=abc"),
             ".zip"
         );
+        // macOS updater payload — a tarball like the Linux ones, so it takes
+        // the same extract path rather than the raw-blob fallback.
         assert_eq!(
-            guess_suffix_from_url("https://example.com/Kashot-macos-arm64"),
+            guess_suffix_from_url("https://example.com/kashot-macos-arm64-update.tar.gz"),
+            ".tar.gz"
+        );
+        // Anything we don't recognize still lands as an opaque blob.
+        assert_eq!(
+            guess_suffix_from_url("https://example.com/kashot-macos-arm64"),
             ".bin"
         );
         assert_eq!(
@@ -693,6 +703,6 @@ abc123def4567890abc123def4567890abc123def4567890abc123def4567890  kashot-linux-x
         assert!(is_msi_asset("https://example.com/kashot.msi?token=abc"));
         assert!(!is_msi_asset("https://example.com/kashot-windows-x86_64.zip"));
         assert!(!is_msi_asset("https://example.com/kashot-linux-x86_64.tar.gz"));
-        assert!(!is_msi_asset("https://example.com/Kashot-macos-arm64"));
+        assert!(!is_msi_asset("https://example.com/kashot-macos-arm64-update.tar.gz"));
     }
 }
