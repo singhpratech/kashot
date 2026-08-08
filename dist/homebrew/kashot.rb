@@ -9,9 +9,9 @@
 cask "kashot" do
   arch arm: "arm64", intel: "x64"
 
-  version "0.5.0"
-  sha256  arm:   "4474ea5995edf2714288aa2a3381530e31486ff791730e28b99794a8e6013037",
-          intel: "2462d15c2317cd1b7803e99307f4b3580a45d6c915203beb944dfb30843f5b26"
+  version "0.6.0"
+  sha256  arm:   "c1bfdf05c1292dc0bb9b15445778f095073a917c97dcf27624dfbc15c63a0a9f",
+          intel: "d29cbff7ae0d457102b79ee73986904251d511769d815e092aa4a142c56e7ed4"
 
   url       "https://github.com/singhpratech/kashot/releases/download/v#{version}/Kashot-macos-#{arch}.dmg",
             verified: "github.com/singhpratech/kashot/"

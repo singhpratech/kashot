@@ -1,8 +1,8 @@
 $ErrorActionPreference = 'Stop'
 
 $packageName = 'kashot'
-$url64       = 'https://github.com/singhpratech/kashot/releases/download/v0.5.0/Kashot.msi'
-$checksum64  = '8bfcbb53fc7a67c3ec5de08859122f21bab733427d25c2930c1676723300d5a6'
+$url64       = 'https://github.com/singhpratech/kashot/releases/download/v0.6.0/Kashot.msi'
+$checksum64  = '79d61037ac969adaae69e49f014b2ef88b910381cc5abf247bde988b02e704ed'
 
 $packageArgs = @{
   packageName    = $packageName

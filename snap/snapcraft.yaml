@@ -73,7 +73,17 @@ apps:
       - opengl
 
 parts:
+  # Newer snapcraft's core24 rust plugin no longer provisions a toolchain
+  # itself: it validates that `rustup` exists in the build environment and,
+  # failing that, looks for a part named exactly `rust-deps` to supply it.
+  # Ubuntu 24.04 ships rustup in the archive, so a nil part is enough.
+  rust-deps:
+    plugin: nil
+    build-packages:
+      - rustup
+
   kashot:
+    after: [rust-deps]
     plugin: rust
     # Whole repo (not just kashot-rs/) so the tray's
     # include_bytes!("../../../../icons/...") can find the icon source.
