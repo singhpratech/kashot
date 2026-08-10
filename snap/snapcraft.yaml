@@ -81,6 +81,15 @@ parts:
     source-subdir: kashot-rs
     rust-channel: stable
     rust-features: []
+    build-environment:
+      # The rust plugin's environment check runs `rustup dump-testament` with
+      # /snap/bin ahead of /usr/bin, so it hits the rustup *snap* the plugin
+      # auto-installs — which crashes under the gnome extension's
+      # LD_LIBRARY_PATH (SDK glibc mismatch, exit 127) and gets misreported as
+      # "'rustup' not found". Put /usr/bin first so the rustup deb from
+      # build-packages (which works) wins for validation and the toolchain
+      # install alike.
+      - PATH: "/usr/bin:${PATH}"
     build-packages:
       # Current snapcraft's rust plugin validates that a `rustup` binary
       # exists before it will install the requested rust-channel itself
