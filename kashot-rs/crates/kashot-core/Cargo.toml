@@ -14,3 +14,11 @@ directories = { workspace = true }
 chrono      = { workspace = true }
 thiserror   = { workspace = true }
 bitflags    = { version = "2", features = ["serde"] }
+
+# Text-annotation rasterizer. Pure Rust, no system font stack, no C deps —
+# the typeface is compiled in from `assets/fonts/`, so a Text annotation
+# renders identically on Windows / Linux / macOS. (MIT OR Apache-2.0.)
+fontdue = { version = "0.9", default-features = false, features = ["std"] }
+# Grapheme-cluster segmentation so Backspace removes one *visible* character
+# rather than one Unicode scalar. (MIT OR Apache-2.0.)
+unicode-segmentation = "1"

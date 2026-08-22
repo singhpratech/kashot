@@ -3,13 +3,12 @@
 //! Each glyph is 7 rows × 5 bits, bit 4 = leftmost column. Unknown chars
 //! fall through to the `?` glyph so the user always sees *something*.
 //!
-//! This is intentionally minimal — annotations need a system-independent
-//! font that ships in the binary so the look is identical on every OS,
-//! and pulling in a TTF rasterizer (`ab_glyph`, `fontdue`) for ~120 KB of
-//! deps just to draw an "OK" sticker felt overweight. If we ever need
-//! true type rasterization the editor can switch to that for the Text
-//! tool while keeping this for the dimension chip / step numbers / button
-//! labels, which only need ASCII.
+//! This is intentionally minimal, and it is deliberately **not** the font the
+//! Text tool uses. Whatever the user types goes through `kashot_core::text`,
+//! which rasterizes a bundled OFL typeface with `fontdue` and can therefore
+//! draw accents, Greek, Cyrillic, punctuation and symbols. What's left here is
+//! the app's own chrome — button labels, the dimension chip, step numbers —
+//! which is ASCII by construction and wants the crisp pixel grid.
 
 /// 5×7 glyph for the printable-ASCII range. Index = (char as u8) - 0x20.
 /// 0x20 (space) is fully blank; 0x7F (DEL) is unrendered (skip).

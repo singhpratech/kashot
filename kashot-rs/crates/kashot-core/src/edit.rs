@@ -16,24 +16,16 @@ pub const HIT_SLOP: f32 = 5.0;
 /// Disc radius of a numbered-step marker. Mirrors `painter::step_marker`.
 pub const STEP_RADIUS: f32 = 14.0;
 
-/// 5x7 bitmap-font cell, before the integer scale factor. Mirrors
-/// `kashot-app::bitmap_font::{GLYPH_W, GLYPH_H}`.
-pub const GLYPH_W: f32 = 5.0;
-pub const GLYPH_H: f32 = 7.0;
-
-/// Integer scale the painter picks for a given `font_size`. Mirrors the
-/// mapping in `painter::render_annotation` (14.0 -> 2x).
-pub fn text_scale(font_size: f32) -> f32 {
-    (font_size / 7.0).round().max(1.0)
-}
-
-/// Painted width x height of a text annotation, matching
-/// `bitmap_font::measure` (one scale-wide gap between glyph cells).
+/// Painted width x height of a text annotation. `font_size` is the pixel
+/// em-size the Text tool renders at, so the box comes straight from the same
+/// rasterizer (`kashot_core::text::measure`) that paints the glyphs — a
+/// select-mode click lands on exactly the ink the user sees, multi-line
+/// blocks included.
 pub fn text_extent(text: &str, font_size: f32) -> (f32, f32) {
-    let scale = text_scale(font_size);
-    let n = text.chars().count() as f32;
-    let w = if n == 0.0 { 0.0 } else { n * GLYPH_W * scale + (n - 1.0) * scale };
-    (w, GLYPH_H * scale)
+    if text.is_empty() {
+        return (0.0, crate::text::line_height(crate::text::clamp_px(font_size)));
+    }
+    crate::text::measure(text, font_size)
 }
 
 /// How far from the ink's centerline a click still lands on it.

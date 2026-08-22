@@ -75,6 +75,18 @@ Tray-resident screenshot tool with an annotation editor. The `kashot-app` binary
 - **Global hotkeys**: three independent bindings — region capture (bound by default), full-screen capture, and a record start/stop toggle (both optional, unset out of the box). `kashot-core::hotkeys` owns the action enum, the settings mapping and conflict detection; `kashot-platform::hotkey` registers the set and reports which action fired. Each binding is stored in `settings.json` as a Win32 modifier mask + virtual-key pair, with a virtual key of `0` meaning "not bound" — so a file written before the extra actions existed loads unchanged.
 - **Settings** persist to `ProjectDirs::from("org", "kashot", "Kashot").config_dir()` (`~/.config/kashot/settings.json` on Linux).
 - **High-DPI** — `kashot-core/src/dpi.rs` (`DisplayMap`) is the single logical↔physical mapping. A monitor's reported rect and the bitmap it captures are in different units on different platforms (macOS reports points and captures device pixels, X11 divides rects by `Xft.dpi/96`, Windows reports both in device pixels), so the scale is *measured* per monitor — captured size ÷ reported size — rather than taken from the OS factor, and the stitched capture is built at the sharpest monitor's scale. The overlay, the crop, pin placement and any future recording region all convert through that one map; at 1× every conversion is the identity. `DisplayMap::grab_region` hands a region to a recorder in both conventions (device pixels for x11grab/gdigrab, points for `screencapture -R`). The overlay's own chrome is still drawn in device pixels, so it renders physically smaller on a scaled display — scaling the hand-rolled UI is a separate change.
+- **Text rendering** — two fonts, two jobs. `kashot-app/src/bitmap_font.rs` is a
+  hand-drawn 5×7 ASCII grid and draws the app's own chrome (button labels,
+  dimension chip, step numbers). Whatever the *user* types with the Text tool
+  goes through `kashot-core/src/text.rs`, which rasterizes the bundled
+  OFL-licensed Noto Sans (`kashot-core/assets/fonts/`) with `fontdue` — accents,
+  Greek, Cyrillic, punctuation, currency and math symbols, anti-aliased, with a
+  glyph cache. Scripts the bundled face doesn't carry (CJK, Arabic, Indic) draw
+  the font's `.notdef` box rather than disappearing.
+  Text size follows the thickness cycle (2/4/8 px → 21/28/42 px text). The font
+  is compiled into the binary, so every platform draws the same pixels; no
+  system font stack is consulted. Editor preview, saved image, pinned image and
+  the video burn overlay all reach it through `painter::render_annotation`.
 - **Theme colors** — each dialog currently re-declares its laser-green palette as private constants. Promoting to a shared `kashot-core/src/theme.rs` is a deferred cleanup item ([[feedback-release-gate]] fact-check, claim 13).
 - **Multi-monitor**: `capture_all_screens` stitches every monitor into one bitmap and reports the virtual-desktop origin — the union's top-left, which is *negative* when a monitor sits left of or above the primary one. The overlay editor opens as a single borderless always-on-top window covering that union (winit has no all-monitors fullscreen mode, and one window per monitor would break a selection drag that crosses the seam), and maps the selection back through the origin for the crop, the pin window's position and the magnifier. `kashot-core/src/virtual_desktop.rs` owns that arithmetic: frame (framebuffer) space, bitmap space, virtual-screen space, plus the per-monitor bounds the floating tool panels lay themselves out inside. If a window manager refuses the requested placement the overlay re-derives its origin from where the window actually landed instead of cropping the wrong pixels.
 - **Region recording**: tray → "Record region", or the Record button in the capture editor's action row, opens the overlay as a selection-only picker (Enter / Record confirms, Esc cancels) and starts the recorder limited to that rectangle. `kashot_core::region` clamps the selection to the virtual desktop and rounds it to the even dimensions H.264 needs; the rectangle rides on `Recorder::start_region`, so every backend honours it — `x11grab` via `-video_size` + `:0+X,Y`, `gdigrab` via `-offset_x`/`-offset_y`/`-video_size`, `screencapture -v` via `-R`, and the macOS audio path via an ffmpeg `crop` filter. Audio wiring is byte-identical to a full-screen recording. The REC indicator is placed outside the recorded rectangle, which is also what lets it appear at all on X11 (no capture-exclusion API there).
@@ -122,6 +134,7 @@ Plus:
   highlight, leave select mode; with annotations on the canvas it then asks
   before discarding anything (a second `Esc` or `Enter` confirms, any other
   key keeps editing)
+- `Shift+Enter` — new line while typing a Text annotation (plain `Enter` commits it)
 - `Delete` / `Backspace` — in select mode, remove the selected annotation
 - `Ctrl+Z` — undo (add, move, delete, and a confirmed Esc discard)
 - `Ctrl+Y` or `Ctrl+Shift+Z` — redo
