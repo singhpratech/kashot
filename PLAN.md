@@ -135,7 +135,6 @@ all three platforms. Git history retains it if you need to look back.
 - **Burst capture mode** — hotkey-tap captures N frames at intervals → produces a sequence ready for GIF export
 - **Animated GIF export** — from burst captures or from a region of a recorded MP4
 - **Image gallery / history** — auto-save every capture to `%APPDATA%/Kashot/history/`, browseable in a thumbnail grid form
-- **Region selector for recording** — pick rectangle to record, not just full screen
 - **Crop after capture** — re-crop the selection without redoing
 - **Smart-shape recognition** — pen drawn near rectangle/circle snaps to clean shape
 - **Auto-redact** — detect faces / IDs / credit-card patterns and offer one-click blur

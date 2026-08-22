@@ -10,6 +10,9 @@ use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, Result};
 use chrono::Local;
+use kashot_core::region::{
+    indicator_placement, record_rect_from_selection, CaptureRect, DesktopBounds,
+};
 use kashot_core::AppSettings;
 use kashot_platform::{
     capture::capture_all_screens,
@@ -129,6 +132,17 @@ pub fn run() -> Result<()> {
         /// the newest .mp4 in the recordings folder when None (fresh app
         /// start).
         last_recording: Option<PathBuf>,
+        /// Virtual-desktop bounds of the screenshot the live overlay is
+        /// showing. A region the user drags in that overlay is clamped against
+        /// exactly this before it reaches the recorder, so the rectangle can
+        /// never name a pixel that wasn't on screen. Also where the REC
+        /// indicator is placed relative to.
+        overlay_desktop: Option<DesktopBounds>,
+        /// Audio sources the tray asked for when it opened a record-region
+        /// overlay. Taken when that overlay commits; `None` for the Record
+        /// button in an ordinary capture session, which records silently — the
+        /// same as the plain "Record" tray row.
+        pending_region_audio: Option<kashot_platform::recorder::RecordingOptions>,
         /// While `overlay` is a video-annotate session (`new_for_video`),
         /// the clip it belongs to. `Accepted` then carries an annotations-
         /// only transparent overlay that gets burned over this file
@@ -195,7 +209,8 @@ pub fn run() -> Result<()> {
                     TrayEvent::CaptureFullScreen     => self.capture_full_screen(),
                     TrayEvent::CaptureDelayed(secs)  => self.capture_after(loop_target, Duration::from_secs(secs as u64)),
                     TrayEvent::CancelPending         => {} // handled inline by the delay loop
-                    TrayEvent::StartRecording(opts)  => self.start_recording(opts, loop_target),
+                    TrayEvent::StartRecording(opts)  => self.start_recording(opts, loop_target, None),
+                    TrayEvent::StartRegionRecording(opts) => self.begin_region_recording(opts, loop_target),
                     TrayEvent::StopRecording         => self.stop_recording(),
                     TrayEvent::AnnotateLastRecording => self.annotate_last_recording(loop_target),
                     TrayEvent::OpenSaveFolder        => self.open_save_folder(),
@@ -307,14 +322,22 @@ pub fn run() -> Result<()> {
             // the hotkey and nothing appeared on screen, and stderr is not a
             // surface a tray-resident app's user ever reads.
             match capture_all_screens() {
-                Ok(shot) => match Overlay::new(loop_target, shot.bitmap, self.settings.clone()) {
-                    Ok(ov) => self.overlay = Some(ov),
-                    Err(e) => {
-                        eprintln!("Overlay open failed: {e}");
-                        notify("KAShot — capture failed",
-                            &format!("The editor window wouldn't open: {e}"), true);
+                Ok(shot) => {
+                    // Remember what desktop this selection is being dragged
+                    // over: if the user turns the capture into a recording via
+                    // the action row's Record button, that's what the rectangle
+                    // gets clamped against.
+                    self.overlay_desktop = Some(shot.desktop_bounds());
+                    self.pending_region_audio = None;
+                    match Overlay::new(loop_target, shot.bitmap, self.settings.clone()) {
+                        Ok(ov) => self.overlay = Some(ov),
+                        Err(e) => {
+                            eprintln!("Overlay open failed: {e}");
+                            notify("KAShot — capture failed",
+                                &format!("The editor window wouldn't open: {e}"), true);
+                        }
                     }
-                },
+                }
                 Err(e) => {
                     eprintln!("Capture failed: {e}");
                     notify("KAShot — capture failed", &format!("{e}"), true);
@@ -322,6 +345,90 @@ pub fn run() -> Result<()> {
             }
 
             self.capturing = false;
+        }
+
+        /// Tray -> "Record region": freeze the desktop, open the overlay as a
+        /// selection-only picker, and remember the audio sources so the commit
+        /// can start the recorder with them. The recording itself starts from
+        /// `start_region_from_selection` once the user confirms.
+        fn begin_region_recording(&mut self,
+                                  opts: kashot_platform::recorder::RecordingOptions,
+                                  loop_target: &ActiveEventLoop) {
+            if self.recorder.is_recording() {
+                notify("KAShot — already recording",
+                    "Stop the current recording before starting another one.", true);
+                return;
+            }
+            if self.capturing || self.overlay.is_some() { return; }
+            self.capturing = true;
+
+            // Same settle delay as `capture_after`: the tray menu has to be
+            // fully gone before the desktop is frozen, or the user drags their
+            // region over a ghost of the menu.
+            #[cfg(target_os = "windows")]
+            {
+                dismiss_tray_flyouts();
+                std::thread::sleep(Duration::from_millis(700));
+            }
+            #[cfg(not(target_os = "windows"))]
+            std::thread::sleep(Duration::from_millis(250));
+
+            match capture_all_screens() {
+                Ok(shot) => {
+                    self.overlay_desktop = Some(shot.desktop_bounds());
+                    self.pending_region_audio = Some(opts);
+                    match Overlay::new_for_region_record(
+                        loop_target, shot.bitmap, self.settings.clone())
+                    {
+                        Ok(ov) => self.overlay = Some(ov),
+                        Err(e) => {
+                            self.pending_region_audio = None;
+                            eprintln!("Region selector open failed: {e}");
+                            notify("KAShot — recording failed",
+                                &format!("The region selector wouldn't open: {e}"), true);
+                        }
+                    }
+                }
+                Err(e) => {
+                    // Without a frozen desktop there is nothing to drag a
+                    // rectangle over, so this is a dead end rather than a
+                    // reason to fall back to a full-screen recording the user
+                    // didn't ask for.
+                    eprintln!("Region selector capture failed: {e}");
+                    notify("KAShot — recording failed",
+                        &format!("Couldn't read the screen to pick a region: {e}"), true);
+                }
+            }
+
+            self.capturing = false;
+        }
+
+        /// Turn a confirmed overlay selection into a live region recording.
+        ///
+        /// The selection is in window pixels, which the overlay lays over the
+        /// desktop 1:1 — `record_rect_from_selection` clamps it to the desktop
+        /// the shot came from and rounds it to the even dimensions H.264 needs.
+        fn start_region_from_selection(&mut self,
+                                       selection: (i32, i32, i32, i32),
+                                       loop_target: &ActiveEventLoop) {
+            let opts = self.pending_region_audio.take()
+                .unwrap_or(kashot_platform::recorder::RecordingOptions::NONE);
+            let Some(bounds) = self.overlay_desktop else {
+                notify("KAShot — recording failed",
+                    "Lost track of the screen the region was picked on.", true);
+                return;
+            };
+            let Some(rect) = record_rect_from_selection(selection, bounds) else {
+                notify("KAShot — region too small",
+                    "Pick a larger area — a recording needs at least 16x16 pixels.", true);
+                return;
+            };
+            // The overlay window is already dropped, but the compositor still
+            // has to repaint what was under it. Starting the encoder in the
+            // same breath burns a dimmed frame (and the selection chrome) into
+            // the first moments of the video.
+            std::thread::sleep(Duration::from_millis(300));
+            self.start_recording(opts, loop_target, Some(rect));
         }
 
         /// One-click full-screen capture: grab the whole desktop and auto-save
@@ -419,14 +526,19 @@ pub fn run() -> Result<()> {
             }
         }
 
-        /// Start recording the primary display. Output lands in the user's
-        /// Videos directory (or a fallback) as `kashot_<timestamp>.mp4`.
-        /// Shows a desktop notification AND spawns a floating control window
-        /// with a flashing red dot + timer + STOP button so the user has a
-        /// one-click stop without hunting through the tray menu.
+        /// Start recording. Output lands in the user's Videos directory (or a
+        /// fallback) as `kashot_<timestamp>.mp4`. Shows a desktop notification
+        /// AND spawns a floating control window with a flashing red dot +
+        /// timer + STOP button so the user has a one-click stop without hunting
+        /// through the tray menu.
+        ///
+        /// `region` is `None` for the whole desktop, or the rectangle the user
+        /// picked in the overlay. Audio is wired identically either way — the
+        /// rectangle only narrows the video input.
         fn start_recording(&mut self,
                            opts: kashot_platform::recorder::RecordingOptions,
-                           loop_target: &ActiveEventLoop) {
+                           loop_target: &ActiveEventLoop,
+                           region: Option<CaptureRect>) {
             if self.recorder.is_recording() {
                 eprintln!("Already recording.");
                 return;
@@ -434,7 +546,7 @@ pub fn run() -> Result<()> {
             let dir   = recordings_directory_for(&self.settings);
             let stamp = Local::now().format("%Y%m%d_%H%M%S");
             let out   = dir.join(format!("kashot_{stamp}.mp4"));
-            match self.recorder.start(out.clone(), opts) {
+            match self.recorder.start_region(out.clone(), opts, region) {
                 Ok(effective) => {
                     // Describe what's actually in the file, not what the menu
                     // row asked for: audio capture is best-effort, so a box
@@ -443,23 +555,39 @@ pub fn run() -> Result<()> {
                     // recording without one.
                     let audio_label = audio_label_for(effective);
                     let dropped     = audio_downgrade_note(opts, effective);
-                    eprintln!("Recording ({audio_label}) → {}", out.display());
+                    let scope       = match region {
+                        Some(r) => format!("{}x{} region", r.width, r.height),
+                        None    => "full screen".to_string(),
+                    };
+                    eprintln!("Recording {scope} ({audio_label}) → {}", out.display());
                     if let Some(t) = &self.tray { t.set_recording(true); }
-                    // Float a small flashing control panel so the user can
-                    // stop the recording without opening the tray menu. The
-                    // panel excludes itself from screen capture (Windows /
-                    // macOS) so it never appears inside the video. X11 has
-                    // no capture-exclusion API — x11grab would burn the
-                    // panel into the recording — so on Linux we skip it and
-                    // the tray menu is the stop control. Best-effort — log +
+                    // Float a small flashing control panel so the user can stop
+                    // the recording without opening the tray menu. Place it
+                    // clear of the recorded rectangle: on Windows / macOS the
+                    // panel excludes itself from screen capture anyway, but
+                    // keeping it off the region also stops it covering the very
+                    // thing being recorded.
+                    //
+                    // X11 has no capture-exclusion API, so there the panel is
+                    // only safe when it lands entirely outside the recorded
+                    // rectangle — which a region recording usually allows and a
+                    // full-screen one never does. Best-effort either way: log +
                     // carry on if the OS won't give us another window.
-                    if cfg!(target_os = "linux") {
-                        eprintln!("Recording indicator skipped on Linux (would be captured by x11grab) — stop via tray menu.");
-                    } else {
-                        match RecordingIndicator::new(loop_target) {
+                    let place = indicator_placement(
+                        self.indicator_bounds(loop_target, region),
+                        region,
+                        crate::recording_indicator::SIZE,
+                        24,
+                    );
+                    let capture_safe = cfg!(not(target_os = "linux"))
+                        || (region.is_some() && place.clear_of_region);
+                    if capture_safe {
+                        match RecordingIndicator::new_at(loop_target, (place.x, place.y)) {
                             Ok(v)  => self.recording_view = Some(v),
                             Err(e) => eprintln!("Recording indicator failed: {e} — stop via tray menu."),
                         }
+                    } else if cfg!(target_os = "linux") {
+                        eprintln!("Recording indicator skipped on Linux (x11grab would capture it) — stop via tray menu.");
                     }
                     let stop_hint = if self.recording_view.is_some() {
                         "Click the floating STOP button (it won't appear in the video) or use the tray menu to finish."
@@ -467,7 +595,7 @@ pub fn run() -> Result<()> {
                         "Use the tray menu to finish."
                     };
                     notify("KAShot — recording started",
-                        &format!("{audio_label}{dropped}\nSaving to {}\n\n{stop_hint}",
+                        &format!("{scope} - {audio_label}{dropped}\nSaving to {}\n\n{stop_hint}",
                             out.display()),
                         true);
                 }
@@ -497,6 +625,25 @@ pub fn run() -> Result<()> {
                     }
                 }
             }
+        }
+
+        /// The desktop rectangle the REC indicator is positioned within.
+        ///
+        /// A region was picked on a known desktop, so dodging it has to happen
+        /// inside that same desktop. Without a region there is nothing to
+        /// dodge, and the panel keeps its long-standing home in the primary
+        /// monitor's top-right corner.
+        fn indicator_bounds(&self,
+                            loop_target: &ActiveEventLoop,
+                            region: Option<CaptureRect>) -> DesktopBounds {
+            if region.is_some() {
+                if let Some(b) = self.overlay_desktop { return b; }
+            }
+            let size = loop_target.primary_monitor()
+                .or_else(|| loop_target.available_monitors().next())
+                .map(|m| m.size())
+                .unwrap_or(winit::dpi::PhysicalSize::new(1920, 1080));
+            DesktopBounds::new(0, 0, size.width, size.height)
         }
 
         /// Stop the active recording, finalize the file, and tear down the
@@ -913,6 +1060,7 @@ pub fn run() -> Result<()> {
             let mut accepted_video: Option<VideoCommit> = None;
             let mut copied:       Option<image::ImageBuffer<image::Rgba<u8>, Vec<u8>>> = None;
             let mut pinned_payload: Option<(image::ImageBuffer<image::Rgba<u8>, Vec<u8>>, (i32, i32))> = None;
+            let mut record_region: Option<(i32, i32, i32, i32)> = None;
             let mut drop_pin: Option<usize> = None;
             let mut settings_outcome: Option<SettingsOutcome> = None;
 
@@ -926,6 +1074,7 @@ pub fn run() -> Result<()> {
                             OverlayOutcome::AcceptedVideo(commit) => { drop_overlay = true; accepted_video = Some(commit); }
                             OverlayOutcome::Copied(img)     => { drop_overlay = true; copied   = Some(img); }
                             OverlayOutcome::Pinned(img, p)  => { drop_overlay = true; pinned_payload = Some((img, p)); }
+                            OverlayOutcome::RecordRegion(r) => { drop_overlay = true; record_region = Some(r); }
                         }
                     }
                 }
@@ -1062,6 +1211,9 @@ pub fn run() -> Result<()> {
                     self.settings.marker_opacity = ov.settings().marker_opacity;
                 }
                 self.overlay = None;
+                // A cancelled region-selection session must not leave its audio
+                // choice armed for whatever overlay commits next.
+                if record_region.is_none() { self.pending_region_audio = None; }
                 // A video-annotate session ends with its overlay. Only
                 // `AcceptedVideo` carries the burn payload (routed below) —
                 // Cancelled / Copied / Pinned just end the session.
@@ -1088,6 +1240,11 @@ pub fn run() -> Result<()> {
             if let Some(out) = settings_outcome {
                 let close = self.apply_settings_outcome(out);
                 if close { self.settings_view = None; }
+            }
+            // Last, so the overlay window is already dropped: the encoder must
+            // not catch the dimmed selection surface in its first frames.
+            if let Some(rect) = record_region {
+                self.start_region_from_selection(rect, _loop_target);
             }
         }
 
@@ -1133,6 +1290,8 @@ pub fn run() -> Result<()> {
         last_tick: Instant::now(),
         capturing: false,
         last_recording: None,
+        overlay_desktop: None,
+        pending_region_audio: None,
         video_annotate: None,
     };
 

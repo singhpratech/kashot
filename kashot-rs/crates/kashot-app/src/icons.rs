@@ -19,6 +19,9 @@ pub enum IconKind {
     Copy,
     Save,
     Close,
+    /// Record: the universal filled dot, ringed so it still reads as a button
+    /// glyph rather than a stray pixel at 36 px.
+    Record,
 }
 
 /// Color override for the Color/Thickness/etc. icons. `accent_rgba` is used
@@ -402,6 +405,26 @@ pub fn render_icon(
             pb.line_to(ix0, iy1);
             if let Some(p) = pb.finish() {
                 pixmap.stroke_path(&p, &paint, &stroke, Transform::identity(), None);
+            }
+        }
+        IconKind::Record => {
+            // Outer ring in the foreground color, solid dot inside it. The dot
+            // takes `accent_rgba` when the caller supplies one so the record
+            // red can be used without tinting the ring.
+            let outer = ((ix1 - ix0).min(iy1 - iy0) / 2.0 - 1.0).max(3.0);
+            let mut pb = PathBuilder::new();
+            pb.push_circle(cx, cy, outer);
+            if let Some(p) = pb.finish() {
+                pixmap.stroke_path(&p, &paint, &stroke, Transform::identity(), None);
+            }
+            let c = accent_rgba.unwrap_or(fg_rgba);
+            let mut p2 = Paint::default();
+            p2.set_color_rgba8(c[0], c[1], c[2], c[3]);
+            p2.anti_alias = true;
+            let mut pb = PathBuilder::new();
+            pb.push_circle(cx, cy, (outer - 4.0).max(2.0));
+            if let Some(p) = pb.finish() {
+                pixmap.fill_path(&p, &p2, FillRule::Winding, Transform::identity(), None);
             }
         }
     }
