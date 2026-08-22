@@ -13,61 +13,82 @@ use global_hotkey::{
     hotkey::{Code, HotKey, Modifiers as GhMods},
     GlobalHotKeyEvent, GlobalHotKeyManager,
 };
+use kashot_core::hotkeys::HotkeyAction;
 use kashot_core::settings::{Hotkey, Modifiers};
 
 pub struct HotkeyManager {
     inner:    GlobalHotKeyManager,
-    current:  Option<HotKey>,
+    /// Every binding currently held with the OS, paired with the action it
+    /// fires. A flat vec rather than a map: it holds at most three entries,
+    /// so a linear scan per delivered event beats hashing.
+    current:  Vec<(HotkeyAction, HotKey)>,
 }
 
 impl HotkeyManager {
     pub fn new() -> Result<Self> {
         let inner = GlobalHotKeyManager::new()
             .map_err(|e| Error::Hotkey(e.to_string()))?;
-        Ok(HotkeyManager { inner, current: None })
+        Ok(HotkeyManager { inner, current: Vec::new() })
     }
 
-    /// Register `hk` as the active hotkey. Replaces any previously registered one.
-    pub fn register(&mut self, hk: Hotkey) -> Result<HotkeyHandle> {
-        if let Some(prev) = self.current.take() {
-            let _ = self.inner.unregister(prev);
+    /// Make `bindings` the complete set of registered hotkeys, replacing
+    /// whatever was registered before.
+    ///
+    /// Registration is per-binding best-effort: a chord the OS refuses
+    /// (already owned by the desktop environment) or a VK this build cannot
+    /// translate is skipped and reported, while the rest still take effect.
+    /// One unavailable shortcut must not cost the user the other two, so the
+    /// failures come back as a list instead of aborting the whole call --
+    /// the caller logs them and carries on.
+    pub fn register_all(&mut self, bindings: &[(HotkeyAction, Hotkey)])
+        -> Vec<(HotkeyAction, Error)>
+    {
+        self.unregister_all();
+        let mut failed = Vec::new();
+        for &(action, hk) in bindings {
+            if let Err(e) = self.register_one(action, hk) {
+                failed.push((action, e));
+            }
         }
+        failed
+    }
 
+    /// Register a single binding and remember which action it belongs to.
+    fn register_one(&mut self, action: HotkeyAction, hk: Hotkey) -> Result<()> {
         let mods = translate_mods(hk.modifiers);
         let code = vk_to_code(hk.virtual_key)
             .ok_or_else(|| Error::Hotkey(format!("unknown vk 0x{:X}", hk.virtual_key)))?;
         let item = HotKey::new(Some(mods), code);
-
         self.inner.register(item).map_err(|e| Error::Hotkey(e.to_string()))?;
-        self.current = Some(item);
-        Ok(HotkeyHandle { id: item.id() })
+        self.current.push((action, item));
+        Ok(())
     }
 
-    pub fn unregister(&mut self) {
-        if let Some(prev) = self.current.take() {
+    /// Drop every registered binding. Used while the Settings dialog is open
+    /// so the rebind widget can see the keys the user presses instead of
+    /// them firing a capture.
+    pub fn unregister_all(&mut self) {
+        for (_, prev) in self.current.drain(..) {
             let _ = self.inner.unregister(prev);
         }
     }
 
-    /// Drain pending press events. Returns `true` if any of them matches the
-    /// currently registered hotkey id.
-    pub fn drain_pressed(&self) -> bool {
-        let mut hit = false;
-        let target = self.current.map(|h| h.id());
+    /// Drain pending press events and report which actions they fired, in
+    /// the order the presses arrived.
+    ///
+    /// A given action is reported at most once per drain: holding the key
+    /// down queues several `Pressed` events between two polls of the event
+    /// loop, and one keypress has to mean one capture.
+    pub fn drain_pressed(&self) -> Vec<HotkeyAction> {
+        let mut fired: Vec<HotkeyAction> = Vec::new();
         while let Ok(ev) = GlobalHotKeyEvent::receiver().try_recv() {
-            if ev.state == global_hotkey::HotKeyState::Pressed
-                && Some(ev.id) == target
-            {
-                hit = true;
-            }
+            if ev.state != global_hotkey::HotKeyState::Pressed { continue; }
+            let Some(&(action, _)) = self.current.iter().find(|(_, h)| h.id() == ev.id)
+                else { continue; };
+            if !fired.contains(&action) { fired.push(action); }
         }
-        hit
+        fired
     }
-}
-
-#[derive(Debug, Clone, Copy)]
-pub struct HotkeyHandle {
-    pub id: u32,
 }
 
 fn translate_mods(m: Modifiers) -> GhMods {

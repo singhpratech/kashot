@@ -9,8 +9,10 @@
 //!
 //!   PATHS         Screenshots folder (path display + Browse…)
 //!                 Recordings folder  (path display + Browse…)
-//!   HOTKEY        Global hotkey      (live binding + REBIND button →
+//!   HOTKEYS       Capture region     (live binding + REBIND button →
 //!                                      capture next keypress)
+//!                 Capture full screen (same, plus CLEAR — optional)
+//!                 Record screen       (same, plus CLEAR — optional)
 //!   WATERMARK     Enabled (toggle pill)
 //!                 Text    (editable, focus on click, types live)
 //!                 Position (cycles TopLeft → TopRight → BottomRight → BottomLeft)
@@ -39,6 +41,7 @@ use winit::window::{CursorIcon, Window, WindowAttributes, WindowId};
 
 use kashot_core::{AppSettings, Hotkey, Modifiers as HkMods};
 use kashot_core::color::Rgba as KashotRgba;
+use kashot_core::hotkeys::{conflict_message, HotkeyAction};
 use kashot_core::settings::{vk_label, WatermarkAnchor};
 
 use crate::bitmap_font;
@@ -63,14 +66,26 @@ const TOGGLE_OFF:    u32 = 0x0014_1c18;
 const TOGGLE_ON:     u32 = 0x0000_5a36;
 const TOGGLE_KNOB:   u32 = 0x0000_ff95;
 const TOGGLE_OFF_K:  u32 = 0x004a_5a52;
+const DANGER:        u32 = 0x00ff_7a6f;
 
 // ── geometry ────────────────────────────────────────────────────────────────
 const WIN_W: u32 = 640;
-const WIN_H: u32 = 680;
+// Two extra hotkey rows over the single-binding layout this dialog started
+// with, each ROW_H plus the 8 px inter-row gap. The bottom margin is a
+// padding band rather than the taller footer strip the convert dialogs
+// reserve: the only message this dialog shows inline is the hotkey-conflict
+// one, and that renders under the HOTKEYS block next to the rows it is
+// about. Keeping the window under ~700 px matters — it doesn't scroll, so a
+// 768-tall screen has to fit the whole thing.
+const WIN_H: u32 = 710;
 const PAD:   i32 = 22;
 const ROW_H: i32 = 34;
 const LABEL_W: i32 = 200;
 const BTN_H: i32 = 30;
+// Buttons that sit inside a hotkey row, right-anchored: REBIND on the edge,
+// CLEAR to its left on the two optional actions.
+const REBIND_W: i32 = 100;
+const CLEAR_W:  i32 = 76;
 // Header band carries the brand strip on top and the action buttons (Save /
 // Cancel / Edit-as-JSON) anchored to its right side. Bigger than the body
 // padding so the buttons have generous click targets.
@@ -85,8 +100,12 @@ const CARET_BLINK_MS: u128 = 530;
 enum WidgetKind {
     SaveFolder,
     RecordingsFolder,
-    HotkeyDisplay,
-    HotkeyRebind,
+    /// Read-out box for one action's binding.
+    HotkeyDisplay(HotkeyAction),
+    /// "REBIND" button: arms capture of the next keypress for that action.
+    HotkeyRebind(HotkeyAction),
+    /// "CLEAR" button, only laid out for the optional actions.
+    HotkeyClear(HotkeyAction),
     WatermarkToggle,
     WatermarkText,
     WatermarkPos,
@@ -132,16 +151,22 @@ pub struct SettingsView {
     /// capture the drag once mouse-down lands on the track and keep
     /// updating the opacity value as the cursor moves until release.
     dragging_opacity: bool,
-    /// True while the HOTKEY row is in "press a key" capture mode. The next
-    /// non-modifier `KeyboardInput::Pressed` event commits the binding;
+    /// The action whose row is in "press a key" capture mode, if any. The
+    /// next non-modifier `KeyboardInput::Pressed` event commits its binding;
     /// `Esc` cancels and reverts to `hotkey_before_capture`.
-    capturing_hotkey: bool,
-    /// Snapshot of the binding the user had before they pressed REBIND, so
-    /// Esc can roll back the draft without disk persistence.
-    hotkey_before_capture: Hotkey,
+    capturing_hotkey: Option<HotkeyAction>,
+    /// Snapshot of the binding the captured action had before the user
+    /// pressed REBIND, so Esc can roll back the draft without disk
+    /// persistence. `None` when that action was unbound.
+    hotkey_before_capture: Option<Hotkey>,
     /// Latest live modifier state, tracked via `WindowEvent::ModifiersChanged`.
     /// The `KeyboardInput` event doesn't carry modifier info on its own.
     mods_state: ModifiersState,
+    /// Inline validation message drawn under the HOTKEYS block, in the same
+    /// tint the convert dialogs use for failures. Set when Save is refused
+    /// because two actions share a chord; cleared by the next rebind or
+    /// clear.
+    error:   Option<String>,
     pub outcome: Option<SettingsOutcome>,
 }
 
@@ -171,7 +196,6 @@ impl SettingsView {
         let surface = Surface::new(&ctx, window.clone())
             .map_err(|e| anyhow!("softbuffer Surface::new (settings): {e}"))?;
 
-        let initial_hk = current.hotkey();
         let mut me = SettingsView {
             window, _ctx: ctx, surface,
             draft: current,
@@ -181,9 +205,10 @@ impl SettingsView {
             focus: None,
             caret_t: Instant::now(),
             dragging_opacity: false,
-            capturing_hotkey: false,
-            hotkey_before_capture: initial_hk,
+            capturing_hotkey: None,
+            hotkey_before_capture: None,
             mods_state: ModifiersState::empty(),
+            error: None,
             outcome: None,
         };
         me.rows = me.build_rows();
@@ -257,7 +282,7 @@ impl SettingsView {
                 }
             }
             WindowEvent::KeyboardInput { event: key_ev, .. } => {
-                if self.capturing_hotkey {
+                if self.capturing_hotkey.is_some() {
                     self.on_capture_key(key_ev);
                 } else {
                     self.on_key(key_ev);
@@ -284,7 +309,7 @@ impl SettingsView {
         let Some(focus_idx) = self.focus else {
             // No focus — Enter saves, Tab moves nothing yet.
             if matches!(ev.logical_key, Key::Named(NamedKey::Enter)) {
-                self.outcome = Some(SettingsOutcome::Saved(self.draft.clone()));
+                self.try_save();
             }
             return;
         };
@@ -320,9 +345,9 @@ impl SettingsView {
         }
     }
 
-    /// Hotkey-capture key handler. Active only while
-    /// `capturing_hotkey == true`. Eats every key event so they don't fall
-    /// through into the regular `on_key` text-input path.
+    /// Hotkey-capture key handler. Active only while `capturing_hotkey` is
+    /// set. Eats every key event so they don't fall through into the regular
+    /// `on_key` text-input path.
     ///
     /// Behavior:
     /// - `Esc` cancels capture and rolls back to `hotkey_before_capture`.
@@ -335,10 +360,11 @@ impl SettingsView {
     ///   the "Edit as JSON" escape hatch for exotic keys.
     fn on_capture_key(&mut self, ev: winit::event::KeyEvent) {
         if ev.state != ElementState::Pressed { return; }
+        let Some(action) = self.capturing_hotkey else { return; };
         // Esc always aborts capture and reverts the draft.
         if matches!(ev.logical_key, Key::Named(NamedKey::Escape)) {
-            self.draft.set_hotkey(self.hotkey_before_capture);
-            self.capturing_hotkey = false;
+            self.draft.set_hotkey_for(action, self.hotkey_before_capture);
+            self.capturing_hotkey = None;
             self.window.request_redraw();
             return;
         }
@@ -357,9 +383,32 @@ impl SettingsView {
             modifiers:   mods_state_to_hk(self.mods_state),
             virtual_key: vk,
         };
-        self.draft.set_hotkey(hk);
-        self.capturing_hotkey = false;
+        self.draft.set_hotkey_for(action, Some(hk));
+        self.capturing_hotkey = None;
+        // The binding just changed, so whatever the last Save complained
+        // about may well be resolved — let the next Save re-check instead of
+        // leaving a stale message on screen.
+        self.error = None;
         self.window.request_redraw();
+    }
+
+    /// Commit the draft, unless two actions are bound to the same chord.
+    ///
+    /// A duplicate is not something the OS can arbitrate for us: on Windows
+    /// the second `RegisterHotKey` just fails, and under X11 both grabs land
+    /// on one key so whichever binding we happen to match first silently
+    /// wins. Refusing the save and naming both rows is the only outcome the
+    /// user can act on, so the dialog stays open with the message in the
+    /// footer.
+    fn try_save(&mut self) {
+        if let Some((a, b)) = self.draft.hotkey_conflict() {
+            let chord = self.draft.hotkey_for(a).unwrap_or_default();
+            self.error = Some(conflict_message(a, b, chord));
+            self.window.request_redraw();
+            return;
+        }
+        self.error = None;
+        self.outcome = Some(SettingsOutcome::Saved(self.draft.clone()));
     }
 
     /// Geometry of the opacity slider's track. Returns (x, y, width, height)
@@ -465,28 +514,35 @@ impl SettingsView {
             WidgetKind::StartWithOs => {
                 self.draft.start_with_windows = !self.draft.start_with_windows;
             }
-            WidgetKind::HotkeyDisplay => {
+            WidgetKind::HotkeyDisplay(_) => {
                 // Clicking the display box itself is a no-op — the user has
                 // to hit REBIND. Avoids accidental re-capture from a stray
                 // click on the green border.
             }
-            WidgetKind::HotkeyRebind => {
+            WidgetKind::HotkeyRebind(action) => {
                 // Snapshot the current binding so Esc during capture can
-                // roll back. Tray-loop has already unregistered the global
+                // roll back. Tray-loop has already unregistered every global
                 // hotkey while Settings is open, so the user can press the
                 // current PrintScreen freely without it firing.
-                self.hotkey_before_capture = self.draft.hotkey();
-                self.capturing_hotkey = true;
+                self.hotkey_before_capture = self.draft.hotkey_for(action);
+                self.capturing_hotkey = Some(action);
                 // Drop any text-field focus so caret blink doesn't compete
                 // for redraws.
                 self.focus = None;
+            }
+            WidgetKind::HotkeyClear(action) => {
+                // Only laid out for the optional actions, so this can never
+                // strip the mandatory capture binding.
+                self.draft.set_hotkey_for(action, None);
+                self.capturing_hotkey = None;
+                self.error = None;
             }
             WidgetKind::OpenJson => {
                 self.outcome = Some(SettingsOutcome::OpenJson);
                 return;
             }
             WidgetKind::SaveBtn => {
-                self.outcome = Some(SettingsOutcome::Saved(self.draft.clone()));
+                self.try_save();
                 return;
             }
             WidgetKind::CancelBtn => {
@@ -530,14 +586,31 @@ impl SettingsView {
         rows.push(Row { kind: WidgetKind::SaveFolder,       label: "Screenshots folder", rect: (x, y, row_w, ROW_H) }); y += ROW_H + 8;
         rows.push(Row { kind: WidgetKind::RecordingsFolder, label: "Recordings folder",  rect: (x, y, row_w, ROW_H) }); y += ROW_H + 22;
 
-        // HOTKEY — display + REBIND on one row. The display fills the left
-        // part of the value column; the REBIND button is anchored right.
+        // HOTKEYS — one row per action: a display box filling the left part
+        // of the value column, REBIND anchored to the right edge, and CLEAR
+        // just inside it on the two optional actions. The buttons are their
+        // own rows laid out over the display row's rect; `hit_test` scans in
+        // reverse, so they win the click.
         y += 18;
-        rows.push(Row { kind: WidgetKind::HotkeyDisplay, label: "Global hotkey", rect: (x, y, row_w, ROW_H) });
-        let rebind_w = 100;
-        let rebind_x = x + row_w - rebind_w;
-        rows.push(Row { kind: WidgetKind::HotkeyRebind,  label: "REBIND",        rect: (rebind_x, y, rebind_w, ROW_H) });
-        y += ROW_H + 22;
+        for action in HotkeyAction::ALL {
+            rows.push(Row { kind:  WidgetKind::HotkeyDisplay(action),
+                            label: action.label(),
+                            rect:  (x, y, row_w, ROW_H) });
+            let rebind_x = x + row_w - REBIND_W;
+            rows.push(Row { kind:  WidgetKind::HotkeyRebind(action),
+                            label: "REBIND",
+                            rect:  (rebind_x, y, REBIND_W, ROW_H) });
+            if action.is_optional() {
+                rows.push(Row { kind:  WidgetKind::HotkeyClear(action),
+                                label: "CLEAR",
+                                rect:  (rebind_x - 8 - CLEAR_W, y, CLEAR_W, ROW_H) });
+            }
+            y += ROW_H + 8;
+        }
+        // Taller than the usual inter-section gap: the hotkey-conflict
+        // message renders in here, between the last binding row and the
+        // WATERMARK header.
+        y += 24;
 
         // WATERMARK header takes 18px above its first row.
         y += 18;
@@ -592,8 +665,8 @@ impl SettingsView {
         if let Some(r) = self.rows.iter().find(|r| r.kind == WidgetKind::SaveFolder) {
             section_header(&mut surf, "PATHS", r.rect.1 - 22);
         }
-        if let Some(r) = self.rows.iter().find(|r| r.kind == WidgetKind::HotkeyDisplay) {
-            section_header(&mut surf, "HOTKEY", r.rect.1 - 22);
+        if let Some(r) = self.rows.iter().find(|r| matches!(r.kind, WidgetKind::HotkeyDisplay(_))) {
+            section_header(&mut surf, "HOTKEYS", r.rect.1 - 22);
         }
         if let Some(r) = self.rows.iter().find(|r| r.kind == WidgetKind::WatermarkToggle) {
             section_header(&mut surf, "WATERMARK", r.rect.1 - 22);
@@ -608,6 +681,19 @@ impl SettingsView {
             let hovered = self.hover == Some(i);
             let focused = self.focus == Some(i);
             render_row(&mut surf, row, hovered, focused, caret_visible, capturing, &self.draft);
+        }
+
+        // Inline validation, in the same danger tint the convert dialogs
+        // use — but parked directly under the HOTKEYS block instead of at
+        // the window's bottom edge, because that's the section it is about
+        // and the gap before the WATERMARK header is already reserved.
+        if let Some(msg) = &self.error {
+            if let Some(r) = self.rows.iter().rev()
+                .find(|r| matches!(r.kind, WidgetKind::HotkeyDisplay(_)))
+            {
+                draw_text(&mut surf, PAD, r.rect.1 + ROW_H + 6, 1, msg,
+                          argb_to_kashot(DANGER));
+            }
         }
 
         if let Err(e) = buf.present() {
@@ -643,7 +729,8 @@ fn section_header<S: painter::Surface>(surf: &mut S, text: &str, y: i32) {
 
 fn render_row<S: painter::Surface>(
     surf: &mut S, row: &Row,
-    hovered: bool, focused: bool, caret_visible: bool, capturing_hotkey: bool,
+    hovered: bool, focused: bool, caret_visible: bool,
+    capturing_hotkey: Option<HotkeyAction>,
     draft: &AppSettings,
 ) {
     let (rx, ry, rw, rh) = row.rect;
@@ -665,9 +752,27 @@ fn render_row<S: painter::Surface>(
         return;
     }
 
+    // ── CLEAR button (unbinds an optional action) ──────────────────────────
+    if let WidgetKind::HotkeyClear(action) = row.kind {
+        // Dimmed when there is nothing to clear, so the row reads as
+        // "already unbound" rather than as a button that did nothing.
+        let bound  = draft.hotkey_for(action).is_some();
+        let border = if hovered && bound { LASER_DIM } else { FIELD_BORDER };
+        if hovered && bound {
+            fill_rect(surf, rx, ry, rw, rh, argb_to_kashot(HOVER_FILL));
+        }
+        stroke_rect_argb(surf, rx, ry, rw, rh, argb_to_kashot(border));
+        let tw = bitmap_font::measure(row.label, 1);
+        let tx = rx + (rw - tw) / 2;
+        let ty = ry + (rh - bitmap_font::GLYPH_H) / 2;
+        let color = if bound { TEXT_BRIGHT } else { TEXT_DIM };
+        draw_text(surf, tx, ty, 1, row.label, argb_to_kashot(color));
+        return;
+    }
+
     // ── REBIND button (sits to the right of the HotkeyDisplay box) ─────────
-    if row.kind == WidgetKind::HotkeyRebind {
-        let active = capturing_hotkey;
+    if let WidgetKind::HotkeyRebind(action) = row.kind {
+        let active = capturing_hotkey == Some(action);
         let border = if active { LASER } else if hovered { LASER_DIM } else { FIELD_BORDER };
         let fill   = if active { 0x0000_2818 } else if hovered { HOVER_FILL } else { 0x0000_0000 };
         if fill != 0 {
@@ -740,18 +845,20 @@ fn render_row<S: painter::Surface>(
             let ty = by + (bh - bitmap_font::GLYPH_H) / 2;
             draw_text(surf, tx, ty, 1, label, argb_to_kashot(TEXT_BRIGHT));
         }
-        WidgetKind::HotkeyDisplay => {
+        WidgetKind::HotkeyDisplay(action) => {
             // The display box sits in the value column but stops short of
             // the REBIND button (which is its own row laid out on top of
-            // this rect, anchored right). Reserve the REBIND footprint plus
-            // an 8 px gutter so the laser-green border doesn't run under
-            // the button.
-            let rebind_w = 100;
-            let box_w = val_w - rebind_w - 8;
+            // this rect, anchored right), and of CLEAR where that exists.
+            // Reserve their footprints plus an 8 px gutter each so the
+            // laser-green border doesn't run under either button.
+            let reserved = REBIND_W + 8
+                + if action.is_optional() { CLEAR_W + 8 } else { 0 };
+            let box_w = val_w - reserved;
+            let listening = capturing_hotkey == Some(action);
             // While in capture mode the border lights up bright laser-green
             // so the user can see the field is now listening. Otherwise we
             // use the standard field border with a brighter hover state.
-            let border = if capturing_hotkey {
+            let border = if listening {
                 FIELD_FOCUS
             } else if hovered {
                 LASER_DIM
@@ -760,10 +867,15 @@ fn render_row<S: painter::Surface>(
             };
             fill_rect(surf, val_x, val_y, box_w, val_h, argb_to_kashot(FIELD_BG));
             stroke_rect_argb(surf, val_x, val_y, box_w, val_h, argb_to_kashot(border));
-            let (text, color) = if capturing_hotkey {
+            let (text, color) = if listening {
                 ("[ PRESS A KEY ]".to_owned(), LASER)
             } else {
-                (draft.hotkey().describe(), TEXT_BRIGHT)
+                match draft.hotkey_for(action) {
+                    Some(hk) => (hk.describe(), TEXT_BRIGHT),
+                    // Optional actions start out unbound; say so instead of
+                    // showing an empty box that reads as a render bug.
+                    None     => ("(not set)".to_owned(), TEXT_DIM),
+                }
             };
             let truncated = truncate_for(&text, box_w - 16);
             let ty = val_y + (val_h - bitmap_font::GLYPH_H) / 2;

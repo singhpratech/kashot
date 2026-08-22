@@ -16,13 +16,12 @@ pub mod tray;
 
 pub use capture::{capture_all_screens, Captured};
 pub use child_guard::reap_orphaned_recorder;
-
 pub use clipboard::{copy_image_png, copy_text};
-pub use hotkey::{HotkeyHandle, HotkeyManager};
+pub use hotkey::HotkeyManager;
 pub use instance::{Instance, InstanceLock};
 pub use recorder::Recorder;
 pub use session::is_wayland;
-pub use tray::{Tray, TrayEvent};
+pub use tray::{MenuLabels, Tray, TrayEvent};
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {

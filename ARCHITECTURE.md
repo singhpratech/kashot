@@ -50,17 +50,17 @@ so a local run reproduces the shipped bundle exactly.
 
 ## Architecture
 
-Tray-resident screenshot tool with an annotation editor. The `kashot-app` binary boots a `winit` event loop that owns a tray-icon, a global hotkey, and a per-purpose framebuffer window for each surface (overlay editor, settings, about, updates, convert-image, convert-video, pinned image, recording indicator).
+Tray-resident screenshot tool with an annotation editor. The `kashot-app` binary boots a `winit` event loop that owns a tray-icon, up to three global hotkeys, and a per-purpose framebuffer window for each surface (overlay editor, settings, about, updates, convert-image, convert-video, pinned image, recording indicator).
 
 ### File map (`kashot-rs/crates/kashot-app/src/`)
 
 | File | Role |
 |---|---|
-| `main.rs` | Entry. Boots `TrayLoop`, registers global hotkey, runs winit event loop. |
+| `main.rs` | Entry. Boots `TrayLoop`, registers the global hotkeys, runs winit event loop. |
 | `tray_loop.rs` | Owns tray menu state, hotkey routing, lifetime of every window/dialog. The orchestrator. |
 | `editor.rs` | Capture surface + annotation editor. State machine: Idle / Selecting / Selected / Drawing / TextInput / Resizing. |
 | `painter.rs` | tiny-skia + softbuffer wrapper. The shared rendering layer every dialog uses. |
-| `settings_form.rs` | Themed Settings dialog (paths, watermark, appearance, marker opacity). Live REBIND widget for the global hotkey, plus an Edit-as-JSON button as an escape hatch. |
+| `settings_form.rs` | Themed Settings dialog (paths, watermark, appearance, marker opacity). A live REBIND widget per global hotkey, plus an Edit-as-JSON button as an escape hatch. |
 | `about_form.rs` | Themed About dialog. |
 | `updates_form.rs` | Themed Update-check dialog. Background `curl` to `api.github.com/repos/singhpratech/kashot/releases/latest`. |
 | `convert_image_form.rs` | PNG ↔ JPG / BMP / WEBP (the `image` crate must have `webp` feature for the last one). |
@@ -72,6 +72,7 @@ Tray-resident screenshot tool with an annotation editor. The `kashot-app` binary
 
 ### Cross-cutting
 
+- **Global hotkeys**: three independent bindings — region capture (bound by default), full-screen capture, and a record start/stop toggle (both optional, unset out of the box). `kashot-core::hotkeys` owns the action enum, the settings mapping and conflict detection; `kashot-platform::hotkey` registers the set and reports which action fired. Each binding is stored in `settings.json` as a Win32 modifier mask + virtual-key pair, with a virtual key of `0` meaning "not bound" — so a file written before the extra actions existed loads unchanged.
 - **Settings** persist to `ProjectDirs::from("org", "kashot", "Kashot").config_dir()` (`~/.config/kashot/settings.json` on Linux).
 - **Theme colors** — each dialog currently re-declares its laser-green palette as private constants. Promoting to a shared `kashot-core/src/theme.rs` is a deferred cleanup item ([[feedback-release-gate]] fact-check, claim 13).
 - **Recording**: Linux X11 via `ffmpeg -f x11grab` (PulseAudio mic + default-sink monitor source — `pactl` must be on PATH or audio is silently dropped, which is why the snap stages `pulseaudio-utils`); Windows native via `ffmpeg -f gdigrab` + `-f dshow` mic, system audio via WASAPI loopback piped to ffmpeg over TCP; macOS via built-in `screencapture -v` for the video-only case, switching to `ffmpeg -f avfoundation` when audio is requested, with system audio from a ScreenCaptureKit session over the same TCP path. **Wayland (Linux) capture is still queued** (`recorder.rs`). Audio is best-effort on Linux and for the macOS microphone — a source that won't open is dropped and the recording starts without it; on Windows, and for macOS system audio, a source that can't be opened fails the whole recording with an actionable error instead. Either way `Recorder::start` returns the *effective* options, so toasts must be rendered from its return value rather than from what was asked for.
