@@ -12,6 +12,7 @@
 
 use crate::{Error, Result};
 use image::{ImageBuffer, Rgba};
+use kashot_core::virtual_desktop::{union_bounds, DesktopGeometry, MonitorRect};
 
 #[derive(Debug, Clone)]
 pub struct Captured {
@@ -34,6 +35,21 @@ pub struct MonitorFrame {
     pub scale_factor: f32,
 }
 
+impl Captured {
+    /// Virtual-desktop geometry of this capture: where the stitched bitmap
+    /// starts in virtual-screen space, how big it is, and the monitors it
+    /// was built from. The overlay places itself with this and maps every
+    /// selection back through it, so a region picked on a monitor left of
+    /// (or above) the primary one crops the pixels the user actually saw.
+    pub fn geometry(&self) -> DesktopGeometry {
+        let rects: Vec<MonitorRect> = self.monitors.iter()
+            .map(|m| MonitorRect::new(m.x, m.y, m.width, m.height))
+            .collect();
+        DesktopGeometry::from_monitors(rects)
+            .unwrap_or_else(|| DesktopGeometry::bitmap(self.bitmap.width(), self.bitmap.height()))
+    }
+}
+
 /// Capture every monitor and stitch into one bitmap.
 ///
 /// Coordinates of pixel `(px, py)` in `bitmap` correspond to virtual-screen
@@ -45,24 +61,19 @@ pub fn capture_all_screens() -> Result<Captured> {
         return Err(Error::Capture("no monitors found".into()));
     }
 
-    // Bounding box of every monitor in virtual-screen space.
-    let mut min_x = i32::MAX;
-    let mut min_y = i32::MAX;
-    let mut max_x = i32::MIN;
-    let mut max_y = i32::MIN;
+    // Bounding box of every monitor in virtual-screen space. The union is
+    // computed by `kashot_core::virtual_desktop` so the overlay's placement
+    // and this stitch can never drift apart.
+    let mut rects = Vec::with_capacity(monitors.len());
     for m in &monitors {
         let x = m.x().map_err(|e| Error::Capture(format!("monitor x: {e}")))?;
         let y = m.y().map_err(|e| Error::Capture(format!("monitor y: {e}")))?;
-        let w = m.width().map_err(|e| Error::Capture(format!("monitor w: {e}")))? as i32;
-        let h = m.height().map_err(|e| Error::Capture(format!("monitor h: {e}")))? as i32;
-        min_x = min_x.min(x);
-        min_y = min_y.min(y);
-        max_x = max_x.max(x + w);
-        max_y = max_y.max(y + h);
+        let w = m.width().map_err(|e| Error::Capture(format!("monitor w: {e}")))?;
+        let h = m.height().map_err(|e| Error::Capture(format!("monitor h: {e}")))?;
+        rects.push(MonitorRect::new(x, y, w, h));
     }
-
-    let total_w = (max_x - min_x) as u32;
-    let total_h = (max_y - min_y) as u32;
+    let ((min_x, min_y), (total_w, total_h)) = union_bounds(&rects)
+        .ok_or_else(|| Error::Capture("no monitors found".into()))?;
 
     let mut canvas: ImageBuffer<Rgba<u8>, Vec<u8>> =
         ImageBuffer::from_pixel(total_w, total_h, Rgba([0, 0, 0, 255]));
