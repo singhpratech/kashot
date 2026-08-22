@@ -24,6 +24,7 @@ use winit::keyboard::{Key, NamedKey};
 use winit::window::{CursorIcon, Window, WindowAttributes, WindowId};
 
 use kashot_core::color::Rgba as KashotRgba;
+use kashot_core::install_channel::{InstallChannel, UpdateAction};
 
 use crate::bitmap_font;
 use crate::painter;
@@ -54,7 +55,7 @@ const NOTES_BOTTOM_GAP: i32 = 70;
 const SCROLLBAR_W: i32 = 6;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum BtnKind { OpenReleases, Download, Close }
+enum BtnKind { OpenReleases, Download, CopyCommand, Close }
 
 struct Btn {
     kind:  BtnKind,
@@ -97,6 +98,10 @@ pub enum UpdatesOutcome {
         asset_url:       String,
         expected_sha256: Option<String>,
     },
+    /// This install is owned by a package manager, so the dialog offered
+    /// the exact upgrade command instead of a download. Caller puts it on
+    /// the clipboard.
+    CopyCommand(String),
 }
 
 pub struct UpdatesView {
@@ -111,6 +116,11 @@ pub struct UpdatesView {
     rx:      Option<mpsc::Receiver<Result<RawRelease, String>>>,
     scroll:  i32,
     notes_rect: (i32, i32, i32, i32),
+    /// How this copy of Kashot was installed, and therefore whether the
+    /// updater may replace it at all. Resolved once at construction —
+    /// nothing it depends on changes while the process runs.
+    channel: InstallChannel,
+    action:  UpdateAction,
     pub outcome: Option<UpdatesOutcome>,
 }
 
@@ -158,6 +168,8 @@ impl UpdatesView {
             WIN_H as i32 - HEADER_H - NOTES_TOP_OFFSET - NOTES_BOTTOM_GAP,
         );
 
+        let (channel, action) = crate::install_source::detected().clone();
+
         let mut me = UpdatesView {
             window, _ctx: ctx, surface,
             btns: Vec::new(),
@@ -168,6 +180,8 @@ impl UpdatesView {
             rx: Some(rx),
             scroll: 0,
             notes_rect,
+            channel,
+            action,
             outcome: None,
         };
         me.btns = me.build_btns();
@@ -191,7 +205,7 @@ impl UpdatesView {
                             &strip_markdown(&raw.body),
                             self.notes_rect.2 - SCROLLBAR_W - 8,
                         );
-                        let asset_url = pick_asset_url(&raw.assets);
+                        let asset_url = pick_asset_url(&raw.assets, self.channel);
                         // Resolve SHA-256 for whichever asset we picked
                         // by parsing the release's SHA256SUMS (when
                         // present). Missing → expected_sha256 = None →
@@ -269,24 +283,19 @@ impl UpdatesView {
                         BtnKind::Download => {
                             if let FetchState::Found(info) = &self.state {
                                 if let Some(url) = &info.asset_url {
-                                    let lower = url.to_ascii_lowercase();
-                                    // In-app download → verify → install →
-                                    // relaunch is wired for:
-                                    //   - Windows MSI installs (msiexec
-                                    //     handoff, keeps Add/Remove Programs
-                                    //     + elevation correct), and
-                                    //   - Linux .tar.gz (swap the binary in
-                                    //     place; works for the install.sh /
-                                    //     tarball layout under ~/.local/bin).
-                                    // macOS + Windows-portable still open the
-                                    // browser until those swap paths are
-                                    // exercised on real hardware.
-                                    let in_app = (cfg!(target_os = "windows")
-                                            && crate::self_updater::is_msi_install()
-                                            && lower.ends_with(".msi"))
-                                        || (cfg!(target_os = "linux")
-                                            && (lower.ends_with(".tar.gz")
-                                                || lower.ends_with(".tgz")));
+                                    // In-app download -> verify -> install ->
+                                    // relaunch happens only for a channel we
+                                    // own (see kashot_core::install_channel)
+                                    // *and* an asset shape whose swap path is
+                                    // wired up: the Windows MSI (msiexec
+                                    // handoff keeps Add/Remove Programs and
+                                    // elevation correct), the Linux tarball
+                                    // (straight binary swap), and the
+                                    // AppImage (file swap). Everything else
+                                    // opens in the browser.
+                                    let in_app =
+                                        matches!(self.action, UpdateAction::SelfInstall)
+                                            && asset_supports_self_install(url, self.channel);
                                     if in_app {
                                         UpdatesOutcome::DownloadAndInstall {
                                             asset_url: url.clone(),
@@ -297,6 +306,14 @@ impl UpdatesView {
                                     }
                                 } else { UpdatesOutcome::OpenReleases }
                             } else { UpdatesOutcome::OpenReleases }
+                        }
+                        BtnKind::CopyCommand => {
+                            match &self.action {
+                                UpdateAction::Managed { command: Some(cmd), .. } => {
+                                    UpdatesOutcome::CopyCommand(cmd.clone())
+                                }
+                                _ => UpdatesOutcome::OpenReleases,
+                            }
                         }
                         BtnKind::Close => UpdatesOutcome::Closed,
                     });
@@ -337,23 +354,37 @@ impl UpdatesView {
         let bh = 36;
         let by = WIN_H as i32 - PAD - bh;
 
-        // Only offer the Download button when there's actually a newer
-        // release than what's running AND we resolved an asset for this
-        // platform. When the user is already on the latest version, drop
-        // the Download button entirely — leaving "Open releases page" as
-        // the only action — so we never invite a pointless re-download /
+        // Only offer an install action when there's actually a newer release
+        // than what's running. When the user is already on the latest
+        // version, drop it entirely — leaving "Open releases page" as the
+        // only action — so we never invite a pointless re-download /
         // reinstall of the version they already have.
-        let offer_download = matches!(&self.state,
-            FetchState::Found(info) if info.asset_url.is_some() && info.has_update);
+        let has_update = matches!(&self.state, FetchState::Found(info) if info.has_update);
+        let has_asset  = matches!(&self.state, FetchState::Found(info) if info.asset_url.is_some());
 
-        if offer_download {
+        // A package-managed install (Snap, Flatpak, Homebrew, deb/rpm/AUR,
+        // Scoop) never gets a Download button — replacing those files is
+        // either impossible or actively breaks the package. It gets the
+        // upgrade command instead, drawn above and copyable from here.
+        let primary = match &self.action {
+            UpdateAction::Managed { command: Some(_), .. } if has_update => {
+                Some(("Copy update command", BtnKind::CopyCommand))
+            }
+            UpdateAction::Managed { .. } => None,
+            _ if has_update && has_asset => {
+                Some(("Download for your system", BtnKind::Download))
+            }
+            _ => None,
+        };
+
+        if let Some((label, kind)) = primary {
             let dl_w = 200;
             let rel_w = 180;
             let gap  = 12;
             let total = dl_w + gap + rel_w;
             let dl_x = (WIN_W as i32 - total) / 2;
             let rel_x = dl_x + dl_w + gap;
-            btns.push(Btn { kind: BtnKind::Download,     label: "Download for your system".into(), rect: (dl_x, by, dl_w, bh) });
+            btns.push(Btn { kind, label: label.into(), rect: (dl_x, by, dl_w, bh) });
             btns.push(Btn { kind: BtnKind::OpenReleases, label: "Open releases page".into(),      rect: (rel_x, by, rel_w, bh) });
         } else {
             let bw = 220;
@@ -418,6 +449,20 @@ impl UpdatesView {
                 };
                 let tint = if info.has_update { LASER } else { TEXT_MUTED };
                 draw_text(&mut surf, PAD, y, 1, label, argb_to_kashot(tint));
+
+                // Package-managed install: say who owns it and print the
+                // exact upgrade one-liner where the Download button's
+                // explanation would otherwise sit.
+                if info.has_update {
+                    if let UpdateAction::Managed { hint, command } = &self.action {
+                        y += 20;
+                        draw_text(&mut surf, PAD, y, 1, hint, argb_to_kashot(TEXT_MUTED));
+                        if let Some(cmd) = command {
+                            y += 16;
+                            draw_text(&mut surf, PAD, y, 1, cmd, argb_to_kashot(SECTION_TINT));
+                        }
+                    }
+                }
 
                 let total = info.notes.len() as i32 * LINE_H;
                 let max_scroll = (total - self.notes_rect.3 + 8).max(0);
@@ -598,10 +643,26 @@ fn same_version(tag: &str, pkg: &str) -> bool {
 /// hands off to msiexec so MajorUpgrade replaces in place + bumps the
 /// ARP entry); if no MSI is in the release, or we're running portable,
 /// we fall back to the per-arch zip.
-fn pick_asset_url(assets: &[RawAsset]) -> Option<String> {
+fn pick_asset_url(assets: &[RawAsset], channel: InstallChannel) -> Option<String> {
+    // An AppImage run must be handed another AppImage: its `current_exe()`
+    // lives in the read-only FUSE mount, so the tarball payload has nowhere
+    // to go. If the release ships no AppImage for this architecture we offer
+    // no download at all rather than the wrong artifact.
+    if channel == InstallChannel::AppImage {
+        return assets
+            .iter()
+            .find(|a| {
+                let name = a.name.to_ascii_lowercase();
+                name.ends_with(".appimage") && arch_tokens().iter().any(|t| name.contains(t))
+            })
+            .map(|a| a.browser_download_url.clone());
+    }
+
     #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
     {
-        if crate::self_updater::is_msi_install() {
+        // "Installed by the MSI" is the install-channel question, answered
+        // once in kashot_core::install_channel rather than re-sniffed here.
+        if channel == InstallChannel::WindowsMsi {
             if let Some(a) = assets.iter().find(|a| a.name.eq_ignore_ascii_case("Kashot.msi")) {
                 return Some(a.browser_download_url.clone());
             }
@@ -629,6 +690,38 @@ fn pick_asset_url(assets: &[RawAsset]) -> Option<String> {
     assets.iter()
         .find(|a| a.name.contains(needle))
         .map(|a| a.browser_download_url.clone())
+}
+
+/// Architecture spellings that appear in release-asset names, most specific
+/// first. Used to keep an arm64 host from grabbing an x86_64 AppImage.
+fn arch_tokens() -> &'static [&'static str] {
+    if cfg!(target_arch = "x86_64") {
+        &["x86_64", "amd64", "x64"]
+    } else if cfg!(target_arch = "aarch64") {
+        &["aarch64", "arm64"]
+    } else {
+        &[]
+    }
+}
+
+/// Does the picked asset have a shape whose in-place install path is wired
+/// up for `channel`? The channel decides whether we may replace this install
+/// at all; this decides whether we know *how* to. A mismatch (e.g. an
+/// MSI-installed Kashot on a release that only shipped the portable zip)
+/// falls back to a browser download.
+fn asset_supports_self_install(url: &str, channel: InstallChannel) -> bool {
+    let name = url.rsplit('/').next().unwrap_or("");
+    let name = name.split('?').next().unwrap_or(name).to_ascii_lowercase();
+    match channel {
+        InstallChannel::WindowsMsi => name.ends_with(".msi"),
+        InstallChannel::AppImage => name.ends_with(".appimage"),
+        // The plain tarball layout (install.sh, or an unpacked release
+        // tarball) is the only portable install whose swap path is proven.
+        InstallChannel::Portable => {
+            cfg!(target_os = "linux") && (name.ends_with(".tar.gz") || name.ends_with(".tgz"))
+        }
+        _ => false,
+    }
 }
 
 /// Strip the bare-minimum markdown markers we expect from GitHub release
@@ -758,7 +851,7 @@ fn wrap_body(text: &str, max_px: i32) -> Vec<String> {
 
 fn render_btn<S: painter::Surface>(surf: &mut S, b: &Btn, hovered: bool) {
     let (x, y, w, h) = b.rect;
-    let is_primary = matches!(b.kind, BtnKind::Close | BtnKind::Download);
+    let is_primary = matches!(b.kind, BtnKind::Close | BtnKind::Download | BtnKind::CopyCommand);
     let border = if is_primary { LASER } else if hovered { LASER_DIM } else { PANEL_BORDER };
     let fill   = if is_primary && hovered { 0x0000_2818 } else if hovered { HOVER_FILL } else { 0x0000_0000 };
     if fill != 0 { fill_rect(surf, x, y, w, h, argb_to_kashot(fill)); }
@@ -894,6 +987,140 @@ mod tests {
         // (which the renderer then maps to one '?', not three).
         let out = strip_inline("café [docs](https://x.y)");
         assert_eq!(out, "café docs (https://x.y)");
+    }
+
+    /// The window is a fixed 560px framebuffer with no wrapping in the info
+    /// block, so every hint / command we might print there has to fit on one
+    /// line — and the copy button's label inside its 200px box.
+    #[test]
+    fn managed_hints_and_commands_fit_the_dialog() {
+        use kashot_core::install_channel::{update_action, HostOs, InstallProbe};
+
+        let max_line = WIN_W as i32 - PAD * 2;
+        let max_label = 200 - 16;
+        assert!(bitmap_font::measure("Copy update command", 1) <= max_label);
+
+        let os_releases = [
+            None,
+            Some("ID=ubuntu\nID_LIKE=debian\n"),
+            Some("ID=fedora\n"),
+            Some("ID=arch\n"),
+            Some("ID=opensuse-leap\nID_LIKE=suse\n"),
+            Some("ID=voidlinux\n"),
+        ];
+        let channels = [
+            (InstallChannel::Snap, HostOs::Linux),
+            (InstallChannel::Flatpak, HostOs::Linux),
+            (InstallChannel::LinuxSystemPackage, HostOs::Linux),
+            (InstallChannel::HomebrewCask, HostOs::MacOs),
+            (InstallChannel::HomebrewFormula, HostOs::MacOs),
+            (InstallChannel::Scoop, HostOs::Windows),
+        ];
+
+        for (channel, os) in channels {
+            for os_release in os_releases {
+                let probe = InstallProbe {
+                    os,
+                    os_release: os_release.map(str::to_owned),
+                    ..Default::default()
+                };
+                let UpdateAction::Managed { hint, command } = update_action(channel, &probe) else {
+                    panic!("{channel:?} must be package-managed");
+                };
+                assert!(
+                    bitmap_font::measure(hint, 1) <= max_line,
+                    "hint too wide for the dialog ({channel:?}): {hint:?}"
+                );
+                if let Some(cmd) = &command {
+                    assert!(
+                        bitmap_font::measure(cmd, 1) <= max_line,
+                        "command too wide for the dialog ({channel:?}): {cmd:?}"
+                    );
+                    // The bitmap font only has glyphs for printable ASCII.
+                    assert!(
+                        cmd.chars().all(|c| (' '..='~').contains(&c)),
+                        "command has unrenderable characters: {cmd:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    fn asset(name: &str) -> RawAsset {
+        RawAsset {
+            name: name.to_owned(),
+            browser_download_url: format!("https://example.com/dl/{name}"),
+            size: 0,
+        }
+    }
+
+    #[test]
+    fn an_appimage_install_is_only_ever_offered_an_appimage() {
+        let assets = vec![
+            asset("kashot-linux-x86_64.tar.gz"),
+            asset("kashot-x86_64.AppImage"),
+            asset("SHA256SUMS"),
+        ];
+        let picked = pick_asset_url(&assets, InstallChannel::AppImage);
+        if cfg!(target_arch = "x86_64") {
+            assert_eq!(
+                picked.as_deref(),
+                Some("https://example.com/dl/kashot-x86_64.AppImage")
+            );
+        } else {
+            // No AppImage for this architecture in the release: offer
+            // nothing rather than a tarball we can't install.
+            assert_eq!(picked, None);
+        }
+    }
+
+    #[test]
+    fn an_appimage_install_gets_nothing_when_the_release_has_no_appimage() {
+        let assets = vec![asset("kashot-linux-x86_64.tar.gz"), asset("Kashot.msi")];
+        assert_eq!(pick_asset_url(&assets, InstallChannel::AppImage), None);
+    }
+
+    #[test]
+    fn self_install_is_gated_on_the_asset_shape() {
+        assert!(asset_supports_self_install(
+            "https://example.com/Kashot.msi",
+            InstallChannel::WindowsMsi
+        ));
+        // MSI-installed but the release only shipped the portable zip:
+        // fall back to a browser download rather than hand-swapping the
+        // .exe out from under the installer's bookkeeping.
+        assert!(!asset_supports_self_install(
+            "https://example.com/kashot-windows-x86_64.zip",
+            InstallChannel::WindowsMsi
+        ));
+        assert!(asset_supports_self_install(
+            "https://example.com/kashot-x86_64.AppImage?t=1",
+            InstallChannel::AppImage
+        ));
+        assert!(!asset_supports_self_install(
+            "https://example.com/kashot-linux-x86_64.tar.gz",
+            InstallChannel::AppImage
+        ));
+        assert_eq!(
+            asset_supports_self_install(
+                "https://example.com/kashot-linux-x86_64.tar.gz",
+                InstallChannel::Portable
+            ),
+            cfg!(target_os = "linux")
+        );
+        // Package-managed channels never self-install, whatever the asset.
+        for channel in [
+            InstallChannel::Snap,
+            InstallChannel::Flatpak,
+            InstallChannel::HomebrewCask,
+            InstallChannel::LinuxSystemPackage,
+            InstallChannel::Scoop,
+        ] {
+            assert!(!asset_supports_self_install(
+                "https://example.com/kashot-linux-x86_64.tar.gz",
+                channel
+            ));
+        }
     }
 
     #[test]

@@ -8,6 +8,7 @@ pub mod annotation;
 pub mod atomic_file;
 pub mod color;
 pub mod failure;
+pub mod install_channel;
 pub mod settings;
 pub mod state;
 pub mod theme;
@@ -15,6 +16,7 @@ pub mod tool;
 
 pub use annotation::{Annotation, AnnotationKind, ColorPalette, Palettes};
 pub use color::Rgba;
+pub use install_channel::{detect_action, HostOs, InstallChannel, InstallProbe, UpdateAction};
 pub use settings::{AppSettings, Hotkey, Modifiers};
 pub use state::{Edge, State};
 pub use theme::{ThemeColors, ThemeName};

@@ -1040,6 +1040,16 @@ pub fn run() -> Result<()> {
                             UpdatesOutcome::DownloadAndInstall { asset_url, expected_sha256 } => {
                                 self.start_self_update(asset_url, expected_sha256);
                             }
+                            // Package-managed install (Snap, Flatpak, brew,
+                            // deb/rpm/AUR, Scoop): the dialog offered the
+                            // upgrade command instead of a download, so all
+                            // we do is put it on the clipboard.
+                            UpdatesOutcome::CopyCommand(cmd) => {
+                                match kashot_platform::copy_text(&cmd) {
+                                    Ok(()) => notify("Update command copied", &cmd, false),
+                                    Err(e) => eprintln!("updates: clipboard copy failed: {e}"),
+                                }
+                            }
                         }
                     }
                 }
