@@ -409,7 +409,7 @@ mod tests {
     fn snap_env_inherited_by_a_child_process_is_not_a_snap_install() {
         // A terminal snap launching the tarball build inherits $SNAP. The
         // exe path is the tiebreaker.
-        let mut p = linux("/home/u/.local/bin/kashot");
+        let mut p = linux("/tmp/u/.local/bin/kashot");
         p.snap_dir = Some("/snap/some-terminal/17".to_owned());
         assert_eq!(detect(&p), InstallChannel::Portable);
     }
@@ -434,7 +434,7 @@ mod tests {
         // note it contains "/usr/bin/" but doesn't start with it, so the
         // system-package rule must not fire.
         let mut p = linux("/tmp/.mount_kashotAbCdEf/usr/bin/kashot");
-        p.appimage_path = Some("/home/u/Apps/kashot-x86_64.AppImage".to_owned());
+        p.appimage_path = Some("/tmp/u/Apps/kashot-x86_64.AppImage".to_owned());
         assert_eq!(detect(&p), InstallChannel::AppImage);
     }
 
@@ -456,14 +456,14 @@ mod tests {
     #[test]
     fn detects_linuxbrew_formula() {
         assert_eq!(
-            detect(&linux("/home/linuxbrew/.linuxbrew/Cellar/kashot/0.6.0/bin/kashot")),
+            detect(&linux("/opt/linuxbrew/.linuxbrew/Cellar/kashot/0.6.0/bin/kashot")),
             InstallChannel::HomebrewFormula
         );
     }
 
     #[test]
     fn detects_portable_tarball_install() {
-        assert_eq!(detect(&linux("/home/u/.local/bin/kashot")), InstallChannel::Portable);
+        assert_eq!(detect(&linux("/tmp/u/.local/bin/kashot")), InstallChannel::Portable);
     }
 
     #[test]
@@ -566,7 +566,7 @@ mod tests {
     #[test]
     fn linux_tarball_self_installs_but_windows_and_macos_use_the_browser() {
         assert_eq!(
-            detect_action(&linux("/home/u/.local/bin/kashot")).1,
+            detect_action(&linux("/tmp/u/.local/bin/kashot")).1,
             UpdateAction::SelfInstall
         );
         assert_eq!(
