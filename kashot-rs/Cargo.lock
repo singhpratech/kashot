@@ -1802,6 +1802,7 @@ dependencies = [
  "gtk",
  "image",
  "kashot-core",
+ "libc",
  "objc2 0.6.4",
  "objc2-core-audio-types",
  "objc2-core-foundation",

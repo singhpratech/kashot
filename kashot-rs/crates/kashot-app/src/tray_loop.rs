@@ -219,6 +219,14 @@ pub fn run() -> Result<()> {
                     self.capture(loop_target);
                 }
             }
+            // A second launch of KAShot doesn't open a second tray icon — it
+            // leaves a capture request beside the instance lock and exits.
+            // Claim it here so re-running the app (double-clicked desktop
+            // icon, a second autostart entry) captures instead of doing
+            // nothing. Costs one failing `unlink` per tick when idle.
+            if kashot_platform::instance::take_capture_request() {
+                self.capture(loop_target);
+            }
             // Nothing else watches the encoder between start and stop, so an
             // encoder that dies mid-recording (disk filled, capture device
             // unplugged, OOM kill) would otherwise leave the app flashing REC

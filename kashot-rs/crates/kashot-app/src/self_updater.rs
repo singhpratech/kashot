@@ -512,6 +512,12 @@ fn move_file_replacing(src: &Path, dst: &Path) -> Result<(), String> {
 
 // ── relaunch ────────────────────────────────────────────────────────────────
 
+/// Set on the process the updater relaunches, and read by `main` so it waits
+/// out the single-instance lock instead of treating the outgoing process as a
+/// duplicate launch. Nothing else in the app looks at it, and it is harmless
+/// if it leaks into a grandchild.
+pub const RELAUNCH_ENV: &str = "KASHOT_RELAUNCHED_BY_UPDATER";
+
 /// Spawn the freshly-installed binary detached from us, then exit so the
 /// new process owns the tray slot. This function does not return.
 fn spawn_and_exit(current_exe: &Path) -> ! {
@@ -520,7 +526,11 @@ fn spawn_and_exit(current_exe: &Path) -> ! {
     // wait-for-child plumbing on drop. On Windows, the child inherits
     // our console (when one exists) but tray apps run windowless so it
     // doesn't matter; in dev builds the child opens its own console.
-    let spawn_res = Command::new(current_exe).spawn();
+    //
+    // The child starts while we still hold the single-instance lock (we only
+    // exit a few lines below), so it has to be told this overlap is expected
+    // and wait for the handover rather than quitting as a duplicate launch.
+    let spawn_res = Command::new(current_exe).env(RELAUNCH_ENV, "1").spawn();
     if let Err(e) = spawn_res {
         // We've already swapped the binary so the next manual launch
         // will get the new build. Log + die so the user can re-open.

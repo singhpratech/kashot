@@ -18,6 +18,11 @@ chrono        = { workspace = true }
 thiserror     = { workspace = true }
 anyhow        = { workspace = true }
 
+# Single-instance guard (flock) and PR_SET_PDEATHSIG on Linux, both of which
+# are raw syscalls with no safe wrapper in std. Dual MIT / Apache-2.0.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 # tray-icon on Linux speaks StatusNotifierItem via libayatana-appindicator,
 # which requires GTK to be initialized on the main thread before any menu /
 # tray-icon construction, and needs GTK's main context iterated to deliver

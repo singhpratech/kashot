@@ -29,12 +29,53 @@ mod settings_form;
 mod tray_loop;
 mod updates_form;
 
+use std::time::Duration;
+
 use anyhow::Result;
+use kashot_platform::instance::{self, Instance};
+
+/// How long a relaunch spawned by the self-updater waits for the outgoing
+/// process to release the single-instance lock. The predecessor exits
+/// immediately after spawning us, so this is generous by an order of
+/// magnitude; the cap only exists so a wedged predecessor can't hang us
+/// forever.
+const RELAUNCH_HANDOVER_GRACE: Duration = Duration::from_secs(10);
 
 fn main() -> Result<()> {
     // After a self-update on Windows the previous .exe was renamed to
     // `<current_exe>.old` and couldn't be deleted until our PID exited.
     // We're that new PID now — clean it up. No-op on Linux / macOS.
     self_updater::cleanup_stale_old_binary();
+
+    // One KAShot per user session. A second launch used to add a second tray
+    // icon, a second (silently refused) hotkey registration, and a second
+    // recorder racing the first for the same output filenames.
+    //
+    // The one legitimate overlap is a self-update relaunch: our predecessor
+    // spawns us and only then exits, so we wait for the handover instead of
+    // quitting as a duplicate.
+    let grace = if std::env::var_os(self_updater::RELAUNCH_ENV).is_some() {
+        RELAUNCH_HANDOVER_GRACE
+    } else {
+        Duration::ZERO
+    };
+    // Held for the whole process: dropping it releases the lock.
+    let _instance = match instance::acquire_waiting(grace) {
+        Instance::Primary(guard) => Some(guard),
+        Instance::AlreadyRunning => {
+            // Make the extra launch do the useful thing rather than nothing:
+            // the running instance polls for this and opens the overlay.
+            instance::request_capture();
+            eprintln!(
+                "KAShot is already running — asked it to capture. \
+                 Use its tray icon to reach the menu."
+            );
+            return Ok(());
+        }
+        // No usable per-app directory to lock in. Start anyway: refusing to
+        // launch is far worse than a duplicate tray icon.
+        Instance::Unsupported => None,
+    };
+
     tray_loop::run()
 }
