@@ -12,6 +12,7 @@
 
 use crate::{Error, Result};
 use image::{ImageBuffer, Rgba};
+use kashot_core::region::DesktopBounds;
 
 #[derive(Debug, Clone)]
 pub struct Captured {
@@ -22,6 +23,24 @@ pub struct Captured {
     /// Per-monitor frames, in screen order. Already drawn into `bitmap`,
     /// kept around so callers can do per-monitor logic if they need to.
     pub monitors: Vec<MonitorFrame>,
+}
+
+impl Captured {
+    /// The virtual-desktop rectangle this capture covers.
+    ///
+    /// Region recording clamps the user's selection against exactly this — the
+    /// bitmap the selection was dragged over — so the rectangle handed to the
+    /// encoder can never name a pixel that wasn't on screen, and so both sides
+    /// agree on where the desktop's corner is even if the monitor layout
+    /// changes between the capture and the start of the recording.
+    pub fn desktop_bounds(&self) -> DesktopBounds {
+        DesktopBounds::new(
+            self.virtual_origin.0,
+            self.virtual_origin.1,
+            self.bitmap.width(),
+            self.bitmap.height(),
+        )
+    }
 }
 
 #[derive(Debug, Clone)]
