@@ -316,11 +316,15 @@ pub fn run() -> Result<()> {
             // the hotkey and nothing appeared on screen, and stderr is not a
             // surface a tray-resident app's user ever reads.
             match capture_all_screens() {
-                Ok(shot) => match Overlay::new(loop_target, shot.bitmap, self.settings.clone()) {
-                    // The capture's logical/physical map travels with the
-                    // frame: on a scaled display the bitmap is in device
-                    // pixels and the editor needs the mapping to hand a
-                    // selection back to the rest of the desktop.
+                // `shot.geometry()` carries the virtual-desktop origin and the
+                // monitor list (in device pixels), so the overlay spans every
+                // screen and maps the selection back to the pixels the user
+                // actually dragged over. The capture's logical/physical map
+                // travels with the frame too: on a scaled display the bitmap
+                // is in device pixels and the editor needs the mapping to hand
+                // a selection back to the rest of the desktop.
+                Ok(shot) => match Overlay::new(
+                    loop_target, shot.geometry(), shot.bitmap, self.settings.clone()) {
                     Ok(mut ov) => {
                         ov.set_display_map(shot.map);
                         self.overlay = Some(ov);

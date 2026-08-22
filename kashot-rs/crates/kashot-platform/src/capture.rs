@@ -23,6 +23,7 @@
 use crate::{Error, Result};
 use image::{ImageBuffer, Rgba};
 use kashot_core::dpi::{effective_scale, sample_index, DisplayMap, MonitorGeometry, PhysicalRect};
+use kashot_core::virtual_desktop::{DesktopGeometry, MonitorRect};
 
 #[derive(Debug, Clone)]
 pub struct Captured {
@@ -57,6 +58,29 @@ pub struct MonitorFrame {
     pub effective_scale: f32,
     /// Where this monitor's pixels live inside `Captured::bitmap`.
     pub physical: PhysicalRect,
+}
+
+impl Captured {
+    /// Virtual-desktop geometry of this capture: where the stitched bitmap
+    /// starts in virtual-screen space, how big it is, and the monitors it
+    /// was built from. The overlay places itself with this and maps every
+    /// selection back through it, so a region picked on a monitor left of
+    /// (or above) the primary one crops the pixels the user actually saw.
+    ///
+    /// Everything here is in *device* pixels — the unit the bitmap, the
+    /// overlay window and winit's cursor all share — so the monitor slots are
+    /// the `physical` rects the stitch produced, offset by the desktop's
+    /// device-pixel origin. At 1x that is exactly the OS-reported layout.
+    pub fn geometry(&self) -> DesktopGeometry {
+        let (ox, oy) = self.map.physical_origin();
+        let rects: Vec<MonitorRect> = self.monitors.iter()
+            .map(|m| MonitorRect::new(ox + m.physical.x, oy + m.physical.y,
+                                      m.physical.w, m.physical.h))
+            .collect();
+        DesktopGeometry::from_monitors(rects)
+            .filter(|g| g.size() == (self.bitmap.width(), self.bitmap.height()))
+            .unwrap_or_else(|| DesktopGeometry::bitmap(self.bitmap.width(), self.bitmap.height()))
+    }
 }
 
 /// Capture every monitor and stitch into one bitmap.

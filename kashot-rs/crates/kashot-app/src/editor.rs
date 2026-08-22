@@ -36,10 +36,11 @@ use std::rc::Rc;
 use anyhow::{anyhow, Result};
 use image::{ImageBuffer, Rgba};
 use kashot_core::annotation::{Annotation, Point2, Stroke};
-use kashot_core::dpi::{DisplayMap, PhysicalRect};
+use kashot_core::dpi::DisplayMap;
 use kashot_core::settings::AppSettings;
 use kashot_core::state::{hit_test_edge_scaled, Edge};
 use kashot_core::tool::Tool;
+use kashot_core::virtual_desktop::{self as vdesk, DesktopGeometry};
 use softbuffer::{Context, Surface};
 use winit::dpi::PhysicalPosition;
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
@@ -236,6 +237,19 @@ pub struct Overlay {
     /// so hit targets stay physically the same size on a high-DPI panel.
     /// Defaults to a 1x identity map, which is the un-scaled desktop.
     display:     DisplayMap,
+    /// Virtual-desktop geometry of `screenshot`: where the stitched capture
+    /// sits in virtual-screen space and which monitors it was built from.
+    /// Video sessions carry a monitor-less `DesktopGeometry::bitmap`, which
+    /// keeps every mapping below an identity.
+    desktop:     DesktopGeometry,
+    /// Virtual-screen coordinates of framebuffer pixel (0, 0). Equal to
+    /// `desktop.origin()` when the window landed where we asked; re-derived
+    /// from the window itself on every redraw by `sync_frame_origin`.
+    frame_origin: (i32, i32),
+    /// Set once we've reported a window manager placing the overlay
+    /// somewhere other than the virtual-desktop origin — the mapping copes,
+    /// but it's worth exactly one line in the log and not one per frame.
+    placement_logged: bool,
     window:      Rc<Window>,
     _ctx:        Context<Rc<Window>>,
     surface:     Surface<Rc<Window>, Rc<Window>>,
@@ -342,10 +356,11 @@ pub struct Overlay {
     /// pixel — the animated chrome on top would otherwise re-dim the whole
     /// screen ~30 times a second.
     dim_cache: Vec<u32>,
-    /// Key the cache above was built for: `(win_w, win_h, sel_rect)`.
+    /// Key the cache above was built for:
+    /// `(win_w, win_h, sel_rect, bitmap_offset)`.
     /// `None` forces a rebuild — that's how `swap_scrub_frame` invalidates
     /// the cache when it swaps the background to a new video frame.
-    dim_cache_key: Option<(usize, usize, Option<(i32, i32, i32, i32)>)>,
+    dim_cache_key: Option<(usize, usize, Option<(i32, i32, i32, i32)>, (i32, i32))>,
     /// When the last self-driven animation frame was presented. Paces the
     /// redraw re-arm to `ANIM_FRAME`.
     last_anim_frame: Option<std::time::Instant>,
@@ -367,12 +382,17 @@ impl Overlay {
     /// `settings.save()` on commit; the tray reads `marker_opacity()` back
     /// when the overlay closes to keep its in-memory copy in sync for the
     /// next capture.
+    ///
+    /// `desktop` is the geometry the screenshot was stitched from
+    /// (`Captured::geometry`): it places the overlay across the whole
+    /// virtual desktop and maps every selection back to the right pixels.
     pub fn new(
         loop_target: &ActiveEventLoop,
+        desktop: DesktopGeometry,
         screenshot: ImageBuffer<Rgba<u8>, Vec<u8>>,
         settings: AppSettings,
     ) -> Result<Self> {
-        Self::build(loop_target, screenshot, settings, false, None, None)
+        Self::build(loop_target, screenshot, desktop, settings, false, None, None)
     }
 
     /// Open the editor to annotate a video frame instead of a screenshot.
@@ -393,12 +413,17 @@ impl Overlay {
         video: PathBuf,
         duration_secs: Option<f32>,
     ) -> Result<Self> {
-        Self::build(loop_target, frame, settings, true, Some(video), duration_secs)
+        // A video frame is not a screen capture: it is drawn at framebuffer
+        // (0, 0) whatever monitor the window ends up on, so it gets a
+        // monitor-less geometry and every coordinate mapping stays identity.
+        let desktop = DesktopGeometry::bitmap(frame.width(), frame.height());
+        Self::build(loop_target, frame, desktop, settings, true, Some(video), duration_secs)
     }
 
     fn build(
         loop_target: &ActiveEventLoop,
         screenshot: ImageBuffer<Rgba<u8>, Vec<u8>>,
+        desktop: DesktopGeometry,
         settings: AppSettings,
         video_mode: bool,
         video_path: Option<PathBuf>,
@@ -426,20 +451,63 @@ impl Overlay {
             ));
         let primary = loop_target.primary_monitor()
             .or_else(|| loop_target.available_monitors().next());
+        let desktop_origin = desktop.origin();
+        let desktop_size   = desktop.size();
         let attrs = WindowAttributes::default()
             .with_title(if video_mode { "KAShot — annotate recording" } else { "KAShot" })
             .with_decorations(false)
             .with_resizable(false)
-            .with_inner_size(monitor_size)
-            .with_position(PhysicalPosition::new(0i32, 0i32))
             .with_window_level(WindowLevel::AlwaysOnTop)
-            .with_window_icon(crate::brand_icon::shared())
-            .with_fullscreen(Some(Fullscreen::Borderless(primary)));
+            .with_window_icon(crate::brand_icon::shared());
+
+        // Multi-monitor: the overlay has to cover the *union* of every
+        // screen, because a region dragged on a monitor left of / above the
+        // primary one starts at a negative virtual-screen coordinate and a
+        // primary-monitor-sized window can't even show it.
+        //
+        // One window spanning the union is the shape winit supports the same
+        // way on all three platforms: there is no "fullscreen across all
+        // monitors" mode (`Fullscreen::Borderless` takes a single monitor
+        // handle), and a window per monitor would mean one softbuffer
+        // surface and one event stream each, with a selection drag that
+        // starts in one window and ends in another — the cursor leaves the
+        // first window, so the drag would need pointer grabs that behave
+        // differently on X11, Windows and macOS. A borderless always-on-top
+        // window positioned at the union origin is placed natively by
+        // Windows and by X11 WMs; macOS honours it too unless "Displays have
+        // separate Spaces" is on, in which case the window is clamped to one
+        // display — `sync_frame_origin` re-derives the mapping from where
+        // the window actually landed, so the crop still matches what the
+        // user selected instead of silently sliding to another monitor.
+        let attrs = if desktop.spans_multiple_monitors() {
+            attrs
+                .with_inner_size(winit::dpi::PhysicalSize::new(
+                    desktop_size.0.max(1), desktop_size.1.max(1)))
+                .with_position(PhysicalPosition::new(desktop_origin.0, desktop_origin.1))
+        } else {
+            // Single monitor rooted at (0, 0): unchanged from before —
+            // `Fullscreen::Borderless(None)` opens at a default size on
+            // Cinnamon (~800×600), so the explicit size + position + fullscreen
+            // request together make the WM open us at full screen.
+            attrs
+                .with_inner_size(monitor_size)
+                .with_position(PhysicalPosition::new(0i32, 0i32))
+                .with_fullscreen(Some(Fullscreen::Borderless(primary)))
+        };
 
         let window = loop_target
             .create_window(attrs)
             .map(Rc::new)
             .map_err(|e| anyhow!("create_window: {e}"))?;
+
+        // Several WMs apply size/position only once the window is mapped and
+        // ignore what the create request asked for. Re-assert both; the
+        // request is a no-op when the window already covers the desktop.
+        if desktop.spans_multiple_monitors() {
+            window.set_outer_position(PhysicalPosition::new(desktop_origin.0, desktop_origin.1));
+            let _ = window.request_inner_size(winit::dpi::PhysicalSize::new(
+                desktop_size.0.max(1), desktop_size.1.max(1)));
+        }
 
         window.set_cursor(CursorIcon::Crosshair);
         window.focus_window();
@@ -460,6 +528,9 @@ impl Overlay {
         Ok(Overlay {
             display: DisplayMap::identity(full_w.max(0) as u32, full_h.max(0) as u32),
             screenshot,
+            desktop,
+            frame_origin: desktop_origin,
+            placement_logged: false,
             window,
             _ctx:        ctx,
             surface,
@@ -527,9 +598,7 @@ impl Overlay {
     /// out of 256 so every pixel of the track represents a distinct value.
     fn set_marker_opacity_from_cursor(&mut self) {
         let Some(sel) = self.selection else { return; };
-        let win_w = self.window.inner_size().width  as usize;
-        let win_h = self.window.inner_size().height as usize;
-        let Some(panel) = marker_slider_rect(win_w, win_h, sel) else { return; };
+        let Some(panel) = marker_slider_rect(self.panel_bounds(sel), sel) else { return; };
         let (tx, _ty, tw, _th) = marker_slider_track(panel);
         if tw <= 1 { return; }
         let cx = self.cursor.0;
@@ -548,9 +617,7 @@ impl Overlay {
     /// a synchronous ffmpeg spawn.
     fn set_scrub_from_cursor(&mut self, force_extract: bool) {
         let Some(dur) = self.duration else { return; };
-        let win_w = self.window.inner_size().width  as usize;
-        let win_h = self.window.inner_size().height as usize;
-        let bar = timeline_bar_rect(win_w, win_h);
+        let bar = timeline_bar_rect(self.chrome_bounds(self.cursor));
         let (tx, _ty, tw, _th) = timeline_track(bar, dur);
         if tw <= 1 { return; }
         let mut t = (self.cursor.0 - tx) as f32 / (tw - 1) as f32;
@@ -584,6 +651,73 @@ impl Overlay {
     }
 
     pub fn window_id(&self) -> WindowId { self.window.id() }
+
+    // ── virtual-desktop coordinate mapping ─────────────────────────────
+    //
+    // Mouse events, annotations and every painter call are in *frame*
+    // (framebuffer) space. The capture is in *bitmap* space, and the pin
+    // window wants *virtual-screen* space. `kashot_core::virtual_desktop`
+    // owns the arithmetic; these four helpers feed it the overlay's state.
+
+    /// Re-derive the framebuffer's virtual-screen origin from the window.
+    ///
+    /// Called at the top of every redraw. When the window manager honours
+    /// the requested placement this is a no-op — but when it doesn't (macOS
+    /// with separate Spaces per display, a WM that refuses negative
+    /// positions), it is what keeps the crop, the pin position and the
+    /// magnifier pointed at the pixels the user is actually looking at.
+    /// Skipped for non-capture bitmaps (video frames), which are drawn at
+    /// framebuffer (0, 0) no matter which monitor the window opens on.
+    fn sync_frame_origin(&mut self) {
+        if self.desktop.monitors().is_empty() { return; }
+        // Wayland refuses to report window position at all; the fallback
+        // there is the origin we asked for, same as before.
+        let pos = self.window.inner_position().or_else(|_| self.window.outer_position());
+        let Ok(p) = pos else { return; };
+        if (p.x, p.y) != self.frame_origin {
+            self.frame_origin = (p.x, p.y);
+            // Pass 1 samples the capture through this offset.
+            self.dim_cache_key = None;
+        }
+        if self.frame_origin != self.desktop.origin() && !self.placement_logged {
+            self.placement_logged = true;
+            let (ox, oy) = self.desktop.origin();
+            eprintln!(
+                "kashot: overlay placed at {},{} but the desktop starts at {ox},{oy} — \
+                 mapping selections through the difference",
+                self.frame_origin.0, self.frame_origin.1
+            );
+        }
+    }
+
+    /// Offset of framebuffer pixel (0, 0) inside the captured bitmap.
+    fn bitmap_offset(&self) -> (i32, i32) {
+        vdesk::bitmap_offset(self.desktop.origin(), self.frame_origin)
+    }
+
+    /// The selection as a crop rect in the captured bitmap.
+    fn selection_in_bitmap(&self) -> Option<(i32, i32, i32, i32)> {
+        Some(vdesk::frame_rect_to_bitmap(
+            self.desktop.origin(), self.frame_origin, self.selection?))
+    }
+
+    /// Framebuffer-space rect the floating chrome lays itself out inside:
+    /// the monitor under `point`, clipped to the framebuffer. Keeps the
+    /// tool / action panels, the magnifier and the hint chip on the monitor
+    /// the user is working on instead of letting them flip onto the one
+    /// next door, which is where clamping against the whole virtual desktop
+    /// would put them.
+    fn chrome_bounds(&self, point: (i32, i32)) -> (i32, i32, i32, i32) {
+        let size = self.window.inner_size();
+        vdesk::monitor_bounds_in_frame(
+            self.desktop.monitors(), self.frame_origin, (size.width, size.height), point)
+    }
+
+    /// Chrome bounds for the widgets anchored to the selection: the monitor
+    /// holding the selection's center.
+    fn panel_bounds(&self, sel: (i32, i32, i32, i32)) -> (i32, i32, i32, i32) {
+        self.chrome_bounds((sel.0 + sel.2 / 2, sel.1 + sel.3 / 2))
+    }
 
     pub fn handle_event(&mut self, event: WindowEvent) -> OverlayOutcome {
         match event {
@@ -864,15 +998,14 @@ impl Overlay {
         // C# OverlayForm.OnMouseDown.
         if self.state == State::Selected {
             if let Some(sel) = self.selection {
-                let win_w = self.window.inner_size().width  as usize;
-                let win_h = self.window.inner_size().height as usize;
-                let tp_origin = tool_panel_origin(win_w, win_h, sel);
+                let lb = self.panel_bounds(sel);
+                let tp_origin = tool_panel_origin(lb, sel);
 
                 // Color popup — must be tested before the tool panel itself
                 // so a click that falls on the popup doesn't get eaten by
                 // the panel underneath.
                 if self.palette_open {
-                    let pp_origin = palette_popup_origin(win_w, tp_origin);
+                    let pp_origin = palette_popup_origin(lb, tp_origin);
                     // Header arrows — prev/next palette.
                     if let Some(prev) = palette_header_hit(pp_origin, self.cursor) {
                         if prev {
@@ -919,7 +1052,7 @@ impl Overlay {
                 }
 
                 // Action panel.
-                let ap_origin = action_panel_origin(win_w, win_h, sel);
+                let ap_origin = action_panel_origin(lb, sel);
                 if let Some(action) = action_panel_hit(ap_origin, self.cursor) {
                     return match action {
                         ActionButton::Pin   => self.commit_as_pin(),
@@ -935,7 +1068,7 @@ impl Overlay {
                 // user releases the mouse button (mirrors the watermark
                 // opacity slider in `settings_form.rs`).
                 if self.tool == Tool::Marker {
-                    if let Some(panel) = marker_slider_rect(win_w, win_h, sel) {
+                    if let Some(panel) = marker_slider_rect(lb, sel) {
                         if marker_slider_hit(panel, self.cursor) {
                             self.dragging_marker_opacity = true;
                             self.set_marker_opacity_from_cursor();
@@ -949,7 +1082,7 @@ impl Overlay {
                 // editor, and on a known duration so a broken clip keeps
                 // the old static behavior.
                 if self.video_mode && self.duration.is_some() {
-                    let bar = timeline_bar_rect(win_w, win_h);
+                    let bar = timeline_bar_rect(lb);
                     if rect_contains(timeline_chip_rect(bar), self.cursor) {
                         self.duration_choice = (self.duration_choice + 1) % DURATION_CHOICES.len();
                         self.window.request_redraw();
@@ -1124,10 +1257,9 @@ impl Overlay {
 
     fn compute_hover_tip(&self) -> Option<(&'static str, i32, i32)> {
         let sel = self.selection?;
-        let win_w = self.window.inner_size().width  as usize;
-        let win_h = self.window.inner_size().height as usize;
+        let lb  = self.panel_bounds(sel);
         // Tool panel.
-        let tp = tool_panel_origin(win_w, win_h, sel);
+        let tp = tool_panel_origin(lb, sel);
         if let Some((idx, btn)) = tool_panel_hit(tp, self.cursor) {
             let (_, _, x1, y1) = tool_panel_button_rect(tp, idx as i32);
             let label = match btn {
@@ -1148,7 +1280,7 @@ impl Overlay {
             return Some((label, x1 + 6, y1 - 14));
         }
         // Action panel.
-        let ap = action_panel_origin(win_w, win_h, sel);
+        let ap = action_panel_origin(lb, sel);
         if let Some(btn) = action_panel_hit(ap, self.cursor) {
             let label = match btn {
                 ActionButton::Pin   => "Pin to screen",
@@ -1162,7 +1294,7 @@ impl Overlay {
         // is active. Tooltip cues the user that the widget is a slider
         // (some users may not recognise the chrome on first sight).
         if self.tool == Tool::Marker {
-            if let Some(panel) = marker_slider_rect(win_w, win_h, sel) {
+            if let Some(panel) = marker_slider_rect(lb, sel) {
                 if marker_slider_hit(panel, self.cursor) {
                     return Some(("Marker opacity", self.cursor.0 + 14, self.cursor.1 + 14));
                 }
@@ -1171,7 +1303,7 @@ impl Overlay {
         // Video timeline — same gates as the click handler so the tip can
         // only ever appear where a click would actually land.
         if self.video_mode && self.duration.is_some() {
-            let bar = timeline_bar_rect(win_w, win_h);
+            let bar = timeline_bar_rect(lb);
             if rect_contains(timeline_chip_rect(bar), self.cursor) {
                 return Some(("Annotation duration", self.cursor.0 + 14, self.cursor.1 - 24));
             }
@@ -1253,18 +1385,19 @@ impl Overlay {
     }
 
     fn commit_as_pin(&mut self) -> OverlayOutcome {
-        // The pin window is positioned in absolute device pixels, which the
+        // `PinView` positions its window in absolute device pixels, which the
         // selection is only trivially equal to on a single 1x screen at the
-        // virtual origin. Route it through the display map so the pin lands
-        // over the region it was cut from on a scaled or offset desktop.
+        // virtual origin. `frame_origin` is the framebuffer's device-pixel
+        // origin (the display map's physical origin, re-derived from the
+        // window), so lifting the selection through it lands the pin over
+        // the region it was cut from on a scaled or offset desktop — on a
+        // monitor left of / above the primary one that is a negative position.
+        // `PinView` positions its window in virtual-screen coordinates, so
+        // the selection has to be lifted out of frame space — on a monitor
+        // left of / above the primary one that is a negative position.
         let pos = match self.selection {
-            Some((x, y, w, h)) => {
-                let dev = self.display.physical_rect_to_device(PhysicalRect::new(
-                    x, y, w.max(0) as u32, h.max(0) as u32,
-                ));
-                (dev.x, dev.y)
-            }
-            None => return OverlayOutcome::Continue,
+            Some((x, y, _, _)) => vdesk::frame_to_virtual(self.frame_origin, (x, y)),
+            None               => return OverlayOutcome::Continue,
         };
         match self.compose_final() {
             Some(img) => OverlayOutcome::Pinned(img, pos),
@@ -1278,7 +1411,11 @@ impl Overlay {
     fn compose_final(&self) -> Option<ImageBuffer<Rgba<u8>, Vec<u8>>> {
         if self.state != State::Selected { return None; }
         let rect = self.selection?;
-        let mut img = crop(&self.screenshot, rect);
+        // The selection is in frame space; the capture is in bitmap space.
+        // On a multi-monitor desktop those differ by the virtual-desktop
+        // origin, which is what used to make a region picked on a monitor
+        // left of / above the primary one crop the wrong pixels.
+        let mut img = crop(&self.screenshot, self.selection_in_bitmap()?);
         // Snapshot the un-annotated crop FIRST so pixelate's source-sampling
         // stays idempotent under draw-order: pixelate must always sample the
         // original screenshot, never something we already painted on.
@@ -1338,6 +1475,9 @@ impl Overlay {
     }
 
     fn redraw(&mut self) {
+        // Where the window actually landed decides every coordinate mapping
+        // below, so re-read it before anything is drawn or sampled.
+        self.sync_frame_origin();
         #[cfg(target_os = "linux")]
         {
             self.push_x11_focus();
@@ -1349,6 +1489,13 @@ impl Overlay {
         }
         let phys = self.window.inner_size();
         let (Some(w), Some(h)) = (NonZeroU32::new(phys.width), NonZeroU32::new(phys.height)) else { return; };
+        // Chrome bounds have to be resolved before the framebuffer is
+        // borrowed — they read `self`, the buffer borrows `self.surface`.
+        let cursor_bounds = self.chrome_bounds(self.cursor);
+        let sel_bounds    = self.selection.map(|sel| self.panel_bounds(sel));
+        // Offset of framebuffer (0, 0) inside the capture: zero whenever the
+        // overlay covers the virtual desktop as asked.
+        let shot_off      = self.bitmap_offset();
         if let Err(e) = self.surface.resize(w, h) {
             eprintln!("overlay: surface.resize: {e}"); return;
         }
@@ -1372,7 +1519,7 @@ impl Overlay {
         // selection rect and the captured frame, none of which move on an
         // animation frame, so a full-screen memcpy replaces a full-screen
         // per-pixel multiply on every frame but the first.
-        let cache_key = (win_w, win_h, sel_rect);
+        let cache_key = (win_w, win_h, sel_rect, shot_off);
         if self.dim_cache_key != Some(cache_key) || self.dim_cache.len() != win_w * win_h {
             self.dim_cache.clear();
             self.dim_cache.resize(win_w * win_h, 0);
@@ -1380,8 +1527,14 @@ impl Overlay {
             for y in 0..win_h {
                 for x in 0..win_w {
                     let dst_idx = y * win_w + x;
-                    let (r, g, b) = if x < shot_w && y < shot_h {
-                        let src = (y * shot_w + x) * 4;
+                    // Frame pixel -> capture pixel. Off-capture pixels (a
+                    // gap between differently-sized monitors, or a window
+                    // the WM pushed past the capture) paint black.
+                    let sx = x as i32 + shot_off.0;
+                    let sy = y as i32 + shot_off.1;
+                    let (r, g, b) = if sx >= 0 && sy >= 0
+                        && (sx as usize) < shot_w && (sy as usize) < shot_h {
+                        let src = (sy as usize * shot_w + sx as usize) * 4;
                         (shot[src] as u32, shot[src + 1] as u32, shot[src + 2] as u32)
                     } else {
                         (0, 0, 0)
@@ -1410,10 +1563,10 @@ impl Overlay {
             // Timeline preview: only ink whose window contains the scrub
             // position is visible. Screenshot mode carries no windows.
             if self.video_mode && !annotation_visible_at(a, self.scrub_pos) { continue; }
-            painter::render_annotation(&mut surf, a, Some(&self.screenshot));
+            painter::render_annotation_offset(&mut surf, a, Some(&self.screenshot), shot_off);
         }
         if let Some(a) = self.current.as_ref() {
-            painter::render_annotation(&mut surf, a, Some(&self.screenshot));
+            painter::render_annotation_offset(&mut surf, a, Some(&self.screenshot), shot_off);
         }
 
         // While typing — show a subtle dashed rectangle around the text
@@ -1466,7 +1619,8 @@ impl Overlay {
         // there's a selection (including mid-drag), matches C# OverlayForm.
         if let Some((x, y, w, h)) = self.selection {
             if w > 8 && h > 8 {
-                draw_dimension_chip(&mut buf, win_w, win_h, x + w, y + h, w as u32, h as u32);
+                let lb = sel_bounds.unwrap_or((0, 0, win_w as i32, win_h as i32));
+                draw_dimension_chip(&mut buf, win_w, win_h, lb, x + w, y + h, w as u32, h as u32);
             }
         }
 
@@ -1480,7 +1634,8 @@ impl Overlay {
 
         if matches!(self.state, State::Selected | State::Drawing | State::Resizing | State::TextInput) {
             if let Some(sel) = self.selection {
-                draw_tool_panel(&mut buf, win_w, win_h, sel,
+                let lb = sel_bounds.unwrap_or((0, 0, win_w as i32, win_h as i32));
+                draw_tool_panel(&mut buf, win_w, win_h, lb, sel,
                                 self.tool, self.stroke.color, self.stroke.thickness);
                 // Sequential orange-neon halo cycles through every button
                 // (top→bottom, 1 per slot). Mirrors the website's tool-palette
@@ -1488,8 +1643,8 @@ impl Overlay {
                 // is just hovering. Painted after the panel so the halo sits
                 // on top of the button background but under the icon glyph.
                 let elapsed = self.opened_at.elapsed().as_secs_f32();
-                draw_tool_panel_glow(&mut buf, win_w, win_h, sel, elapsed);
-                draw_action_panel(&mut buf, win_w, win_h, sel);
+                draw_tool_panel_glow(&mut buf, win_w, win_h, lb, sel, elapsed);
+                draw_action_panel(&mut buf, win_w, win_h, lb, sel);
                 // Attention pulse on the action panel for the first 3 s after
                 // it appears — the panel auto-positions based on selection +
                 // screen, so first-time users can lose track of where Save /
@@ -1498,22 +1653,23 @@ impl Overlay {
                     if let Some(start) = self.panel_pulse_started {
                         let elapsed = start.elapsed().as_secs_f32();
                         if elapsed < 3.0 {
-                            draw_action_panel_pulse(&mut buf, win_w, win_h, sel, elapsed);
+                            draw_action_panel_pulse(&mut buf, win_w, win_h, lb, sel, elapsed);
                         } else {
                             self.panel_pulse_started = None;
                         }
                     }
                 }
                 if self.palette_open {
-                    let tp_origin = tool_panel_origin(win_w, win_h, sel);
-                    draw_palette_popup(&mut buf, win_w, win_h, tp_origin, self.stroke.color, self.palette_index);
+                    let tp_origin = tool_panel_origin(lb, sel);
+                    draw_palette_popup(&mut buf, win_w, win_h, lb, tp_origin,
+                                       self.stroke.color, self.palette_index);
                 }
                 // Marker opacity slider — appears only while the Marker
                 // tool is the active selection. The slider track shows the
                 // marker color at the chosen opacity so the user previews
                 // exactly what their next stroke will look like.
                 if self.tool == Tool::Marker {
-                    if let Some(panel) = marker_slider_rect(win_w, win_h, sel) {
+                    if let Some(panel) = marker_slider_rect(lb, sel) {
                         draw_marker_opacity_slider(
                             &mut buf, win_w, win_h, panel,
                             self.stroke.color, self.settings.marker_opacity,
@@ -1528,7 +1684,7 @@ impl Overlay {
         // dragging a region or about the way back out. One dim line spells
         // both out; it disappears the moment the drag starts.
         if matches!(self.state, State::Idle) {
-            draw_idle_hint(&mut buf, win_w, win_h);
+            draw_idle_hint(&mut buf, win_w, win_h, cursor_bounds);
         }
 
         // Pass 6: magnifier — only useful when the user is positioning the
@@ -1536,7 +1692,8 @@ impl Overlay {
         // the toolbar+palette take over and the lens just gets in the way.
         // Drawn after the hint so the lens is never covered by it.
         if matches!(self.state, State::Idle | State::Selecting) {
-            draw_magnifier(&mut buf, win_w, win_h, &self.screenshot, self.cursor);
+            draw_magnifier(&mut buf, win_w, win_h, cursor_bounds,
+                           &self.screenshot, self.cursor, shot_off);
         }
 
         // Pass 6.5: video timeline — video mode only, and only when the
@@ -1547,7 +1704,7 @@ impl Overlay {
                 let ticks: Vec<f32> = self.annotations.iter()
                     .filter_map(|a| a.time.map(|(s, _)| s))
                     .collect();
-                draw_timeline_bar(&mut buf, win_w, win_h, self.scrub_pos, dur,
+                draw_timeline_bar(&mut buf, win_w, win_h, cursor_bounds, self.scrub_pos, dur,
                                   duration_chip_label(self.duration_choice), &ticks);
             }
         }
@@ -1556,7 +1713,7 @@ impl Overlay {
         // in `Selected`. Mirrors C# `MakeButton(tip, ...)` behaviour.
         if let Some((label, x, y)) = self.hover_tip {
             if matches!(self.state, State::Selected) {
-                draw_tooltip(&mut buf, win_w, win_h, label, x, y);
+                draw_tooltip(&mut buf, win_w, win_h, cursor_bounds, label, x, y);
             }
         }
 
@@ -1607,18 +1764,23 @@ fn action_panel_dims() -> (i32, i32) {
     (w, h)
 }
 
-/// Screen-space origin of the tool panel. Right of selection by default;
+/// Frame-space origin of the tool panel. Right of selection by default;
 /// flips to the left if the right edge would clip; rounds inward to keep
-/// the panel fully on screen. Returns `None` if no selection is locked in.
-fn tool_panel_origin(win_w: usize, win_h: usize, sel: (i32, i32, i32, i32)) -> (i32, i32) {
-    let (sx, sy, sw, sh) = sel;
+/// the panel fully inside `bounds`.
+///
+/// `bounds` is the monitor the selection sits on (see `Overlay::panel_bounds`),
+/// not the whole framebuffer — on a multi-monitor overlay clamping against
+/// the framebuffer would let the panel drift onto the monitor next door
+/// instead of flipping to the other side of the selection.
+fn tool_panel_origin(bounds: (i32, i32, i32, i32), sel: (i32, i32, i32, i32)) -> (i32, i32) {
+    let (bx, by, bw, bh) = bounds;
+    let (sx, sy, sw, _sh) = sel;
     let (pw, ph) = tool_panel_dims();
     let mut tx = sx + sw + 5;
     let mut ty = sy;
-    if tx + pw > win_w as i32 { tx = sx - pw - 5; }
-    if ty + ph > win_h as i32 { ty = (win_h as i32) - ph; }
-    let _ = sh;
-    (tx.max(0), ty.max(0))
+    if tx + pw > bx + bw { tx = sx - pw - 5; }
+    if ty + ph > by + bh { ty = by + bh - ph; }
+    (tx.max(bx), ty.max(by))
 }
 
 /// Origin + size of the Marker-only opacity slider panel. Sits directly
@@ -1629,11 +1791,11 @@ fn tool_panel_origin(win_w: usize, win_h: usize, sel: (i32, i32, i32, i32)) -> (
 /// have to overflow horizontally on a screen narrower than ~180 px — in
 /// which case the caller silently skips drawing.
 fn marker_slider_rect(
-    win_w: usize,
-    win_h: usize,
-    sel:   (i32, i32, i32, i32),
+    bounds: (i32, i32, i32, i32),
+    sel:    (i32, i32, i32, i32),
 ) -> Option<(i32, i32, i32, i32)> {
-    let (tp_x, tp_y) = tool_panel_origin(win_w, win_h, sel);
+    let (bx, by, bw, bh) = bounds;
+    let (tp_x, tp_y) = tool_panel_origin(bounds, sel);
     let (tp_w, tp_h) = tool_panel_dims();
     let (sw, _sh) = (sel.2, sel.3);
     // The tool panel sits to the RIGHT of the selection when it fits, LEFT
@@ -1651,9 +1813,9 @@ fn marker_slider_rect(
     let sy = tp_y + tp_h + MARKER_SLIDER_GAP;
     // Clamp into screen bounds; if there's no room below the panel, hop
     // above instead.
-    let sx = sx.max(0).min((win_w as i32 - MARKER_SLIDER_W).max(0));
-    let sy = if sy + MARKER_SLIDER_H > win_h as i32 {
-        (tp_y - MARKER_SLIDER_GAP - MARKER_SLIDER_H).max(0)
+    let sx = sx.max(bx).min((bx + bw - MARKER_SLIDER_W).max(bx));
+    let sy = if sy + MARKER_SLIDER_H > by + bh {
+        (tp_y - MARKER_SLIDER_GAP - MARKER_SLIDER_H).max(by)
     } else { sy };
     Some((sx, sy, MARKER_SLIDER_W, MARKER_SLIDER_H))
 }
@@ -1681,11 +1843,13 @@ fn rect_contains((x, y, w, h): (i32, i32, i32, i32), (cx, cy): (i32, i32)) -> bo
     cx >= x && cx < x + w && cy >= y && cy < y + h
 }
 
-/// Bottom-center timeline bar, video mode only.
-fn timeline_bar_rect(win_w: usize, win_h: usize) -> (i32, i32, i32, i32) {
-    let w = TIMELINE_MAX_W.min(win_w as i32 - TIMELINE_MARGIN * 2).max(120);
-    let x = (win_w as i32 - w) / 2;
-    let y = (win_h as i32 - TIMELINE_MARGIN - TIMELINE_H).max(0);
+/// Bottom-center timeline bar, video mode only. Centered inside `bounds`
+/// so it lands on one monitor rather than straddling the seam between two.
+fn timeline_bar_rect(bounds: (i32, i32, i32, i32)) -> (i32, i32, i32, i32) {
+    let (bx, by, bw, bh) = bounds;
+    let w = TIMELINE_MAX_W.min(bw - TIMELINE_MARGIN * 2).max(120);
+    let x = bx + (bw - w) / 2;
+    let y = (by + bh - TIMELINE_MARGIN - TIMELINE_H).max(by);
     (x, y, w, TIMELINE_H)
 }
 
@@ -1834,15 +1998,15 @@ pub(crate) fn compose_overlay_groups(commit: &VideoCommit, video: &std::path::Pa
     out_groups
 }
 
-fn action_panel_origin(win_w: usize, win_h: usize, sel: (i32, i32, i32, i32)) -> (i32, i32) {
+fn action_panel_origin(bounds: (i32, i32, i32, i32), sel: (i32, i32, i32, i32)) -> (i32, i32) {
+    let (bx, by, _bw, bh) = bounds;
     let (sx, sy, sw, sh) = sel;
     let (pw, ph) = action_panel_dims();
     let mut ax = sx + sw - pw;
     let mut ay = sy + sh + 5;
-    if ay + ph > win_h as i32 { ay = sy - ph - 5; }
-    if ax < 0 { ax = sx; }
-    let _ = win_w;
-    (ax.max(0), ay.max(0))
+    if ay + ph > by + bh { ay = sy - ph - 5; }
+    if ax < bx { ax = sx; }
+    (ax.max(bx), ay.max(by))
 }
 
 /// Rectangle for the i-th tool-panel button. Index above the divider
@@ -1921,16 +2085,17 @@ fn palette_header_button_rect(origin: (i32, i32), prev: bool) -> (i32, i32, i32,
 
 /// Where the color popup opens — to the LEFT of the tool panel, top-aligned
 /// with the Color button, falling back to the right side if the left clips.
-fn palette_popup_origin(win_w: usize, panel_origin: (i32, i32)) -> (i32, i32) {
+fn palette_popup_origin(bounds: (i32, i32, i32, i32), panel_origin: (i32, i32)) -> (i32, i32) {
+    let (bx, by, bw, _bh) = bounds;
     let (pw, _ph) = palette_popup_dims();
     let mut x = panel_origin.0 - pw - 5;
     let y     = panel_origin.1;
-    if x < 0 {
+    if x < bx {
         let (tw, _) = tool_panel_dims();
         x = panel_origin.0 + tw + 5;
-        if x + pw > win_w as i32 { x = (win_w as i32) - pw - 5; }
+        if x + pw > bx + bw { x = bx + bw - pw - 5; }
     }
-    (x.max(0), y.max(0))
+    (x.max(bx), y.max(by))
 }
 
 fn palette_popup_swatch_rect(origin: (i32, i32), idx: i32) -> (i32, i32, i32, i32) {
@@ -1961,6 +2126,7 @@ fn draw_tool_panel(
     buf:        &mut [u32],
     win_w:      usize,
     win_h:      usize,
+    bounds:     (i32, i32, i32, i32),
     sel:        (i32, i32, i32, i32),
     active:     Tool,
     swatch:     kashot_core::color::Rgba,
@@ -1972,7 +2138,7 @@ fn draw_tool_panel(
     const TEXT:       u32 = 0x00_E8_E8_EC;
     const DIVIDER:    u32 = 0x00_44_44_48;
 
-    let (ox, oy) = tool_panel_origin(win_w, win_h, sel);
+    let (ox, oy) = tool_panel_origin(bounds, sel);
     let (pw, ph) = tool_panel_dims();
     draw_rounded_rect(buf, win_w, win_h, ox, oy, ox + pw, oy + ph, PANEL_RADIUS, BG);
 
@@ -2010,6 +2176,7 @@ fn draw_tool_panel_glow(
     buf:     &mut [u32],
     win_w:   usize,
     win_h:   usize,
+    bounds:  (i32, i32, i32, i32),
     sel:     (i32, i32, i32, i32),
     elapsed: f32,
 ) {
@@ -2029,7 +2196,7 @@ fn draw_tool_panel_glow(
               else if phase < 0.55 { 1.0 }
               else { ((0.85 - phase) / 0.30).max(0.0) };
 
-    let panel_origin = tool_panel_origin(win_w, win_h, sel);
+    let panel_origin = tool_panel_origin(bounds, sel);
     let (x0, y0, x1, y1) = tool_panel_button_rect(panel_origin, active_idx);
 
     // Orange-neon palette — matches the website's `.tool-glow` filter.
@@ -2064,14 +2231,15 @@ fn draw_tool_panel_glow(
 /// clears `panel_pulse_started` the moment elapsed crosses the threshold so
 /// the next frame draws no pulse at all.
 fn draw_action_panel_pulse(
-    buf:   &mut [u32],
-    win_w: usize,
-    win_h: usize,
-    sel:   (i32, i32, i32, i32),
+    buf:    &mut [u32],
+    win_w:  usize,
+    win_h:  usize,
+    bounds: (i32, i32, i32, i32),
+    sel:    (i32, i32, i32, i32),
     elapsed: f32,
 ) {
     if elapsed >= 3.0 { return; }
-    let origin = action_panel_origin(win_w, win_h, sel);
+    let origin = action_panel_origin(bounds, sel);
     let (pw, ph) = action_panel_dims();
 
     // Cycle: ~150 ms total; 60% ON, 40% OFF. Solid on the bright phase, faint
@@ -2135,16 +2303,17 @@ fn blend_rect_outline(
 }
 
 fn draw_action_panel(
-    buf:   &mut [u32],
-    win_w: usize,
-    win_h: usize,
-    sel:   (i32, i32, i32, i32),
+    buf:    &mut [u32],
+    win_w:  usize,
+    win_h:  usize,
+    bounds: (i32, i32, i32, i32),
+    sel:    (i32, i32, i32, i32),
 ) {
     const BG:   u32 = 0x00_22_22_24;
     const BTN:  u32 = 0x00_2E_2E_32;
     const TEXT: u32 = 0x00_E8_E8_EC;
 
-    let origin = action_panel_origin(win_w, win_h, sel);
+    let origin = action_panel_origin(bounds, sel);
     let (pw, ph) = action_panel_dims();
     draw_rounded_rect(buf, win_w, win_h, origin.0, origin.1, origin.0 + pw, origin.1 + ph, PANEL_RADIUS, BG);
 
@@ -2285,6 +2454,7 @@ fn draw_timeline_bar(
     buf:        &mut [u32],
     win_w:      usize,
     win_h:      usize,
+    bounds:     (i32, i32, i32, i32),
     scrub:      f32,
     total:      f32,
     chip_label: &str,
@@ -2299,7 +2469,7 @@ fn draw_timeline_bar(
     const TICK:     u32 = 0x00_00_FF_95;     // annotation starts, laser-green
     const TEXT:     u32 = 0x00_E8_E8_EC;
 
-    let bar = timeline_bar_rect(win_w, win_h);
+    let bar = timeline_bar_rect(bounds);
     let (bx, by, bw, bh) = bar;
     draw_rounded_rect(buf, win_w, win_h, bx, by, bx + bw, by + bh, PANEL_RADIUS, BG);
     draw_rect_border(buf, win_w, win_h, bx, by, bx + bw, by + bh, BORDER);
@@ -2360,6 +2530,7 @@ fn draw_palette_popup(
     buf:           &mut [u32],
     win_w:         usize,
     win_h:         usize,
+    bounds:        (i32, i32, i32, i32),
     panel_origin:  (i32, i32),
     active_color:  kashot_core::color::Rgba,
     palette_index: usize,
@@ -2367,7 +2538,7 @@ fn draw_palette_popup(
     const BG:        u32 = 0x00_22_22_24;
     const HEADER_BG: u32 = 0x00_2E_2E_32;
 
-    let origin = palette_popup_origin(win_w, panel_origin);
+    let origin = palette_popup_origin(bounds, panel_origin);
     let (pw, ph) = palette_popup_dims();
     draw_rounded_rect(buf, win_w, win_h, origin.0, origin.1, origin.0 + pw, origin.1 + ph, PANEL_RADIUS, BG);
 
@@ -2497,12 +2668,13 @@ fn release_x11_focus() {
 /// cursor is hovering. Uses the in-tree 5×7 bitmap font at scale 2 so it
 /// stays consistent with the dimension chip and palette header.
 fn draw_tooltip(
-    buf:   &mut [u32],
-    win_w: usize,
-    win_h: usize,
-    label: &str,
-    x:     i32,
-    y:     i32,
+    buf:    &mut [u32],
+    win_w:  usize,
+    win_h:  usize,
+    bounds: (i32, i32, i32, i32),
+    label:  &str,
+    x:      i32,
+    y:      i32,
 ) {
     let scale = 2;
     let text_w = crate::bitmap_font::measure(label, scale);
@@ -2511,13 +2683,14 @@ fn draw_tooltip(
     let pad_y  = 4;
     let chip_w = text_w + pad_x * 2;
     let chip_h = text_h + pad_y * 2;
-    // Auto-flip so the chip stays on screen.
+    // Auto-flip so the chip stays on the monitor it belongs to.
+    let (bx, by, bw, bh) = bounds;
     let mut x0 = x;
     let mut y0 = y;
-    if x0 + chip_w > win_w as i32 { x0 = (win_w as i32) - chip_w - 4; }
-    if y0 + chip_h > win_h as i32 { y0 = (win_h as i32) - chip_h - 4; }
-    if x0 < 0 { x0 = 4; }
-    if y0 < 0 { y0 = 4; }
+    if x0 + chip_w > bx + bw { x0 = bx + bw - chip_w - 4; }
+    if y0 + chip_h > by + bh { y0 = by + bh - chip_h - 4; }
+    if x0 < bx { x0 = bx + 4; }
+    if y0 < by { y0 = by + 4; }
     let x1 = x0 + chip_w;
     let y1 = y0 + chip_h;
     draw_filled_rect(buf, win_w, win_h, x0, y0, x1, y1, 0x00_10_10_14);
@@ -2535,19 +2708,27 @@ const IDLE_HINT: &str = "drag to select a region  -  Esc to close";
 /// hairline border as the tooltip chip so it reads as overlay chrome, but
 /// in a muted grey: it's a nudge for first-time users, not something that
 /// should pull attention away from the region they're about to pick.
-fn draw_idle_hint(buf: &mut [u32], win_w: usize, win_h: usize) {
+fn draw_idle_hint(
+    buf:    &mut [u32],
+    win_w:  usize,
+    win_h:  usize,
+    bounds: (i32, i32, i32, i32),
+) {
     const SCALE:  i32 = 2;
     const PAD_X:  i32 = 12;
     const PAD_Y:  i32 = 8;
     const MARGIN: i32 = 48;          // gap from the bottom screen edge
 
+    let (bx, by, bw, bh) = bounds;
     let chip_w = crate::bitmap_font::measure(IDLE_HINT, SCALE) + PAD_X * 2;
     let chip_h = crate::bitmap_font::GLYPH_H * SCALE + PAD_Y * 2;
-    let x0 = ((win_w as i32) - chip_w) / 2;
-    let y0 = (win_h as i32) - chip_h - MARGIN;
+    // Centered on the monitor the cursor is on, not across the seam of a
+    // multi-monitor overlay.
+    let x0 = bx + (bw - chip_w) / 2;
+    let y0 = by + bh - chip_h - MARGIN;
     // Screens too small to hold the chip get no hint rather than a clipped
     // one — it would land on top of the user's content either way.
-    if x0 < 0 || y0 < 0 { return; }
+    if x0 < bx || y0 < by { return; }
     let x1 = x0 + chip_w;
     let y1 = y0 + chip_h;
     draw_filled_rect(buf, win_w, win_h, x0, y0, x1, y1, 0x00_10_10_14);
@@ -2559,23 +2740,30 @@ fn draw_idle_hint(buf: &mut [u32], win_w: usize, win_h: usize) {
     );
 }
 
-/// Magnifier lens. Samples the original screenshot in a (2·R+1)² window
-/// around the cursor and draws each source pixel as a `MAG_ZOOM`-sized
-/// square. Adds a 1-px border + crosshair through the center pixel.
-/// Auto-flips position so it never falls off the screen edge.
+/// Magnifier lens. Samples the original capture in a (2·R+1)² window around
+/// the cursor and draws each source pixel as a `MAG_ZOOM`-sized square. Adds
+/// a 1-px border + crosshair through the center pixel. Auto-flips position
+/// so it never falls off the edge of the monitor it is on.
+///
+/// `shot_off` maps the cursor from frame space into the capture: on a
+/// multi-monitor desktop the two differ by the virtual-desktop origin, and
+/// without it the lens shows pixels from somewhere else entirely.
 fn draw_magnifier(
-    buf:    &mut [u32],
-    win_w:  usize,
-    win_h:  usize,
-    shot:   &image::ImageBuffer<image::Rgba<u8>, Vec<u8>>,
-    cursor: (i32, i32),
+    buf:      &mut [u32],
+    win_w:    usize,
+    win_h:    usize,
+    bounds:   (i32, i32, i32, i32),
+    shot:     &image::ImageBuffer<image::Rgba<u8>, Vec<u8>>,
+    cursor:   (i32, i32),
+    shot_off: (i32, i32),
 ) {
+    let (bx, by, bw, bh) = bounds;
     let chip = MAG_SIZE + 4;          // includes border
     let mut x0 = cursor.0 + MAG_OFFSET;
     let mut y0 = cursor.1 + MAG_OFFSET;
-    if x0 + chip > win_w as i32 { x0 = cursor.0 - MAG_OFFSET - chip; }
-    if y0 + chip > win_h as i32 { y0 = cursor.1 - MAG_OFFSET - chip; }
-    if x0 < 0 || y0 < 0 { return; }   // not enough room either way
+    if x0 + chip > bx + bw { x0 = cursor.0 - MAG_OFFSET - chip; }
+    if y0 + chip > by + bh { y0 = cursor.1 - MAG_OFFSET - chip; }
+    if x0 < bx || y0 < by { return; } // not enough room either way
 
     let shot_w = shot.width()  as i32;
     let shot_h = shot.height() as i32;
@@ -2589,8 +2777,8 @@ fn draw_magnifier(
     let inner_y = y0 + 2;
     for sy in 0..MAG_PIXELS {
         for sx in 0..MAG_PIXELS {
-            let src_x = cursor.0 + sx - MAG_RADIUS;
-            let src_y = cursor.1 + sy - MAG_RADIUS;
+            let src_x = cursor.0 + shot_off.0 + sx - MAG_RADIUS;
+            let src_y = cursor.1 + shot_off.1 + sy - MAG_RADIUS;
             let px = if src_x >= 0 && src_x < shot_w && src_y >= 0 && src_y < shot_h {
                 let p = shot.get_pixel(src_x as u32, src_y as u32).0;
                 ((p[0] as u32) << 16) | ((p[1] as u32) << 8) | p[2] as u32
@@ -2688,6 +2876,7 @@ fn translate_annotation(a: &Annotation, dx: f32, dy: f32) -> Annotation {
 /// 75 %-opaque dark fill so it stays legible on light or dark screenshots.
 fn draw_dimension_chip(
     buf: &mut [u32], stride: usize, height: usize,
+    bounds: (i32, i32, i32, i32),
     anchor_x: i32, anchor_y: i32, w: u32, h: u32,
 ) {
     const SCALE:  i32 = 2;
@@ -2705,10 +2894,11 @@ fn draw_dimension_chip(
 
     // Place chip just inside the selection's bottom-right corner. Flip
     // outward if it would clip the screen edge.
+    let (bx, by, _bw, _bh) = bounds;
     let mut x0 = anchor_x - chip_w - 4;
     let mut y0 = anchor_y - chip_h - 4;
-    if x0 < 0 { x0 = anchor_x + 4; }
-    if y0 < 0 { y0 = anchor_y + 4; }
+    if x0 < bx { x0 = anchor_x + 4; }
+    if y0 < by { y0 = anchor_y + 4; }
     let x1 = x0 + chip_w;
     let y1 = y0 + chip_h;
 

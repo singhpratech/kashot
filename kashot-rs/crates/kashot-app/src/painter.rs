@@ -318,16 +318,21 @@ pub fn step_marker<S: Surface>(s: &mut S, center: Point2, number: u32, color: Ka
 
 /// Average-then-fill: replace every `block_size×block_size` block in the dest
 /// rect with the average color of the corresponding block in `src`. The source
-/// is expected to be the *original* screenshot (in the same coordinate space
-/// as the destination surface) — never a downstream surface that may already
-/// have annotations baked in. That keeps pixelate idempotent under draw-order
-/// changes, matching `Kashot/Annotations.cs::PixelateAnnotation`.
+/// is expected to be the *original* screenshot — never a downstream surface
+/// that may already have annotations baked in. That keeps pixelate idempotent
+/// under draw-order changes, matching `Kashot/Annotations.cs::PixelateAnnotation`.
+///
+/// `src_offset` is where the destination surface's origin sits inside `src`.
+/// It is `(0, 0)` whenever the two share a coordinate space; the overlay
+/// passes a real offset when its window doesn't line up with the capture it
+/// is showing (see `kashot_core::virtual_desktop`).
 pub fn pixelate_rect<S: Surface>(
     s:          &mut S,
     src:        &ImageBuffer<Rgba<u8>, Vec<u8>>,
     a:          Point2,
     b:          Point2,
     block_size: u32,
+    src_offset: (i32, i32),
 ) {
     let block = block_size.max(2) as i32;
     let x0 = a.x.min(b.x) as i32;
@@ -347,6 +352,7 @@ pub fn pixelate_rect<S: Surface>(
             let (mut rs, mut gs, mut bs, mut count) = (0u32, 0u32, 0u32, 0u32);
             for sy in by..by2 {
                 for sx in bx..bx2 {
+                    let (sx, sy) = (sx + src_offset.0, sy + src_offset.1);
                     if sx >= 0 && sx < src_w && sy >= 0 && sy < src_h {
                         let p = src.get_pixel(sx as u32, sy as u32).0;
                         rs += p[0] as u32; gs += p[1] as u32; bs += p[2] as u32; count += 1;
@@ -373,10 +379,25 @@ pub fn pixelate_rect<S: Surface>(
 
 // ── annotation dispatch ─────────────────────────────────────────────────────
 
+/// Draw one annotation, sampling the pixelate source in the destination
+/// surface's own coordinate space.
 pub fn render_annotation<S: Surface>(
     s:      &mut S,
     a:      &Annotation,
     source: Option<&ImageBuffer<Rgba<u8>, Vec<u8>>>,
+) {
+    render_annotation_offset(s, a, source, (0, 0));
+}
+
+/// [`render_annotation`], with the pixelate source sampled through
+/// `src_offset` — the destination surface's origin inside `source`. Only the
+/// live overlay preview needs this, and only when its window doesn't sit
+/// exactly on the capture it is showing.
+pub fn render_annotation_offset<S: Surface>(
+    s:          &mut S,
+    a:          &Annotation,
+    source:     Option<&ImageBuffer<Rgba<u8>, Vec<u8>>>,
+    src_offset: (i32, i32),
 ) {
     match &a.kind {
         AnnotationKind::Pen      { stroke: Stroke { color, thickness }, points } |
@@ -400,7 +421,7 @@ pub fn render_annotation<S: Surface>(
         }
         AnnotationKind::Pixelate { start, end, block_size } => {
             if let Some(src) = source {
-                pixelate_rect(s, src, *start, *end, *block_size);
+                pixelate_rect(s, src, *start, *end, *block_size, src_offset);
             }
         }
         AnnotationKind::Text { color, position, text, font_size } => {
