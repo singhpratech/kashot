@@ -307,7 +307,11 @@ pub fn run() -> Result<()> {
             // the hotkey and nothing appeared on screen, and stderr is not a
             // surface a tray-resident app's user ever reads.
             match capture_all_screens() {
-                Ok(shot) => match Overlay::new(loop_target, shot.bitmap, self.settings.clone()) {
+                // `shot.geometry()` carries the virtual-desktop origin and the
+                // monitor list, so the overlay spans every screen and maps the
+                // selection back to the pixels the user actually dragged over.
+                Ok(shot) => match Overlay::new(
+                    loop_target, shot.geometry(), shot.bitmap, self.settings.clone()) {
                     Ok(ov) => self.overlay = Some(ov),
                     Err(e) => {
                         eprintln!("Overlay open failed: {e}");
