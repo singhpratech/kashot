@@ -299,6 +299,54 @@ pub fn draw_text<S: Surface>(s: &mut S, x: i32, y: i32, scale: i32, text: &str, 
     }
 }
 
+// ── Unicode text (Text annotation) ─────────────────────────────────────────
+
+/// Render `text` with the bundled OFL typeface, anti-aliased, with the block's
+/// top-left corner at (x, y).
+///
+/// This is the Text *annotation* path — what the user types. `draw_text`
+/// above stays the app's own chrome font (button labels, the dimension chip)
+/// where a crisp ASCII grid is the intended look. `px` is a pixel em-size.
+///
+/// Glyph coverage arrives as 8-bit alpha from `kashot_core::text` and is
+/// multiplied into the annotation color's own alpha, so it composites through
+/// the same `blend` every other primitive uses — including the video-burn
+/// `DiffSurface`, which therefore records exactly the pixels the editor drew.
+pub fn draw_unicode_text<S: Surface>(s: &mut S, x: f32, y: f32, px: f32, text: &str, color: KashotRgba) {
+    if text.is_empty() { return; }
+    let block = kashot_core::text::layout(text, px);
+    blit_text_block(s, x.round() as i32, y.round() as i32, &block, color);
+}
+
+/// Blit an already-laid-out block. Split out so a caller that already has the
+/// layout (the editor measures one for its typing frame) doesn't rasterize twice.
+pub fn blit_text_block<S: Surface>(
+    s:     &mut S,
+    ox:    i32,
+    oy:    i32,
+    block: &kashot_core::text::TextBlock,
+    color: KashotRgba,
+) {
+    let base = rgba_arr(color);
+    if base[3] == 0 { return; }
+    // Only glyphs that can land on the surface at all — the per-pixel `blend`
+    // still bounds-checks, this just skips whole glyphs cheaply.
+    let clip = kashot_core::text::TextRect::new(
+        -ox as f32, -oy as f32, s.width() as f32, s.height() as f32,
+    );
+    for g in block.visible_glyphs(clip) {
+        for row in 0..g.h {
+            let gy = oy + g.y + row as i32;
+            for col in 0..g.w {
+                let cov = g.coverage[row * g.w + col];
+                if cov == 0 { continue; }
+                let a = ((base[3] as u32 * cov as u32 + 127) / 255) as u8;
+                blend(s, ox + g.x + col as i32, gy, [base[0], base[1], base[2], a]);
+            }
+        }
+    }
+}
+
 /// Numbered step circle: filled disc of `color`, white digits centered inside.
 pub fn step_marker<S: Surface>(s: &mut S, center: Point2, number: u32, color: KashotRgba) {
     const RADIUS: i32 = 14;
@@ -404,11 +452,10 @@ pub fn render_annotation<S: Surface>(
             }
         }
         AnnotationKind::Text { color, position, text, font_size } => {
-            // The 5×7 font scales by integer pixel multiples; map font_size
-            // (in C# point-ish units) onto a sane scale: 14pt → 2×, 24pt → 3×,
-            // 36pt → 4×. Default Stroke font_size is 14.0 → 2× → ~14px tall.
-            let scale = ((*font_size / 7.0).round() as i32).max(1);
-            draw_text(s, position.x as i32, position.y as i32, scale, text, *color);
+            // `font_size` is a pixel em-size for the bundled typeface, and
+            // `position` is the top-left of the text block (unchanged from the
+            // bitmap-font era, so existing placement behaviour still holds).
+            draw_unicode_text(s, position.x, position.y, *font_size, text, *color);
         }
     }
 }
@@ -438,6 +485,62 @@ mod tests {
         assert_ne!(data[3 * 20 + 15], 0); // top-right
         assert_ne!(data[15 * 20 + 3], 0); // bottom-left
         assert_ne!(data[15 * 20 + 15],0); // bottom-right
+    }
+
+    #[test]
+    fn unicode_text_paints_accented_and_cyrillic_glyphs() {
+        // The old 5×7 path turned every one of these into a '?' box.
+        for sample in ["Grüße", "Привет", "50 % ± ½"] {
+            let mut data = make_buf(400, 120);
+            let mut s = U32Surface { buf: &mut data, stride: 400, height: 120 };
+            draw_unicode_text(&mut s, 10.0, 10.0, 32.0, sample, K::WHITE);
+            assert!(data.iter().any(|&p| p != 0), "{sample} painted nothing");
+        }
+    }
+
+    #[test]
+    fn unicode_text_is_antialiased() {
+        let mut data = make_buf(300, 100);
+        let mut s = U32Surface { buf: &mut data, stride: 300, height: 100 };
+        draw_unicode_text(&mut s, 10.0, 10.0, 48.0, "Sé", K::WHITE);
+        // Anti-aliasing means partially-lit pixels, not just black/white.
+        let partial = data.iter().filter(|&&p| p != 0 && p != 0x00FF_FFFF).count();
+        assert!(partial > 0, "expected soft edges from the rasterizer");
+    }
+
+    #[test]
+    fn unicode_text_clips_at_the_surface_edge() {
+        // Drawing far outside the surface must be a no-op, not a panic.
+        let mut data = make_buf(64, 64);
+        {
+            let mut s = U32Surface { buf: &mut data, stride: 64, height: 64 };
+            draw_unicode_text(&mut s, -500.0, -500.0, 32.0, "clipped", K::WHITE);
+            draw_unicode_text(&mut s, 500.0, 500.0, 32.0, "clipped", K::WHITE);
+        }
+        assert!(data.iter().all(|&p| p == 0));
+        // Straddling the edge paints only what fits.
+        {
+            let mut s = U32Surface { buf: &mut data, stride: 64, height: 64 };
+            draw_unicode_text(&mut s, -10.0, 20.0, 32.0, "clipped", K::WHITE);
+        }
+        assert!(data.iter().any(|&p| p != 0));
+    }
+
+    #[test]
+    fn text_annotation_renders_multiline() {
+        use kashot_core::annotation::Annotation;
+        let mut data = make_buf(300, 200);
+        let mut s = U32Surface { buf: &mut data, stride: 300, height: 200 };
+        let a = Annotation::text_sized(K::WHITE, Point2::new(10.0, 10.0), "one\ntwo", 28.0);
+        render_annotation(&mut s, &a, None);
+        let lit_rows: Vec<usize> = (0..200)
+            .filter(|y| data[y * 300..(y + 1) * 300].iter().any(|&p| p != 0))
+            .collect();
+        assert!(!lit_rows.is_empty());
+        // Two lines → a vertical gap between the inked bands.
+        let span = lit_rows.last().unwrap() - lit_rows.first().unwrap();
+        assert!(span as f32 > kashot_core::text::line_height(28.0),
+                "second line should sit a line below the first");
     }
 
     #[test]

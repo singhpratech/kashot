@@ -73,6 +73,18 @@ Tray-resident screenshot tool with an annotation editor. The `kashot-app` binary
 ### Cross-cutting
 
 - **Settings** persist to `ProjectDirs::from("org", "kashot", "Kashot").config_dir()` (`~/.config/kashot/settings.json` on Linux).
+- **Text rendering** — two fonts, two jobs. `kashot-app/src/bitmap_font.rs` is a
+  hand-drawn 5×7 ASCII grid and draws the app's own chrome (button labels,
+  dimension chip, step numbers). Whatever the *user* types with the Text tool
+  goes through `kashot-core/src/text.rs`, which rasterizes the bundled
+  OFL-licensed Noto Sans (`kashot-core/assets/fonts/`) with `fontdue` — accents,
+  Greek, Cyrillic, punctuation, currency and math symbols, anti-aliased, with a
+  glyph cache. Scripts the bundled face doesn't carry (CJK, Arabic, Indic) draw
+  the font's `.notdef` box rather than disappearing.
+  Text size follows the thickness cycle (2/4/8 px → 21/28/42 px text). The font
+  is compiled into the binary, so every platform draws the same pixels; no
+  system font stack is consulted. Editor preview, saved image, pinned image and
+  the video burn overlay all reach it through `painter::render_annotation`.
 - **Theme colors** — each dialog currently re-declares its laser-green palette as private constants. Promoting to a shared `kashot-core/src/theme.rs` is a deferred cleanup item ([[feedback-release-gate]] fact-check, claim 13).
 - **Recording**: Linux X11 via `ffmpeg -f x11grab` (PulseAudio mic + default-sink monitor source — `pactl` must be on PATH or audio is silently dropped, which is why the snap stages `pulseaudio-utils`); Windows native via `ffmpeg -f gdigrab` + `-f dshow` mic, system audio via WASAPI loopback piped to ffmpeg over TCP; macOS via built-in `screencapture -v` for the video-only case, switching to `ffmpeg -f avfoundation` when audio is requested, with system audio from a ScreenCaptureKit session over the same TCP path. **Wayland (Linux) capture is still queued** (`recorder.rs`). Audio is best-effort on Linux and for the macOS microphone — a source that won't open is dropped and the recording starts without it; on Windows, and for macOS system audio, a source that can't be opened fails the whole recording with an actionable error instead. Either way `Recorder::start` returns the *effective* options, so toasts must be rendered from its return value rather than from what was asked for.
 
@@ -94,6 +106,7 @@ Once a region is selected, single-letter keys switch tools:
 
 Plus:
 - `Esc` — cancel text input / cancel active draw / close overlay
+- `Shift+Enter` — new line while typing a Text annotation (plain `Enter` commits it)
 - `Ctrl+Z` — undo
 - `Ctrl+Y` or `Ctrl+Shift+Z` — redo
 - `Ctrl+C` — copy final image to clipboard

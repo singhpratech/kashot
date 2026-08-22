@@ -41,9 +41,9 @@ use kashot_core::state::{hit_test_edge, Edge};
 use kashot_core::tool::Tool;
 use softbuffer::{Context, Surface};
 use winit::dpi::PhysicalPosition;
-use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
+use winit::event::{ElementState, Ime, KeyEvent, MouseButton, WindowEvent};
 use winit::event_loop::ActiveEventLoop;
-use winit::keyboard::{Key, ModifiersState, NamedKey};
+use winit::keyboard::{Key, ModifiersState, NamedKey, SmolStr};
 use winit::window::{CursorIcon, Fullscreen, Window, WindowAttributes, WindowId, WindowLevel};
 
 use crate::painter::{self, ImageSurface, U32Surface};
@@ -283,6 +283,10 @@ pub struct Overlay {
     /// Was the previous redraw in `Selected` state? Used to detect the
     /// transition that triggers `panel_pulse_started`.
     last_was_selected: bool,
+    /// In-flight IME composition for the pending Text annotation. Shown after
+    /// the caret while the user composes but never written into the
+    /// annotation — only `Ime::Commit` does that.
+    ime_preedit: String,
     /// Wall-clock when the overlay window opened. Drives the slow
     /// sequential orange-neon glow that cycles through every tool-panel
     /// button top-to-bottom (mirrors the website's tool-palette demo).
@@ -473,6 +477,7 @@ impl Overlay {
             focus_attempts: 0,
             panel_pulse_started: None,
             last_was_selected:   false,
+            ime_preedit:         String::new(),
             opened_at:           std::time::Instant::now(),
             settings,
             dragging_marker_opacity: false,
@@ -569,8 +574,15 @@ impl Overlay {
             }
 
             WindowEvent::KeyboardInput {
-                event: KeyEvent { logical_key, state: ElementState::Pressed, .. }, ..
-            } => self.handle_key(logical_key),
+                event: KeyEvent { logical_key, text, state: ElementState::Pressed, .. }, ..
+            } => self.handle_key_with_text(logical_key, text),
+
+            // IME: dead keys, compose sequences, and full input methods all
+            // arrive here rather than as `KeyEvent::text`. Only meaningful
+            // while typing — `set_text_input_active` turns the IME on with
+            // the Text tool and off again, so tool shortcuts stay single
+            // keypresses the rest of the time.
+            WindowEvent::Ime(ime) => self.handle_ime(ime),
 
             WindowEvent::CursorMoved { position: PhysicalPosition { x, y }, .. } => {
                 self.cursor = (x as i32, y as i32);
@@ -657,6 +669,76 @@ impl Overlay {
         }
     }
 
+    /// Route a keypress, preferring the platform's composed `text` over the
+    /// logical key while the Text tool is capturing input.
+    ///
+    /// `KeyEvent::text` is what the OS decided this keystroke produces after
+    /// layout, dead keys and modifiers — "é" from `'` + `e`, "ł" from AltGr+L,
+    /// "Ω" from a Greek layout. `logical_key` is only the key's own identity,
+    /// which is why the old ASCII path could never see those. Control
+    /// characters (Enter, Tab, Backspace, Esc all arrive with a `text` of
+    /// their own) are filtered out and fall through to `handle_key`, which
+    /// keeps owning every command key.
+    fn handle_key_with_text(&mut self, key: Key, text: Option<SmolStr>) -> OverlayOutcome {
+        if self.state == State::TextInput && !self.mods.control_key() {
+            if let Some(raw) = text.as_deref() {
+                let typed = kashot_core::text::sanitize_input(raw);
+                // Newlines only ever come from Enter, which `handle_key`
+                // treats as "commit"; leave that decision there.
+                if !typed.is_empty() && !typed.contains('\n') {
+                    self.insert_text(&typed);
+                    return OverlayOutcome::Continue;
+                }
+            }
+        }
+        self.handle_key(key)
+    }
+
+    /// Append user-typed text to the pending Text annotation.
+    fn insert_text(&mut self, typed: &str) {
+        use kashot_core::annotation::AnnotationKind;
+        if typed.is_empty() { return; }
+        if let Some(a) = self.current.as_mut() {
+            if let AnnotationKind::Text { ref mut text, .. } = a.kind {
+                text.push_str(typed);
+                self.window.request_redraw();
+            }
+        }
+    }
+
+    /// Turn the window's IME on/off around a text-input session and clear any
+    /// half-composed preedit. Enabling it unconditionally would let a CJK IME
+    /// swallow the single-letter tool shortcuts, so it is scoped to typing.
+    fn set_text_input_active(&mut self, active: bool) {
+        self.ime_preedit.clear();
+        self.window.set_ime_allowed(active);
+    }
+
+    fn handle_ime(&mut self, ime: Ime) -> OverlayOutcome {
+        if self.state != State::TextInput {
+            return OverlayOutcome::Continue;
+        }
+        match ime {
+            // Committed text is final — append it exactly as the IME built it.
+            Ime::Commit(s) => {
+                self.ime_preedit.clear();
+                let typed = kashot_core::text::sanitize_input(&s);
+                self.insert_text(&typed);
+            }
+            // In-flight composition: shown after the caret, never stored in
+            // the annotation, discarded if the user cancels.
+            Ime::Preedit(s, _) => {
+                self.ime_preedit = kashot_core::text::sanitize_input(&s);
+                self.window.request_redraw();
+            }
+            Ime::Enabled | Ime::Disabled => {
+                self.ime_preedit.clear();
+                self.window.request_redraw();
+            }
+        }
+        OverlayOutcome::Continue
+    }
+
     fn handle_key(&mut self, key: Key) -> OverlayOutcome {
         eprintln!("kashot: key={:?} state={:?} mods={:?}", key, self.state, self.mods);
         // Text-input state owns the keyboard while it's active — typed
@@ -728,50 +810,46 @@ impl Overlay {
             Key::Named(NamedKey::Escape) => {
                 self.current = None;
                 self.state   = State::Selected;
+                self.set_text_input_active(false);
                 self.window.request_redraw();
+            }
+            // Shift+Enter opens a second line; plain Enter commits.
+            Key::Named(NamedKey::Enter) if self.mods.shift_key() => {
+                self.insert_text("\n");
             }
             Key::Named(NamedKey::Enter) => {
                 // Commit only if the user actually typed something.
                 if let Some(a) = self.current.take() {
                     if let AnnotationKind::Text { ref text, .. } = a.kind {
-                        if !text.is_empty() {
+                        if !text.trim().is_empty() {
                             self.add_annotation(a);
                         }
                     }
                 }
                 self.state = State::Selected;
+                self.set_text_input_active(false);
                 self.window.request_redraw();
             }
             Key::Named(NamedKey::Backspace) => {
+                // A half-composed IME preedit is cancelled by the IME itself;
+                // here Backspace removes one *visible* character, which on
+                // combining or ZWJ sequences is several `char`s at once.
                 if let Some(a) = self.current.as_mut() {
                     if let AnnotationKind::Text { ref mut text, .. } = a.kind {
-                        text.pop();
+                        kashot_core::text::pop_grapheme(text);
                         self.window.request_redraw();
                     }
                 }
             }
-            Key::Named(NamedKey::Space) => {
-                if let Some(a) = self.current.as_mut() {
-                    if let AnnotationKind::Text { ref mut text, .. } = a.kind {
-                        text.push(' ');
-                        self.window.request_redraw();
-                    }
-                }
-            }
+            // Fallbacks for platforms/layouts where `KeyEvent::text` is
+            // absent — `handle_key_with_text` handles the normal case.
+            Key::Named(NamedKey::Space) => self.insert_text(" "),
             Key::Character(s) => {
                 // Skip Ctrl-modified characters so Ctrl+Z / Ctrl+S etc. don't
                 // get swallowed as plain text input.
                 if self.mods.control_key() { return OverlayOutcome::Continue; }
-                if let Some(a) = self.current.as_mut() {
-                    if let AnnotationKind::Text { ref mut text, .. } = a.kind {
-                        for c in s.chars() {
-                            if !c.is_control() {
-                                text.push(c);
-                            }
-                        }
-                        self.window.request_redraw();
-                    }
-                }
+                let typed = kashot_core::text::sanitize_input(&s);
+                self.insert_text(&typed);
             }
             _ => {}
         }
@@ -822,12 +900,13 @@ impl Overlay {
             use kashot_core::annotation::AnnotationKind;
             if let Some(a) = self.current.take() {
                 if let AnnotationKind::Text { ref text, .. } = a.kind {
-                    if !text.is_empty() {
+                    if !text.trim().is_empty() {
                         self.add_annotation(a);
                     }
                 }
             }
             self.state = State::Selected;
+            self.set_text_input_active(false);
             self.window.request_redraw();
             // Fall through so the click can still pick a swatch / start a
             // new text input / drag a region etc.
@@ -978,9 +1057,20 @@ impl Overlay {
                     } else if self.tool == Tool::Text {
                         // Click-to-place a text caret. Typed characters
                         // extend the annotation; Enter commits, Esc cancels.
-                        let p = Point2::new(self.cursor.0 as f32, self.cursor.1 as f32);
-                        self.current = Some(Annotation::text(self.stroke.color, p, ""));
+                        let p  = Point2::new(self.cursor.0 as f32, self.cursor.1 as f32);
+                        // Text size rides the thickness cycle, so the same
+                        // button that fattens a pen stroke steps text through
+                        // three sizes without a control of its own.
+                        let px = kashot_core::text::font_size_for_thickness(self.stroke.thickness);
+                        self.current = Some(Annotation::text_sized(self.stroke.color, p, "", px));
                         self.state   = State::TextInput;
+                        self.set_text_input_active(true);
+                        // Park the IME candidate window on the caret so a
+                        // CJK/compose popup doesn't cover what's being typed.
+                        self.window.set_ime_cursor_area(
+                            PhysicalPosition::new(p.x as i32, p.y as i32),
+                            winit::dpi::PhysicalSize::new(1u32, px.ceil() as u32),
+                        );
                         eprintln!("kashot: entered TextInput at ({}, {})", p.x, p.y);
                         self.window.request_redraw();
                     } else if let Some(a) = self.start_annotation() {
@@ -1385,19 +1475,42 @@ impl Overlay {
         // saved/copied bitmap shows just the text without any frame.
         if self.state == State::TextInput {
             if let Some(a) = self.current.as_ref() {
-                if let kashot_core::annotation::AnnotationKind::Text { position, text, font_size, .. } = &a.kind {
-                    let scale = ((*font_size / 7.0).round() as i32).max(1);
-                    let text_w = crate::bitmap_font::measure(text, scale).max(scale * 5);
-                    let text_h = crate::bitmap_font::GLYPH_H * scale;
+                if let kashot_core::annotation::AnnotationKind::Text { color, position, text, font_size } = &a.kind {
+                    // Frame + caret are measured with the same rasterizer that
+                    // paints the glyphs, so they track accents, wide scripts
+                    // and multi-line text exactly.
+                    let px = *font_size;
+                    // The preedit is drawn but not stored, so it has to be
+                    // measured as if it were already appended.
+                    let composed = if self.ime_preedit.is_empty() {
+                        None
+                    } else {
+                        Some(format!("{text}{}", self.ime_preedit))
+                    };
+                    let shown: &str = composed.as_deref().unwrap_or(text);
+                    let block = kashot_core::text::layout(shown, px);
+                    if !self.ime_preedit.is_empty() {
+                        // Composition is provisional — draw it dimmed after
+                        // the committed text so the user can tell them apart.
+                        let mut surf = U32Surface { buf: &mut buf, stride: win_w as i32, height: win_h as i32 };
+                        let preedit_color = color.with_alpha(0x99);
+                        painter::blit_text_block(&mut surf, position.x as i32, position.y as i32,
+                                                 &block, preedit_color);
+                    }
+                    let (caret_x_f, caret_y_f) = block.caret();
+                    let text_w = block.width().ceil() as i32;
+                    let text_h = block.height().ceil() as i32;
                     let pad = 4;
                     let x0 = position.x as i32 - pad;
                     let y0 = position.y as i32 - pad;
-                    let x1 = position.x as i32 + text_w + pad;
+                    let x1 = position.x as i32 + text_w.max(2) + pad;
                     let y1 = position.y as i32 + text_h + pad;
                     draw_dashed_border(&mut buf, win_w, win_h, x0, y0, x1, y1, 0x00_88_88_8C);
-                    // Solid 1-px caret at the trailing edge of the text.
-                    let caret_x = position.x as i32 + text_w + 1;
-                    for cy in (y0 + 2)..(y1 - 2) {
+                    // Solid 1-px caret on the last line, at the trailing edge.
+                    let caret_x  = position.x as i32 + caret_x_f.round() as i32 + 1;
+                    let caret_y0 = position.y as i32 + caret_y_f.round() as i32;
+                    let caret_y1 = caret_y0 + block.line_height.round() as i32;
+                    for cy in caret_y0..caret_y1 {
                         if caret_x >= 0 && (caret_x as usize) < win_w && cy >= 0 && (cy as usize) < win_h {
                             buf[cy as usize * win_w + caret_x as usize] = 0x00_E8_E8_EC;
                         }

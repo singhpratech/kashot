@@ -64,8 +64,11 @@ all three platforms. Git history retains it if you need to look back.
   Pin window, tray-resident main loop)
 - Wire-compatible with C# `settings.json` — same PascalCase keys, same
   Win32-VK hotkey encoding, same ARGB color ints
-- **All 9 annotation tools shipped** with hand-designed 5×7 ASCII bitmap
-  font for text rendering, no TTF rasterizer dep
+- **All 9 annotation tools shipped**. The Text tool rasterizes a bundled
+  OFL-licensed Noto Sans with `fontdue` (`kashot-core/src/text.rs`) so users
+  can type accents, Greek, Cyrillic, punctuation and currency/math symbols;
+  the app's own
+  chrome still uses the hand-designed 5×7 ASCII bitmap font
 - **Floating panels** (tool column + action row) hugging the selection,
   matching `OverlayForm.PositionToolbars` 1:1; auto-flip when they'd clip
 - **X11 override-redirect** + side-channel `XSetInputFocus` so the overlay
