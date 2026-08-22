@@ -17,7 +17,7 @@ Cargo workspace under `kashot-rs/` with three crates:
 | Crate              | Role                                                                  |
 |--------------------|-----------------------------------------------------------------------|
 | `kashot-core`      | Pure logic: `Tool`, `Annotation`, `AppSettings`, theme, state machine, annotation hit-testing (`edit.rs`) + undo log (`history.rs`) |
-| `kashot-platform`  | OS shims: capture (xcap), hotkey (global-hotkey), tray, clipboard, recorder |
+| `kashot-platform`  | OS shims: capture (xcap), hotkey (global-hotkey / portal), tray, clipboard, recorder |
 | `kashot-app`       | Tray-resident binary; winit event loop, themed dialogs, editor       |
 
 ```sh
@@ -111,6 +111,45 @@ Tray-resident screenshot tool with an annotation editor. The `kashot-app` binary
 - **User-visible failures**: save / copy / pin / settings-write failures are
   toasted through `tray_loop::notify`, with the wording built in
   `kashot-core::failure` so each message names the path and the OS reason.
+
+### Linux: X11 vs Wayland
+
+Wayland removes three things an X11 session gives away for free — a key grab, a
+readable root window, and a screen an external process can point a capture
+device at. Each has its own replacement, all of them `xdg-desktop-portal` calls
+made through `ashpd`, and all of them selected at runtime by
+`kashot_platform::session::is_wayland()` (`XDG_SESSION_TYPE` or a non-empty
+`WAYLAND_DISPLAY`). Nothing is compiled out: one binary serves both session
+types and picks per launch.
+
+| | X11 | Wayland |
+|---|---|---|
+| **Global hotkey** | `global-hotkey` (`XGrabKey`) | `org.freedesktop.portal.GlobalShortcuts` (`hotkey_portal.rs`) |
+| **Screenshot** | `xcap` → XCB/`SHM` | `xcap` → GNOME Shell / Screenshot portal / `wlr-screencopy`, with a portal-Screenshot fallback (`capture_portal.rs`) |
+| **Recording — video** | `ffmpeg -f x11grab` | ScreenCast portal → PipeWire → raw frames on ffmpeg's stdin (`recorder_wayland.rs`) |
+| **Recording — audio** | `-f pulse` inputs | *unchanged* — PipeWire's Pulse shim serves the same inputs |
+
+Three things follow from that table and are easy to get wrong:
+
+- **The X11 hotkey path is never used as a Wayland fallback.** XWayland answers
+  `XGrabKey`, so registration *succeeds* and the key then never fires — strictly
+  worse than an error. If the portal is unavailable, `HotkeyManager::new`
+  returns an actionable error and the tray toasts it once at startup.
+- **The compositor owns the binding.** `preferred_trigger` is a request. The
+  Settings REBIND widget still works, but what actually fires is whatever the
+  desktop assigned, which it lists under its own keyboard settings — hence the
+  "set by your desktop" note on the tray's Capture row. VK → keysym rendering
+  is pure logic in `kashot-core::shortcut` so it is unit-tested on all three CI
+  runners.
+- **Wayland recording owns ffmpeg's stdin**, because that is where the frames
+  go. Stop is therefore EOF on the pipe (drop the writer) rather than the `q`
+  the other platforms write, and `graceful_signal` is a deliberate no-op there.
+  The writer paces itself at a fixed 30 fps and re-sends the last frame when
+  nothing changed: `-f rawvideo` carries no timestamps, so a compositor that
+  only sends buffers on damage would otherwise produce a file where a still
+  minute plays back in a second. `CastSession::start` does not return until a
+  real frame has been copied out of a real PipeWire buffer, so a session that
+  negotiates but never delivers fails *before* any file is created.
 
 ## Keyboard shortcuts
 

@@ -15,6 +15,7 @@ pub mod edit;
 pub mod history;
 pub mod region;
 pub mod settings;
+pub mod shortcut;
 pub mod state;
 pub mod text;
 pub mod theme;
@@ -29,6 +30,7 @@ pub use dpi::{DisplayMap, GrabRegion, LogicalRect, MonitorGeometry, MonitorPlace
 pub use history::{EditOp, History};
 pub use region::{CaptureRect, DesktopBounds};
 pub use settings::{AppSettings, Hotkey, Modifiers};
+pub use shortcut::portal_trigger;
 pub use state::{Edge, State};
 pub use text::{PlacedGlyph, TextBlock, TextRect};
 pub use theme::{ThemeColors, ThemeName};

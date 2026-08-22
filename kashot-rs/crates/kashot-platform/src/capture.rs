@@ -109,7 +109,42 @@ impl Captured {
 /// `map.logical_to_physical`, turns a screen coordinate into a bitmap pixel.
 /// At 1× that is `(virtual_origin.0 + px, virtual_origin.1 + py)`, exactly as
 /// before.
+///
+/// `xcap` handles the per-OS capture, Wayland included — under Wayland its
+/// `capture_image` goes out through `org.gnome.Shell.Screenshot`, the
+/// screenshot portal, or wlroots' `wlr-screencopy`, whichever answers first.
+/// What it has no Wayland path for is *enumerating* monitors, which always
+/// runs over XCB/RandR; see [`fallback_capture`].
 pub fn capture_all_screens() -> Result<Captured> {
+    match capture_all_screens_native() {
+        Ok(captured) => Ok(captured),
+        Err(e)       => fallback_capture(e),
+    }
+}
+
+/// Last resort when the native path can't produce a capture.
+///
+/// Only Wayland has one: a Wayland-only session (no XWayland) fails monitor
+/// enumeration outright, and the screenshot portal can still hand over the
+/// screen. Everywhere else — and on X11 — the original error is the answer,
+/// because there is no second mechanism that would do better.
+#[cfg(target_os = "linux")]
+fn fallback_capture(native_error: Error) -> Result<Captured> {
+    if !crate::session::is_wayland() {
+        return Err(native_error);
+    }
+    crate::capture_portal::capture_via_portal().map_err(|portal_error| Error::Capture(format!(
+        "capture failed on this Wayland session. Reading the screen directly: \
+         {native_error}. Asking the desktop's screenshot portal instead: {portal_error}"
+    )))
+}
+
+#[cfg(not(target_os = "linux"))]
+fn fallback_capture(native_error: Error) -> Result<Captured> {
+    Err(native_error)
+}
+
+fn capture_all_screens_native() -> Result<Captured> {
     let monitors = xcap::Monitor::all()
         .map_err(|e| Error::Capture(format!("Monitor::all: {e}")))?;
     if monitors.is_empty() {

@@ -31,6 +31,24 @@ libc = "0.2"
 [target.'cfg(target_os = "linux")'.dependencies]
 gtk = "0.18"
 
+# Wayland has no key grab and no X11 screen to read, so everything an X11
+# session gets for free is a portal round-trip here: GlobalShortcuts for the
+# hotkey, Screenshot as a capture fallback, ScreenCast for recording.
+# `ashpd` is already in the tree (rfd pulls it for its file pickers) — matching
+# its `async-std` flavour keeps a single zbus runtime in the process, and
+# `pollster` (also already in the tree, same reason) drives the futures from
+# our own threads without dragging in tokio.
+ashpd    = { version = "0.11", default-features = false, features = ["async-std"] }
+pollster = "0.4"
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
+
+# Wayland screen recording: the ScreenCast portal hands back a PipeWire node,
+# and ffmpeg has no PipeWire input, so we pump the frames ourselves.
+# `pipewire` is already a transitive dependency via xcap, so this adds a
+# direct edge rather than a new system requirement (libpipewire-0.3-dev was
+# already needed to build).
+pipewire = "0.9"
+
 # Windows system-audio capture. WASAPI loopback on the default render endpoint
 # pulls what the speakers are playing without any virtual-cable driver, and the
 # default capture endpoint gives the mic. Both feed ffmpeg over a loopback TCP

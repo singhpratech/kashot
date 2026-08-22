@@ -1,12 +1,24 @@
-//! Global hotkey registration via the `global-hotkey` crate, which wraps
-//! `RegisterHotKey` (Win32), X11 `XGrabKey` (Linux), and
-//! `RegisterEventHotKey` (macOS).
+//! Global hotkey registration.
 //!
-//! On Linux the X11 grab is the only backend `global-hotkey` 0.7 has -- there
-//! is no Wayland implementation and no portal fallback. Under a Wayland
-//! session registration still reports success (XWayland answers the grab) but
-//! the key is never delivered, so the hotkey silently cannot fire; those users
-//! have to trigger captures from the tray menu.
+//! Two backends behind one type, chosen at runtime by session:
+//!
+//! * **Grab** — the `global-hotkey` crate, which wraps `RegisterHotKey`
+//!   (Win32), X11 `XGrabKey` (Linux/X11) and `RegisterEventHotKey` (macOS).
+//!   Used everywhere except a Linux Wayland session.
+//! * **Portal** — `org.freedesktop.portal.GlobalShortcuts` via
+//!   [`crate::hotkey_portal`]. Used on Linux Wayland only.
+//!
+//! The split exists because `global-hotkey` 0.7 has no Wayland implementation
+//! and the X11 one is *worse than nothing* there: XWayland answers the grab,
+//! so registration reports success, and then the key is never delivered.
+//! A hotkey that silently cannot fire is indistinguishable from a broken app,
+//! so on Wayland we never fall back to the grab — if the portal isn't
+//! available the error says so, and the tray menu remains the way to capture.
+//!
+//! Callers see one API either way: construct,
+//! [`register_all`](HotkeyManager::register_all) the per-action [`Hotkey`]
+//! set, re-register to rebind, and poll
+//! [`drain_pressed`](HotkeyManager::drain_pressed) from the event loop.
 
 use crate::{Error, Result};
 use global_hotkey::{
@@ -16,19 +28,58 @@ use global_hotkey::{
 use kashot_core::hotkeys::HotkeyAction;
 use kashot_core::settings::{Hotkey, Modifiers};
 
+/// Which mechanism is delivering presses. Surfaced so the app can say the
+/// right thing about a hotkey that isn't firing — the two backends fail for
+/// completely different reasons and have completely different fixes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HotkeyBackend {
+    /// A window-system key grab: what we asked for is what fires.
+    Grab,
+    /// An xdg-desktop-portal request: the compositor decides the real binding
+    /// and can show it to the user under its own keyboard settings.
+    Portal,
+}
+
+impl HotkeyBackend {
+    pub fn is_portal(self) -> bool { matches!(self, HotkeyBackend::Portal) }
+}
+
 pub struct HotkeyManager {
-    inner:    GlobalHotKeyManager,
-    /// Every binding currently held with the OS, paired with the action it
-    /// fires. A flat vec rather than a map: it holds at most three entries,
-    /// so a linear scan per delivered event beats hashing.
-    current:  Vec<(HotkeyAction, HotKey)>,
+    backend: Backend,
+}
+
+enum Backend {
+    Grab {
+        inner:   GlobalHotKeyManager,
+        /// Every binding currently held with the OS, paired with the action
+        /// it fires. A flat vec rather than a map: it holds at most three
+        /// entries, so a linear scan per delivered event beats hashing.
+        current: Vec<(HotkeyAction, HotKey)>,
+    },
+    #[cfg(target_os = "linux")]
+    Portal(crate::hotkey_portal::PortalHotkeys),
 }
 
 impl HotkeyManager {
     pub fn new() -> Result<Self> {
+        #[cfg(target_os = "linux")]
+        if crate::session::is_wayland() {
+            let portal = crate::hotkey_portal::PortalHotkeys::new()?;
+            return Ok(HotkeyManager { backend: Backend::Portal(portal) });
+        }
+
         let inner = GlobalHotKeyManager::new()
             .map_err(|e| Error::Hotkey(e.to_string()))?;
-        Ok(HotkeyManager { inner, current: Vec::new() })
+        Ok(HotkeyManager { backend: Backend::Grab { inner, current: Vec::new() } })
+    }
+
+    /// Which mechanism this manager ended up using.
+    pub fn backend(&self) -> HotkeyBackend {
+        match &self.backend {
+            Backend::Grab { .. } => HotkeyBackend::Grab,
+            #[cfg(target_os = "linux")]
+            Backend::Portal(_)   => HotkeyBackend::Portal,
+        }
     }
 
     /// Make `bindings` the complete set of registered hotkeys, replacing
@@ -40,36 +91,44 @@ impl HotkeyManager {
     /// One unavailable shortcut must not cost the user the other two, so the
     /// failures come back as a list instead of aborting the whole call --
     /// the caller logs them and carries on.
+    ///
+    /// On the portal backend an empty list means the request was accepted,
+    /// not that the keys are live — only the compositor can decide that. See
+    /// [`crate::hotkey_portal`].
     pub fn register_all(&mut self, bindings: &[(HotkeyAction, Hotkey)])
         -> Vec<(HotkeyAction, Error)>
     {
-        self.unregister_all();
-        let mut failed = Vec::new();
-        for &(action, hk) in bindings {
-            if let Err(e) = self.register_one(action, hk) {
-                failed.push((action, e));
+        match &mut self.backend {
+            Backend::Grab { inner, current } => {
+                for (_, prev) in current.drain(..) {
+                    let _ = inner.unregister(prev);
+                }
+                let mut failed = Vec::new();
+                for &(action, hk) in bindings {
+                    match grab_one(inner, hk) {
+                        Ok(item) => current.push((action, item)),
+                        Err(e)   => failed.push((action, e)),
+                    }
+                }
+                failed
             }
+            #[cfg(target_os = "linux")]
+            Backend::Portal(p) => p.register_all(bindings),
         }
-        failed
-    }
-
-    /// Register a single binding and remember which action it belongs to.
-    fn register_one(&mut self, action: HotkeyAction, hk: Hotkey) -> Result<()> {
-        let mods = translate_mods(hk.modifiers);
-        let code = vk_to_code(hk.virtual_key)
-            .ok_or_else(|| Error::Hotkey(format!("unknown vk 0x{:X}", hk.virtual_key)))?;
-        let item = HotKey::new(Some(mods), code);
-        self.inner.register(item).map_err(|e| Error::Hotkey(e.to_string()))?;
-        self.current.push((action, item));
-        Ok(())
     }
 
     /// Drop every registered binding. Used while the Settings dialog is open
     /// so the rebind widget can see the keys the user presses instead of
     /// them firing a capture.
     pub fn unregister_all(&mut self) {
-        for (_, prev) in self.current.drain(..) {
-            let _ = self.inner.unregister(prev);
+        match &mut self.backend {
+            Backend::Grab { inner, current } => {
+                for (_, prev) in current.drain(..) {
+                    let _ = inner.unregister(prev);
+                }
+            }
+            #[cfg(target_os = "linux")]
+            Backend::Portal(p) => p.unregister_all(),
         }
     }
 
@@ -80,14 +139,20 @@ impl HotkeyManager {
     /// down queues several `Pressed` events between two polls of the event
     /// loop, and one keypress has to mean one capture.
     pub fn drain_pressed(&self) -> Vec<HotkeyAction> {
-        let mut fired: Vec<HotkeyAction> = Vec::new();
-        while let Ok(ev) = GlobalHotKeyEvent::receiver().try_recv() {
-            if ev.state != global_hotkey::HotKeyState::Pressed { continue; }
-            let Some(&(action, _)) = self.current.iter().find(|(_, h)| h.id() == ev.id)
-                else { continue; };
-            if !fired.contains(&action) { fired.push(action); }
+        match &self.backend {
+            Backend::Grab { current, .. } => {
+                let mut fired: Vec<HotkeyAction> = Vec::new();
+                while let Ok(ev) = GlobalHotKeyEvent::receiver().try_recv() {
+                    if ev.state != global_hotkey::HotKeyState::Pressed { continue; }
+                    let Some(&(action, _)) = current.iter().find(|(_, h)| h.id() == ev.id)
+                        else { continue; };
+                    if !fired.contains(&action) { fired.push(action); }
+                }
+                fired
+            }
+            #[cfg(target_os = "linux")]
+            Backend::Portal(p) => p.drain_pressed(),
         }
-        fired
     }
 }
 
@@ -104,6 +169,16 @@ fn translate_mods(m: Modifiers) -> GhMods {
 ///
 /// The Win32 VK space is the canonical wire format we share with the C# version
 /// (settings.json stores `HotkeyVirtualKey` as a Win32 VK). On non-Windows
+/// Register one chord with the window system.
+fn grab_one(inner: &GlobalHotKeyManager, hk: Hotkey) -> Result<HotKey> {
+    let mods = translate_mods(hk.modifiers);
+    let code = vk_to_code(hk.virtual_key)
+        .ok_or_else(|| Error::Hotkey(format!("unknown vk 0x{:X}", hk.virtual_key)))?;
+    let item = HotKey::new(Some(mods), code);
+    inner.register(item).map_err(|e| Error::Hotkey(e.to_string()))?;
+    Ok(item)
+}
+
 /// platforms `global-hotkey` re-translates these to the OS's native codes
 /// internally. That translation is purely mechanical: `0x2C` becomes Carbon
 /// keycode `0x46` on macOS, which no Apple keyboard can produce, which is why

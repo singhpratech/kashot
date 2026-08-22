@@ -12,15 +12,16 @@
 //!
 //! * Linux  (X11)     : `ffmpeg -f x11grab` — needs `ffmpeg` installed.
 //!                      Audio: PulseAudio mic + monitor source.
-//! * Linux  (Wayland) : not supported here yet — proper screen capture on
-//!                      Wayland goes through `xdg-desktop-portal` (PipeWire),
-//!                      which is a substantial integration and queued
-//!                      separately. `start()` detects a Wayland session
-//!                      up-front (via `XDG_SESSION_TYPE` / `WAYLAND_DISPLAY`)
-//!                      and returns a clear error rather than spawning ffmpeg
-//!                      into a black `-f x11grab` capture that XWayland
-//!                      silently produces. TODO(v0.3): wire `ashpd` /
-//!                      xdg-desktop-portal.
+//! * Linux  (Wayland) : `xdg-desktop-portal` ScreenCast -> PipeWire -> raw
+//!                      frames on ffmpeg's stdin (`recorder_wayland.rs`).
+//!                      `-f x11grab` is never used here: XWayland answers the
+//!                      grab and silently produces a black capture, so the
+//!                      session type is detected up-front (via
+//!                      `XDG_SESSION_TYPE` / `WAYLAND_DISPLAY`) and the two
+//!                      paths never mix. Audio is unchanged — the same
+//!                      `-f pulse` inputs, which PipeWire's Pulse shim serves.
+//!                      Stop is EOF on stdin rather than `q`, because stdin is
+//!                      the video pipe here; see `graceful_signal`.
 //! * Windows          : `ffmpeg -f gdigrab` for video; audio is captured
 //!                      natively via WASAPI (see `recorder_windows_audio.rs`)
 //!                      and streamed into ffmpeg over a loopback TCP socket.
@@ -92,6 +93,12 @@ mod windows_audio;
 #[path = "recorder_macos_audio.rs"]
 mod macos_audio;
 
+// ScreenCast-portal + PipeWire screen capture (Linux/Wayland). Linux-only and
+// only reached on a Wayland session; X11 keeps the x11grab path untouched.
+#[cfg(target_os = "linux")]
+#[path = "recorder_wayland.rs"]
+pub mod wayland_cast;
+
 /// What audio sources to mix into the recording. Mirrors the C#
 /// `KashotRecorder.Start(path, micEnabled, systemAudioEnabled)` triple.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -132,6 +139,11 @@ enum Backend {
         /// over loopback TCP. `None` for video-only or mic-only recordings.
         #[cfg(target_os = "macos")]
         sck: Option<macos_audio::SckSession>,
+        /// Linux-only: a ScreenCast-portal / PipeWire capture writing raw
+        /// frames into ffmpeg's stdin. `Some` on Wayland, `None` on X11 where
+        /// ffmpeg reads the screen itself through `x11grab`.
+        #[cfg(target_os = "linux")]
+        cast: Option<wayland_cast::CastSession>,
     },
 }
 
@@ -163,10 +175,17 @@ impl Backend {
                 stderr,
                 #[cfg(target_os = "windows")] mut pumps,
                 #[cfg(target_os = "macos")] sck,
+                #[cfg(target_os = "linux")] mut cast,
             } => {
                 graceful_signal(&mut child);
                 #[cfg(target_os = "windows")]
                 for p in &pumps { p.signal_stop(); }
+                // On Wayland the frame writer owns ffmpeg's stdin, so stopping
+                // it *is* the graceful signal: the pipe closes and ffmpeg
+                // finalizes the container. Must run before the wait below,
+                // otherwise ffmpeg has no reason to exit.
+                #[cfg(target_os = "linux")]
+                if let Some(c) = cast.as_mut() { c.stop(); }
                 let exited = wait_bounded(&mut child, STOP_POLL_STEPS);
                 if !exited { let _ = child.kill(); }
                 let _ = child.wait();
@@ -206,10 +225,13 @@ impl Backend {
                 stderr: _,
                 #[cfg(target_os = "windows")] mut pumps,
                 #[cfg(target_os = "macos")] sck,
+                #[cfg(target_os = "linux")] mut cast,
             } => {
                 graceful_signal(&mut child);
                 #[cfg(target_os = "windows")]
                 for p in &pumps { p.signal_stop(); }
+                #[cfg(target_os = "linux")]
+                if let Some(c) = cast.as_mut() { c.stop(); }
                 if !wait_bounded(&mut child, DROP_POLL_STEPS) { let _ = child.kill(); }
                 let _ = child.wait();
                 #[cfg(target_os = "windows")]
@@ -239,12 +261,15 @@ impl Backend {
                 stderr: _,
                 #[cfg(target_os = "windows")] mut pumps,
                 #[cfg(target_os = "macos")] sck,
+                #[cfg(target_os = "linux")] mut cast,
             } => {
                 let _ = child.wait();
                 #[cfg(target_os = "windows")]
                 for p in &mut pumps { p.signal_stop(); p.join(); }
                 #[cfg(target_os = "macos")]
                 if let Some(s) = sck { s.stop(); }
+                #[cfg(target_os = "linux")]
+                if let Some(c) = cast.as_mut() { c.stop(); }
                 crate::child_guard::clear_live();
             }
         }
@@ -253,6 +278,23 @@ impl Backend {
     fn stderr_tail(&self) -> StderrTail {
         match self {
             Backend::Process { stderr, .. } => stderr.clone(),
+        }
+    }
+
+    /// Why the *capture source* stopped, if it did.
+    ///
+    /// Only the Wayland backend can lose its source while the encoder is
+    /// perfectly healthy — screen sharing is a grant the user can revoke from
+    /// their desktop at any moment, and ffmpeg would keep writing the last
+    /// frame forever without noticing. Everywhere else the encoder owns the
+    /// capture, so a dead source is a dead child and `exited()` already covers
+    /// it; those platforms answer `None`.
+    fn source_failure(&self) -> Option<String> {
+        match self {
+            #[cfg(target_os = "linux")]
+            Backend::Process { cast, .. } => cast.as_ref().and_then(|c| c.failure()),
+            #[cfg(not(target_os = "linux"))]
+            Backend::Process { .. } => None,
         }
     }
 }
@@ -436,6 +478,20 @@ impl Recorder {
     /// at all: polling an idle recorder is not an error.
     pub fn poll_health(&mut self) -> Result<()> {
         let Some(backend) = self.backend.as_mut() else { return Ok(()) };
+
+        // A revoked screen-cast grant leaves the encoder alive and the picture
+        // frozen, so it has to be asked about separately from the child.
+        if let Some(reason) = backend.source_failure() {
+            let path = self.output.clone();
+            if let Some(b) = self.backend.take() { b.stop_with_timeout(); }
+            self.output = None;
+            let where_ = match &path {
+                Some(p) => format!(" What was recorded up to that point is at {}.", p.display()),
+                None    => String::new(),
+            };
+            return Err(Error::Recording(format!("{reason}{where_}")));
+        }
+
         let Some(status) = backend.exited() else { return Ok(()) };
 
         let tail = backend.stderr_tail();
@@ -538,20 +594,51 @@ fn locate_ffmpeg() -> Option<PathBuf> {
 fn spawn_recorder(output: &Path, options: RecordingOptions, region: Option<CaptureRect>)
     -> Result<(Backend, RecordingOptions)>
 {
-    // Reject Wayland up-front — `-f x11grab` against XWayland silently
-    // captures only XWayland clients (typically a black frame), and on
-    // Wayland-only sessions DISPLAY may be unset entirely.
+    // Wayland is a different capture stack entirely — `-f x11grab` against
+    // XWayland silently captures only XWayland clients (typically a black
+    // frame), and on Wayland-only sessions DISPLAY may be unset. The two paths
+    // share their audio handling and nothing else.
     if crate::session::is_wayland() {
-        return Err(Error::Recording(
-            "screen recording on Wayland isn't wired up yet \
-             (xdg-desktop-portal / PipeWire path is planned — see PLAN.md R10). \
-             To record now, log into an X11 / Xorg session from your display manager.".into()
-        ));
+        return spawn_recorder_wayland(output, options, region);
     }
     let display = std::env::var("DISPLAY").unwrap_or_else(|_| ":0".into());
     let path = output.to_str().ok_or_else(||
         Error::Recording("non-UTF-8 output path".into()))?;
 
+    let (opt, monitor_source) = probe_pulse_sources(options);
+
+    let args = build_linux_ffmpeg_args(&display, path, opt, monitor_source.as_deref(), region);
+    let ffmpeg = locate_ffmpeg().unwrap_or_else(|| PathBuf::from("ffmpeg"));
+    let res = crate::child_guard::spawn_guarded(
+        Command::new(&ffmpeg)
+            .args(&args)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped()));
+
+    match res {
+        Ok(c) => {
+            let (child, stderr) = watch_recorder_startup(c)?;
+            Ok((Backend::Process { child, stderr, cast: None }, opt))
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Err(Error::Recording(
+            "ffmpeg not found in PATH — install with: sudo apt install ffmpeg".into()
+        )),
+        Err(e) => Err(Error::Recording(format!("failed to spawn ffmpeg: {e}"))),
+    }
+}
+
+/// Work out which PulseAudio inputs are actually usable, given what was asked
+/// for. Shared by both Linux capture stacks: PipeWire's Pulse shim serves the
+/// same `-f pulse` inputs on Wayland that PulseAudio proper serves on X11, so
+/// the audio half of a recording is identical either way.
+///
+/// Returns the **effective** options plus the monitor source name to pass to
+/// ffmpeg. Audio is best-effort by design — a box with no sound server, or no
+/// default sink to monitor, records video rather than failing outright — so the
+/// caller must report from the returned options, not from what was requested.
+#[cfg(target_os = "linux")]
+fn probe_pulse_sources(options: RecordingOptions) -> (RecordingOptions, Option<String>) {
     // Pulse must be reachable for either audio source to work — `pactl info`
     // returns 0 when a server is up. If it isn't reachable we silently drop
     // back to video-only so headless / no-audio boxes still record cleanly.
@@ -575,7 +662,33 @@ fn spawn_recorder(output: &Path, options: RecordingOptions, region: Option<Captu
         }
     } else { None };
 
-    let args = build_linux_ffmpeg_args(&display, path, opt, monitor_source.as_deref(), region);
+    (opt, monitor_source)
+}
+
+/// Wayland: ScreenCast portal -> PipeWire -> raw frames on ffmpeg's stdin.
+///
+/// Order matters. The cast is negotiated *first* because only it can say how
+/// big the frames are and in what layout, and ffmpeg needs both on its command
+/// line before it will read a single byte of `-f rawvideo`. Anything that goes
+/// wrong before ffmpeg exists — no portal, the user cancelling the share
+/// prompt, a compositor handing out buffers we can't read — surfaces as an
+/// error here, with no file created and nothing claimed to have been saved.
+#[cfg(target_os = "linux")]
+fn spawn_recorder_wayland(output: &Path, options: RecordingOptions, region: Option<CaptureRect>)
+    -> Result<(Backend, RecordingOptions)>
+{
+    let path = output.to_str().ok_or_else(||
+        Error::Recording("non-UTF-8 output path".into()))?;
+
+    let (opt, monitor_source) = probe_pulse_sources(options);
+
+    // Blocks while the user answers their desktop's screen-sharing prompt.
+    let mut cast = wayland_cast::CastSession::start()?;
+    let format = cast.format();
+
+    let args = build_wayland_ffmpeg_args(
+        format.pix_fmt, format.width, format.height,
+        wayland_cast::TARGET_FPS, path, opt, monitor_source.as_deref(), region);
     let ffmpeg = locate_ffmpeg().unwrap_or_else(|| PathBuf::from("ffmpeg"));
     let res = crate::child_guard::spawn_guarded(
         Command::new(&ffmpeg)
@@ -584,15 +697,31 @@ fn spawn_recorder(output: &Path, options: RecordingOptions, region: Option<Captu
             .stdout(Stdio::null())
             .stderr(Stdio::piped()));
 
-    match res {
-        Ok(c) => {
-            let (child, stderr) = watch_recorder_startup(c)?;
-            Ok((Backend::Process { child, stderr }, opt))
-        }
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Err(Error::Recording(
+    let mut child = match res {
+        Ok(c) => c,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Err(Error::Recording(
             "ffmpeg not found in PATH — install with: sudo apt install ffmpeg".into()
         )),
-        Err(e) => Err(Error::Recording(format!("failed to spawn ffmpeg: {e}"))),
+        Err(e) => return Err(Error::Recording(format!("failed to spawn ffmpeg: {e}"))),
+    };
+
+    // Hand ffmpeg's stdin to the frame writer. From here on `child.stdin` is
+    // `None`, which is exactly what makes `graceful_signal`'s `q` a no-op on
+    // this backend — stopping the writer closes the pipe instead.
+    let Some(stdin) = child.stdin.take() else {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(Error::Recording("ffmpeg started without a usable stdin pipe".into()));
+    };
+    if let Err(e) = cast.attach(stdin) {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(e);
+    }
+
+    match watch_recorder_startup(child) {
+        Ok((child, stderr)) => Ok((Backend::Process { child, stderr, cast: Some(cast) }, opt)),
+        Err(e) => { cast.stop(); Err(e) }
     }
 }
 
@@ -656,24 +785,96 @@ pub(crate) fn build_linux_ffmpeg_args(
         push(&mut a, "-f"); push(&mut a, "pulse");
         push(&mut a, "-i"); push(&mut a, m);
     }
-    push(&mut a, "-c:v"); push(&mut a, "libx264");
-    push(&mut a, "-preset"); push(&mut a, "ultrafast");
-    push(&mut a, "-pix_fmt"); push(&mut a, "yuv420p");
-    push(&mut a, "-vf"); push(&mut a, "pad=ceil(iw/2)*2:ceil(ih/2)*2");
-    match (options.mic, monitor_source.is_some()) {
+    push_linux_encode_tail(&mut a, options.mic, monitor_source.is_some());
+    push(&mut a, output_path);
+    a
+}
+
+/// The encode half of a Linux ffmpeg command line: H.264 video plus whatever
+/// mixing the requested Pulse inputs need.
+///
+/// Shared by the X11 and Wayland builders because it is genuinely the same
+/// command in both: video is always input 0 (x11grab there, `pipe:0` here),
+/// the mic is input 1 when present, and the sink monitor is the next index
+/// after that. Only the input half differs between the two stacks.
+#[cfg(any(target_os = "linux", test))]
+fn push_linux_encode_tail(a: &mut Vec<String>, mic: bool, monitor: bool) {
+    let push = |a: &mut Vec<String>, s: &str| a.push(s.to_string());
+    push(a, "-c:v"); push(a, "libx264");
+    push(a, "-preset"); push(a, "ultrafast");
+    push(a, "-pix_fmt"); push(a, "yuv420p");
+    push(a, "-vf"); push(a, "pad=ceil(iw/2)*2:ceil(ih/2)*2");
+    match (mic, monitor) {
         (true, true) => {
-            push(&mut a, "-filter_complex");
-            push(&mut a, "[1:a][2:a]amix=inputs=2:duration=longest:dropout_transition=0[aout]");
-            push(&mut a, "-map"); push(&mut a, "0:v");
-            push(&mut a, "-map"); push(&mut a, "[aout]");
-            push(&mut a, "-c:a"); push(&mut a, "aac");
-            push(&mut a, "-b:a"); push(&mut a, "160k");
+            push(a, "-filter_complex");
+            push(a, "[1:a][2:a]amix=inputs=2:duration=longest:dropout_transition=0[aout]");
+            push(a, "-map"); push(a, "0:v");
+            push(a, "-map"); push(a, "[aout]");
+            push(a, "-c:a"); push(a, "aac");
+            push(a, "-b:a"); push(a, "160k");
         }
         (true, false) | (false, true) => {
-            push(&mut a, "-c:a"); push(&mut a, "aac");
-            push(&mut a, "-b:a"); push(&mut a, "160k");
+            push(a, "-c:a"); push(a, "aac");
+            push(a, "-b:a"); push(a, "160k");
         }
         (false, false) => {}
+    }
+}
+
+/// Build the ffmpeg argv for a Wayland recording: raw frames on stdin as input
+/// 0, the same Pulse inputs the X11 path uses after it. Pure function so the
+/// test suite can assert the argv without a compositor, a portal, or PipeWire.
+///
+/// The two `-pix_fmt` flags are not a typo. The first sits before `-i` and
+/// describes the bytes we're about to write; the second sits after every input
+/// and asks for `yuv420p` in the file, which is what makes the MP4 play in
+/// consumer players. `-framerate` before `-i` is what gives the stream its
+/// timing — `-f rawvideo` carries no timestamps at all, which is why the
+/// writer thread paces itself at exactly this rate.
+#[cfg(any(target_os = "linux", test))]
+pub(crate) fn build_wayland_ffmpeg_args(
+    pix_fmt:        &str,
+    width:          u32,
+    height:         u32,
+    fps:            u32,
+    output_path:    &str,
+    options:        RecordingOptions,
+    monitor_source: Option<&str>,
+    region:         Option<CaptureRect>,
+) -> Vec<String> {
+    let mut a: Vec<String> = Vec::with_capacity(40);
+    let push = |a: &mut Vec<String>, s: &str| a.push(s.to_string());
+    push(&mut a, "-y");
+    push(&mut a, "-f"); push(&mut a, "rawvideo");
+    push(&mut a, "-pix_fmt"); a.push(pix_fmt.to_string());
+    push(&mut a, "-video_size"); a.push(format!("{width}x{height}"));
+    push(&mut a, "-framerate"); a.push(fps.to_string());
+    // Keeps the demuxer from dropping frames while the encoder is busy, the
+    // same reason the Windows audio inputs set it.
+    push(&mut a, "-thread_queue_size"); push(&mut a, "1024");
+    push(&mut a, "-i"); push(&mut a, "pipe:0");
+    if options.mic {
+        push(&mut a, "-f"); push(&mut a, "pulse");
+        push(&mut a, "-i"); push(&mut a, "default");
+    }
+    if let Some(m) = monitor_source {
+        push(&mut a, "-f"); push(&mut a, "pulse");
+        push(&mut a, "-i"); a.push(m.to_string());
+    }
+    push_linux_encode_tail(&mut a, options.mic, monitor_source.is_some());
+    // The cast hands over whole frames — there is no `-video_size`/offset
+    // input option on a raw pipe the way x11grab has — so a region becomes a
+    // `crop` ahead of the even-dimension `pad` every Linux recording gets.
+    // The offsets are measured from the desktop corner, which is where the
+    // cast's frame starts when the user shares the whole desktop; a crop that
+    // falls outside the shared surface makes ffmpeg fail at startup, which
+    // `watch_recorder_startup` turns into an error rather than a silent
+    // full-screen file.
+    if let Some(r) = region {
+        if let Some(i) = a.iter().position(|s| s == "-vf") {
+            a[i + 1] = format!("crop={}:{}:{}:{},{}",
+                               r.width, r.height, r.offset_x(), r.offset_y(), a[i + 1]);
+        }
     }
     push(&mut a, output_path);
     a
@@ -1138,6 +1339,10 @@ fn graceful_signal(child: &mut Child) {
         // a console-less child.
         let _ = writeln!(stdin, "q");
     }
+    // A Wayland recording has no stdin left to take: the frame writer owns it,
+    // and the pipe closing when that thread stops is the finalize signal. So
+    // this is deliberately a no-op there rather than a special case — see
+    // `stop_blocking`, which stops the cast before waiting on the child.
 }
 
 #[cfg(target_os = "macos")]
@@ -1308,6 +1513,81 @@ mod tests {
         assert!(a[fc + 1].contains("amix=inputs=2"),
                 "expected amix filter, got {:?}", a[fc + 1]);
         assert!(a.iter().any(|s| s == "alsa_output.0.monitor"));
+    }
+
+    // Wayland argv-builder: raw frames on stdin instead of a capture device,
+    // then the same Pulse inputs the X11 path uses. Gated
+    // `#[cfg(any(target_os = "linux", test))]` like the others, so the Windows
+    // and macOS CI runners catch regressions in it too.
+
+    #[test]
+    fn wayland_argv_reads_raw_frames_from_stdin() {
+        let a = build_wayland_ffmpeg_args(
+            "bgr0", 2560, 1440, 30, "/tmp/out.mp4", RecordingOptions::NONE, None, None);
+        assert!(a.windows(2).any(|w| w == ["-f", "rawvideo"]),
+                "video must come from stdin, not a capture device: {a:?}");
+        assert!(a.windows(2).any(|w| w == ["-i", "pipe:0"]));
+        assert!(!a.iter().any(|s| s == "x11grab"),
+                "x11grab must never appear on the Wayland path: {a:?}");
+        assert!(a.windows(2).any(|w| w == ["-video_size", "2560x1440"]),
+                "the negotiated frame size must be declared: {a:?}");
+        assert!(a.windows(2).any(|w| w == ["-framerate", "30"]),
+                "rawvideo has no timestamps, so the rate must be declared: {a:?}");
+        assert_eq!(a.last().unwrap(), "/tmp/out.mp4");
+    }
+
+    #[test]
+    fn wayland_argv_declares_input_and_output_pixel_formats_separately() {
+        // The input `-pix_fmt` describes the bytes we write; the output one is
+        // what makes the MP4 playable. Collapsing them into one would either
+        // mangle the frames or produce a file consumer players refuse.
+        let a = build_wayland_ffmpeg_args(
+            "bgra", 800, 600, 30, "/tmp/out.mp4", RecordingOptions::NONE, None, None);
+        let input_pix = a.iter().position(|s| s == "-pix_fmt").expect("no input -pix_fmt");
+        assert_eq!(a[input_pix + 1], "bgra");
+        let input_i = a.iter().position(|s| s == "-i").expect("no -i");
+        assert!(input_pix < input_i, "input -pix_fmt must precede -i: {a:?}");
+        let output_pix = a.iter().rposition(|s| s == "-pix_fmt").expect("no output -pix_fmt");
+        assert_eq!(a[output_pix + 1], "yuv420p");
+        assert!(output_pix > input_i, "output -pix_fmt must follow the inputs: {a:?}");
+    }
+
+    #[test]
+    fn wayland_argv_keeps_the_same_pulse_audio_wiring_as_x11() {
+        // Audio does not change with the session type: PipeWire's Pulse shim
+        // serves the same inputs, at the same stream indices, so mic + monitor
+        // still amix over [1:a][2:a].
+        let a = build_wayland_ffmpeg_args(
+            "bgr0", 1920, 1080, 30, "/tmp/out.mp4",
+            RecordingOptions::MIC_AND_SYS, Some("alsa_output.0.monitor"), None);
+        assert!(a.windows(2).any(|w| w == ["-i", "default"]), "mic input missing: {a:?}");
+        assert!(a.iter().any(|s| s == "alsa_output.0.monitor"));
+        let fc = a.iter().position(|s| s == "-filter_complex").expect("missing -filter_complex");
+        assert!(a[fc + 1].contains("[1:a][2:a]amix=inputs=2"),
+                "video is still input 0 on this path, so the mix indices must \
+                 match X11's: {:?}", a[fc + 1]);
+        assert!(a.windows(2).any(|w| w == ["-map", "0:v"]));
+        assert!(a.windows(2).any(|w| w == ["-map", "[aout]"]));
+    }
+
+    #[test]
+    fn wayland_and_x11_argv_share_one_encode_tail() {
+        // The two builders differ only in their inputs. If they ever drift on
+        // codec, preset or mixing, the same recording would come out different
+        // on the two Linux session types — exactly the parity break this
+        // asserts against.
+        let tail_of = |v: &[String]| {
+            let at = v.iter().position(|s| s == "-c:v").expect("no encode tail");
+            v[at..].to_vec()
+        };
+        for opts in [RecordingOptions::NONE, RecordingOptions::MIC_ONLY,
+                     RecordingOptions::SYSTEM_ONLY, RecordingOptions::MIC_AND_SYS] {
+            let monitor = opts.system_audio.then_some("sink.monitor");
+            let x11 = build_linux_ffmpeg_args(":0", "/tmp/out.mp4", opts, monitor, None);
+            let way = build_wayland_ffmpeg_args(
+                "bgr0", 1920, 1080, 30, "/tmp/out.mp4", opts, monitor, None);
+            assert_eq!(tail_of(&x11), tail_of(&way), "encode tails diverged for {opts:?}");
+        }
     }
 
     // Windows argv-builder: gdigrab video plus one raw-PCM TCP input per
