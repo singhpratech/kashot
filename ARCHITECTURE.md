@@ -17,7 +17,7 @@ Cargo workspace under `kashot-rs/` with three crates:
 | Crate              | Role                                                                  |
 |--------------------|-----------------------------------------------------------------------|
 | `kashot-core`      | Pure logic: `Tool`, `Annotation`, `AppSettings`, theme, state machine |
-| `kashot-platform`  | OS shims: capture (xcap), hotkey (global-hotkey), tray, clipboard, recorder |
+| `kashot-platform`  | OS shims: capture (xcap), hotkey (global-hotkey / portal), tray, clipboard, recorder |
 | `kashot-app`       | Tray-resident binary; winit event loop, themed dialogs, editor       |
 
 ```sh
@@ -74,7 +74,46 @@ Tray-resident screenshot tool with an annotation editor. The `kashot-app` binary
 
 - **Settings** persist to `ProjectDirs::from("org", "kashot", "Kashot").config_dir()` (`~/.config/kashot/settings.json` on Linux).
 - **Theme colors** — each dialog currently re-declares its laser-green palette as private constants. Promoting to a shared `kashot-core/src/theme.rs` is a deferred cleanup item ([[feedback-release-gate]] fact-check, claim 13).
-- **Recording**: Linux X11 via `ffmpeg -f x11grab` (PulseAudio mic + default-sink monitor source — `pactl` must be on PATH or audio is silently dropped, which is why the snap stages `pulseaudio-utils`); Windows native via `ffmpeg -f gdigrab` + `-f dshow` mic, system audio via WASAPI loopback piped to ffmpeg over TCP; macOS via built-in `screencapture -v` for the video-only case, switching to `ffmpeg -f avfoundation` when audio is requested, with system audio from a ScreenCaptureKit session over the same TCP path. **Wayland (Linux) capture is still queued** (`recorder.rs`). Audio is best-effort on Linux and for the macOS microphone — a source that won't open is dropped and the recording starts without it; on Windows, and for macOS system audio, a source that can't be opened fails the whole recording with an actionable error instead. Either way `Recorder::start` returns the *effective* options, so toasts must be rendered from its return value rather than from what was asked for.
+- **Recording**: Linux X11 via `ffmpeg -f x11grab` (PulseAudio mic + default-sink monitor source — `pactl` must be on PATH or audio is silently dropped, which is why the snap stages `pulseaudio-utils`); Linux Wayland via the ScreenCast portal (see below); Windows native via `ffmpeg -f gdigrab` + `-f dshow` mic, system audio via WASAPI loopback piped to ffmpeg over TCP; macOS via built-in `screencapture -v` for the video-only case, switching to `ffmpeg -f avfoundation` when audio is requested, with system audio from a ScreenCaptureKit session over the same TCP path. Audio is best-effort on Linux and for the macOS microphone — a source that won't open is dropped and the recording starts without it; on Windows, and for macOS system audio, a source that can't be opened fails the whole recording with an actionable error instead. Either way `Recorder::start` returns the *effective* options, so toasts must be rendered from its return value rather than from what was asked for.
+
+### Linux: X11 vs Wayland
+
+Wayland removes three things an X11 session gives away for free — a key grab, a
+readable root window, and a screen an external process can point a capture
+device at. Each has its own replacement, all of them `xdg-desktop-portal` calls
+made through `ashpd`, and all of them selected at runtime by
+`kashot_platform::session::is_wayland()` (`XDG_SESSION_TYPE` or a non-empty
+`WAYLAND_DISPLAY`). Nothing is compiled out: one binary serves both session
+types and picks per launch.
+
+| | X11 | Wayland |
+|---|---|---|
+| **Global hotkey** | `global-hotkey` (`XGrabKey`) | `org.freedesktop.portal.GlobalShortcuts` (`hotkey_portal.rs`) |
+| **Screenshot** | `xcap` → XCB/`SHM` | `xcap` → GNOME Shell / Screenshot portal / `wlr-screencopy`, with a portal-Screenshot fallback (`capture_portal.rs`) |
+| **Recording — video** | `ffmpeg -f x11grab` | ScreenCast portal → PipeWire → raw frames on ffmpeg's stdin (`recorder_wayland.rs`) |
+| **Recording — audio** | `-f pulse` inputs | *unchanged* — PipeWire's Pulse shim serves the same inputs |
+
+Three things follow from that table and are easy to get wrong:
+
+- **The X11 hotkey path is never used as a Wayland fallback.** XWayland answers
+  `XGrabKey`, so registration *succeeds* and the key then never fires — strictly
+  worse than an error. If the portal is unavailable, `HotkeyManager::new`
+  returns an actionable error and the tray toasts it once at startup.
+- **The compositor owns the binding.** `preferred_trigger` is a request. The
+  Settings REBIND widget still works, but what actually fires is whatever the
+  desktop assigned, which it lists under its own keyboard settings — hence the
+  "set by your desktop" note on the tray's Capture row. VK → keysym rendering
+  is pure logic in `kashot-core::shortcut` so it is unit-tested on all three CI
+  runners.
+- **Wayland recording owns ffmpeg's stdin**, because that is where the frames
+  go. Stop is therefore EOF on the pipe (drop the writer) rather than the `q`
+  the other platforms write, and `graceful_signal` is a deliberate no-op there.
+  The writer paces itself at a fixed 30 fps and re-sends the last frame when
+  nothing changed: `-f rawvideo` carries no timestamps, so a compositor that
+  only sends buffers on damage would otherwise produce a file where a still
+  minute plays back in a second. `CastSession::start` does not return until a
+  real frame has been copied out of a real PipeWire buffer, so a session that
+  negotiates but never delivers fails *before* any file is created.
 
 ## Keyboard shortcuts
 

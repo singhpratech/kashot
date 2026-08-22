@@ -161,11 +161,11 @@ brew install --cask kashot
 | ✏️ | **9 annotation tools** — pen, line, arrow, rectangle, ellipse, marker, text, numbered steps, blur / pixelate |
 | 🎨 | **4 palettes × 16 swatches** — Vivid · Highlighter · Pastel · Pro, plus a custom color picker |
 | 📌 | **Pin to screen** — borderless top-most window, drag anywhere on the desktop |
-| 🎬 | **Screen recording** — MP4 with microphone **and system audio on every platform** (PulseAudio monitor on Linux, WASAPI loopback on Windows, ScreenCaptureKit on macOS) — no Stereo Mix / BlackHole driver needed. The floating STOP control keeps itself out of the recording (Windows / macOS; on Linux/X11 stop via the tray). Wayland capture is queued |
+| 🎬 | **Screen recording** — MP4 with microphone **and system audio on every platform** (PulseAudio monitor on Linux, WASAPI loopback on Windows, ScreenCaptureKit on macOS) — no Stereo Mix / BlackHole driver needed. The floating STOP control keeps itself out of the recording (Windows / macOS; on Linux stop via the tray). Wayland sessions record through the `xdg-desktop-portal` ScreenCast portal — your desktop asks which screen to share the first time |
 | 🖊️ | **Annotate recordings on a timeline** — tray → *Annotate last recording*: drag the timeline to scrub the clip to any moment, draw with the full editor, and pick how long each annotation stays on screen (3 s / 5 s / 10 s / until the clip ends); everything burns into an `_annotated.mp4` copy with audio intact, original untouched |
 | 🔄 | **Format conversion** — PNG ↔ JPG / WEBP / BMP · MP4 → MOV / WEBM / MKV / GIF |
 | 🏷️ | **Watermark** — editable text, 4 anchors, 0–100 % opacity slider |
-| ⌨️ | **Global hotkey** — defaults to `PrintScreen`; remappable via settings |
+| ⌨️ | **Global hotkey** — defaults to `PrintScreen`; remappable via settings. On Linux Wayland the shortcut is requested through the `xdg-desktop-portal` GlobalShortcuts portal, so your desktop has the final say on the binding and lists it under its own keyboard settings |
 | ⏱️ | **Delayed capture** — 3 s / 5 s / 10 s countdown with tray indicator |
 | 🖥️ | **Multi-monitor** — single virtual-desktop capture, no per-screen switching |
 | 🌗 | **Themed dialogs** — Settings · About · Updates · Convert — same laser-green skin everywhere |
@@ -261,13 +261,30 @@ icons/                 branded icon pack (every platform size, one source PNG)
 
 | Surface | Windows | Linux | macOS |
 |---|:---:|:---:|:---:|
-| Tray + global hotkey | ✅ | ✅ | ✅ |
+| Tray + global hotkey | ✅ | ✅ X11 · ✅ Wayland (portal) | ✅ |
 | Capture + 9-tool overlay editor | ✅ | ✅ | ✅ |
 | Save · Copy · Pin · Watermark | ✅ | ✅ | ✅ |
-| Screen recording (MP4) | ✅ mic + system | ✅ mic + system | ✅ mic + system |
+| Screen recording (MP4) | ✅ mic + system | ✅ mic + system (X11 + Wayland) | ✅ mic + system |
 | Themed Settings · About · Updates | ✅ | ✅ | ✅ |
 | Image + video format conversion | ✅ | ✅ | ✅ |
 | Release artifact | `.msi` + portable `.zip` | `.tar.gz` (x86_64 + arm64) + AppImage + snap + Flatpak repo | `.dmg` (Apple Silicon + Intel) |
+
+### Linux: X11 and Wayland
+
+Both session types are supported by the same binary, which picks its backend at
+launch. On Wayland there is no key grab and no readable root window, so the
+three things that need one go through `xdg-desktop-portal` instead:
+
+| | X11 | Wayland |
+|---|---|---|
+| Global hotkey | direct key grab | GlobalShortcuts portal — your desktop assigns and lists the binding |
+| Screenshot | direct | GNOME Shell / Screenshot portal / `wlr-screencopy`, whichever your desktop provides |
+| Screen recording | `x11grab` | ScreenCast portal + PipeWire — you pick a screen to share when a recording starts |
+
+That means a working `xdg-desktop-portal` plus the backend for your desktop
+(`xdg-desktop-portal-gnome`, `-kde`, `-wlr`, …) is a runtime requirement on
+Wayland. If one isn't running, Kashot says so and points at the tray menu
+rather than failing quietly.
 
 **One Rust binary, three platforms.** Same source, same editor, same feature set — the `kashot-rs/` workspace is the canonical build on Windows, Linux, and macOS as of v0.3.0. The original C# / WinForms build is retired (history retained in git). See [`PLAN.md`](PLAN.md) § "Architecture invariants" for the settings JSON shape and hotkey wire format.
 
