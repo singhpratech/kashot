@@ -355,7 +355,7 @@ pub fn run() -> Result<()> {
                         }
                         Err(e) => {
                             eprintln!("Save failed: {e}");
-                            notify("KAShot — capture failed", &format!("{e}"), true);
+                            notify("KAShot — screenshot not saved", &format!("{e}"), true);
                         }
                     }
                 }
@@ -386,7 +386,7 @@ pub fn run() -> Result<()> {
                 }
                 Err(e) => {
                     eprintln!("Save failed: {e}");
-                    notify("KAShot — save failed", &format!("{e}"), true);
+                    notify("KAShot — screenshot not saved", &format!("{e}"), true);
                 }
             }
         }
@@ -398,6 +398,11 @@ pub fn run() -> Result<()> {
         /// selection alive while the source process exits — that's fine
         /// because Kashot stays resident. Watermark is applied first so the
         /// pasted bitmap matches what `save_final` writes to disk.
+        ///
+        /// Both failure arms toast. Copy is a dead end when it fails — the
+        /// bitmap is dropped here and never reaches the save folder — so a
+        /// silent stderr line meant the user pasted stale clipboard contents
+        /// and never learned the shot was gone.
         fn copy_final(&mut self, mut img: image::ImageBuffer<image::Rgba<u8>, Vec<u8>>) {
             apply_watermark(&mut img, &self.settings);
             let (w, h) = (img.width() as usize, img.height() as usize);
@@ -411,11 +416,17 @@ pub fn run() -> Result<()> {
                     };
                     if let Err(e) = clip.set_image(data) {
                         eprintln!("Clipboard copy failed: {e}");
+                        notify("KAShot — copy failed",
+                            &kashot_core::failure::clipboard_failure(&e.to_string()), true);
                     } else {
                         eprintln!("Copied {w}×{h} to clipboard");
                     }
                 }
-                Err(e) => eprintln!("Clipboard unavailable: {e}"),
+                Err(e) => {
+                    eprintln!("Clipboard unavailable: {e}");
+                    notify("KAShot — copy failed",
+                        &kashot_core::failure::clipboard_failure(&e.to_string()), true);
+                }
             }
         }
 
@@ -681,6 +692,8 @@ pub fn run() -> Result<()> {
                     self.settings = new;
                     if let Err(e) = self.settings.save() {
                         eprintln!("Failed to persist settings: {e}");
+                        notify("KAShot — settings not saved",
+                            &kashot_core::failure::settings_write_failure(&e.to_string()), true);
                     }
                     if let Some(hk) = self.hotkeys.as_mut() {
                         hk.unregister();
@@ -1082,7 +1095,11 @@ pub fn run() -> Result<()> {
                 apply_watermark(&mut img, &self.settings);
                 match PinView::new(_loop_target, img, pos) {
                     Ok(pv)  => self.pinned.push(pv),
-                    Err(e)  => eprintln!("Pin failed: {e}"),
+                    Err(e)  => {
+                        eprintln!("Pin failed: {e}");
+                        notify("KAShot — pin failed",
+                            &kashot_core::failure::pin_failure(&e.to_string()), true);
+                    }
                 }
             }
             if let Some(out) = settings_outcome {
@@ -1186,10 +1203,17 @@ fn save_capture(
     bmp: &image::ImageBuffer<image::Rgba<u8>, Vec<u8>>,
 ) -> Result<PathBuf> {
     let dir = save_directory(settings);
-    std::fs::create_dir_all(&dir)?;
+    // Both failures below carry the path *and* the OS reason: this error text
+    // is what the user sees in the toast, and "save failed" on its own gives
+    // them nothing to fix.
+    std::fs::create_dir_all(&dir)
+        .map_err(|e| anyhow!(kashot_core::failure::save_folder_failure(
+            &dir.display().to_string(), &e.to_string())))?;
     let stamp = Local::now().format("%Y%m%d_%H%M%S");
     let path  = dir.join(format!("kashot_{stamp}.png"));
-    bmp.save(&path)?;
+    bmp.save(&path)
+        .map_err(|e| anyhow!(kashot_core::failure::save_write_failure(
+            &path.display().to_string(), &e.to_string())))?;
     if settings.save_directory.is_empty() {
         settings.save_directory = dir.to_string_lossy().to_string();
     }

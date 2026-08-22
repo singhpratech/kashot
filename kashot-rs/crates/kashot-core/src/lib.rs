@@ -6,6 +6,7 @@
 
 pub mod annotation;
 pub mod color;
+pub mod failure;
 pub mod settings;
 pub mod state;
 pub mod theme;
