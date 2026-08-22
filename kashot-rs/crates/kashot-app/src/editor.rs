@@ -36,8 +36,9 @@ use std::rc::Rc;
 use anyhow::{anyhow, Result};
 use image::{ImageBuffer, Rgba};
 use kashot_core::annotation::{Annotation, Point2, Stroke};
+use kashot_core::dpi::{DisplayMap, PhysicalRect};
 use kashot_core::settings::AppSettings;
-use kashot_core::state::{hit_test_edge, Edge};
+use kashot_core::state::{hit_test_edge_scaled, Edge};
 use kashot_core::tool::Tool;
 use softbuffer::{Context, Surface};
 use winit::dpi::PhysicalPosition;
@@ -226,6 +227,15 @@ const MAG_OFFSET:  i32 = 24;         // pixel offset from cursor to chip corner
 
 pub struct Overlay {
     screenshot:  ImageBuffer<Rgba<u8>, Vec<u8>>,
+    /// Logical <-> physical mapping for `screenshot`. The overlay works
+    /// entirely in captured-bitmap pixels, which are device pixels — the same
+    /// units winit reports the cursor and the window size in — so nothing in
+    /// here needs converting. The map is what turns a bitmap rect back into a
+    /// desktop coordinate for anything outside the overlay (pin placement, a
+    /// recording region), and what tells the editor how big a device pixel is
+    /// so hit targets stay physically the same size on a high-DPI panel.
+    /// Defaults to a 1x identity map, which is the un-scaled desktop.
+    display:     DisplayMap,
     window:      Rc<Window>,
     _ctx:        Context<Rc<Window>>,
     surface:     Surface<Rc<Window>, Rc<Window>>,
@@ -448,6 +458,7 @@ impl Overlay {
         // so every tool is immediately usable and nothing can be cropped.
         let (full_w, full_h) = (screenshot.width() as i32, screenshot.height() as i32);
         Ok(Overlay {
+            display: DisplayMap::identity(full_w.max(0) as u32, full_h.max(0) as u32),
             screenshot,
             window,
             _ctx:        ctx,
@@ -489,6 +500,21 @@ impl Overlay {
             last_anim_frame: None,
         })
     }
+
+    /// Hand the overlay the capture's logical/physical mapping. Separate from
+    /// `new` so the constructor's signature stays put; called right after the
+    /// window opens. A map whose physical size doesn't match the bitmap we
+    /// were handed is ignored — the 1x identity the constructor installed is
+    /// always consistent with the frame, and a mismatched map would move the
+    /// crop instead of correcting it.
+    pub fn set_display_map(&mut self, map: DisplayMap) {
+        if map.physical_size() == (self.screenshot.width(), self.screenshot.height()) {
+            self.display = map;
+        }
+    }
+
+    /// Device pixels per logical desktop unit for the captured frame.
+    fn display_scale(&self) -> f32 { self.display.scale() }
 
     /// Read-only view of the editor's live settings — used by `tray_loop`
     /// after the overlay closes to pull back any per-tool slider values
@@ -955,9 +981,10 @@ impl Overlay {
                 // desync the annotation coordinates from the video, so the
                 // edges are not grabbable there.
                 if let Some(sel) = self.selection.filter(|_| !self.video_mode) {
-                    let hit = hit_test_edge(
+                    let hit = hit_test_edge_scaled(
                         (sel.0 as f32, sel.1 as f32, sel.2 as f32, sel.3 as f32),
                         (self.cursor.0 as f32, self.cursor.1 as f32),
+                        self.display_scale(),
                     );
                     if hit.is_some() {
                         self.state       = State::Resizing;
@@ -1157,9 +1184,10 @@ impl Overlay {
 
     fn update_resize_cursor(&self) {
         let Some(sel) = self.selection else { return; };
-        let hit = hit_test_edge(
+        let hit = hit_test_edge_scaled(
             (sel.0 as f32, sel.1 as f32, sel.2 as f32, sel.3 as f32),
             (self.cursor.0 as f32, self.cursor.1 as f32),
+            self.display_scale(),
         );
         let icon = match hit {
             Edge::Left | Edge::Right                  => CursorIcon::EwResize,
@@ -1225,9 +1253,18 @@ impl Overlay {
     }
 
     fn commit_as_pin(&mut self) -> OverlayOutcome {
+        // The pin window is positioned in absolute device pixels, which the
+        // selection is only trivially equal to on a single 1x screen at the
+        // virtual origin. Route it through the display map so the pin lands
+        // over the region it was cut from on a scaled or offset desktop.
         let pos = match self.selection {
-            Some((x, y, _, _)) => (x, y),
-            None               => return OverlayOutcome::Continue,
+            Some((x, y, w, h)) => {
+                let dev = self.display.physical_rect_to_device(PhysicalRect::new(
+                    x, y, w.max(0) as u32, h.max(0) as u32,
+                ));
+                (dev.x, dev.y)
+            }
+            None => return OverlayOutcome::Continue,
         };
         match self.compose_final() {
             Some(img) => OverlayOutcome::Pinned(img, pos),

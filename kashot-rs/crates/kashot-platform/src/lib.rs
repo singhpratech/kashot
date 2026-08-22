@@ -14,11 +14,11 @@ pub mod recorder;
 pub mod session;
 pub mod tray;
 
-pub use capture::{capture_all_screens, Captured};
 pub use child_guard::reap_orphaned_recorder;
 pub use clipboard::{copy_image_png, copy_text};
 pub use hotkey::HotkeyManager;
 pub use instance::{Instance, InstanceLock};
+pub use capture::{capture_all_screens, Captured, MonitorFrame};
 pub use recorder::Recorder;
 pub use session::is_wayland;
 pub use tray::{MenuLabels, Tray, TrayEvent};
