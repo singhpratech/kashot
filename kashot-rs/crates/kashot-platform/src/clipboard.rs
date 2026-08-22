@@ -18,3 +18,16 @@ pub fn copy_image_png(bitmap: &ImageBuffer<Rgba<u8>, Vec<u8>>) -> Result<()> {
     cb.set_image(img).map_err(|e| Error::Clipboard(e.to_string()))?;
     Ok(())
 }
+
+/// Copy `text` to the system clipboard.
+///
+/// Used by the Updates dialog to hand over the package-manager command for
+/// installs the in-app updater must not touch. Same `arboard` backend as the
+/// image path, so it behaves identically on all three platforms.
+pub fn copy_text(text: &str) -> Result<()> {
+    let mut cb = arboard::Clipboard::new()
+        .map_err(|e| Error::Clipboard(e.to_string()))?;
+    cb.set_text(text.to_owned())
+        .map_err(|e| Error::Clipboard(e.to_string()))?;
+    Ok(())
+}

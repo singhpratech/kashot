@@ -16,6 +16,7 @@
 mod bitmap_font;
 mod editor;
 mod icons;
+mod install_source;
 mod painter;
 mod about_form;
 mod brand_icon;

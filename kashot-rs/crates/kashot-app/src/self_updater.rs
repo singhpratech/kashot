@@ -26,7 +26,23 @@
 //!   scratch dir; we walk it and find the first file named `kashot`.
 //! - `.zip` (Windows) — extracted via PowerShell's `Expand-Archive`; we
 //!   walk it and find `kashot.exe`.
+//! - `.AppImage` — installed as-is over the running `$APPIMAGE` file (see
+//!   below); never extracted.
 //! - anything else (macOS naked binary) — treated as the binary itself.
+//!
+//! Install channels
+//! ----------------
+//! Only installs we own get replaced. `kashot_core::install_channel`
+//! classifies the running binary; Snap / Flatpak / Homebrew / deb-rpm-AUR /
+//! Scoop installs belong to a package manager and are refused here as well
+//! as hidden in the dialog, so no future caller can reintroduce the bug of
+//! writing into someone else's package tree.
+//!
+//! An AppImage is a single self-contained file we do own, but the swap
+//! target is *not* `current_exe()` — inside an AppImage that path points at
+//! the read-only FUSE mount. `$APPIMAGE` is the real file on disk, so the
+//! new AppImage is staged beside it and renamed over it, and the relaunch
+//! runs that path rather than the mount that is about to disappear.
 //!
 //! Verification
 //! ------------
@@ -67,6 +83,17 @@ fn run(
     expected_sha256: Option<String>,
     on_progress: impl Fn(u64, Option<u64>) + Send + 'static,
 ) -> Result<(), String> {
+    // Safety net. The dialog already hides the install button for
+    // package-managed channels; refusing here too means a stray caller
+    // can't write into a dpkg / rpm / snap / brew tree by accident.
+    let channel = crate::install_source::channel();
+    if channel.is_package_managed() {
+        return Err(format!(
+            "this Kashot was installed as a {} — update it through that package manager",
+            channel.label()
+        ));
+    }
+
     on_progress(0, None);
 
     let download_path = temp_path_for_url(&asset_url);
@@ -99,6 +126,18 @@ fn run(
         return launch_msi_and_exit(&download_path);
     }
 
+    // AppImage path: the download *is* the install. Swap it over the file
+    // `$APPIMAGE` names — the running `current_exe()` is inside the FUSE
+    // mount, which vanishes with this process — then relaunch that file.
+    if is_appimage_asset(&asset_url) {
+        let target = crate::install_source::appimage_path().ok_or_else(|| {
+            "AppImage asset picked but $APPIMAGE is unset — not an AppImage run".to_owned()
+        })?;
+        make_executable(&download_path)?;
+        swap_running_binary(&download_path, &target)?;
+        spawn_and_exit(&target);
+    }
+
     // Portable / archive path: extract the binary we'll run (the .tar.gz /
     // .zip is now trusted), swap it over the running exe, relaunch.
     let extracted = extract_binary(&download_path)?;
@@ -117,20 +156,11 @@ fn is_msi_asset(url: &str) -> bool {
     tail.eq_ignore_ascii_case("Kashot.msi") || tail.to_ascii_lowercase().ends_with(".msi")
 }
 
-/// Returns true when this kashot.exe was installed by Kashot.msi rather
-/// than unpacked from the portable zip. Heuristic: the running binary
-/// lives under either `Program Files` directory (the only place
-/// `InstallScope='perMachine'` puts it). On any non-Windows OS this is
-/// always false — MSI is a Windows-only concept.
-#[cfg(target_os = "windows")]
-pub fn is_msi_install() -> bool {
-    let Ok(exe) = std::env::current_exe() else { return false; };
-    let lossy = exe.to_string_lossy().to_lowercase();
-    lossy.contains("\\program files\\") || lossy.contains("\\program files (x86)\\")
+fn is_appimage_asset(url: &str) -> bool {
+    let tail = url.rsplit('/').next().unwrap_or("");
+    let tail = tail.split('?').next().unwrap_or(tail);
+    tail.to_ascii_lowercase().ends_with(".appimage")
 }
-
-#[cfg(not(target_os = "windows"))]
-pub fn is_msi_install() -> bool { false }
 
 #[cfg(target_os = "windows")]
 fn launch_msi_and_exit(msi_path: &Path) -> Result<(), String> {
@@ -212,6 +242,9 @@ fn guess_suffix_from_url(url: &str) -> &'static str {
     else if last.ends_with(".tgz") { ".tgz" }
     else if last.ends_with(".zip") { ".zip" }
     else if last.to_ascii_lowercase().ends_with(".msi") { ".msi" }
+    // Keep the extension: the swapped-in file *is* the AppImage, and some
+    // desktop integrations key off the name.
+    else if last.to_ascii_lowercase().ends_with(".appimage") { ".AppImage" }
     else { ".bin" }
 }
 
@@ -694,6 +727,20 @@ abc123def4567890abc123def4567890abc123def4567890abc123def4567890  kashot-linux-x
             guess_suffix_from_url("https://example.com/Kashot.msi"),
             ".msi"
         );
+    }
+
+    #[test]
+    fn appimage_asset_keeps_its_extension_and_is_recognised() {
+        assert_eq!(
+            guess_suffix_from_url("https://example.com/kashot-x86_64.AppImage"),
+            ".AppImage"
+        );
+        assert!(is_appimage_asset(
+            "https://github.com/x/y/releases/download/v1/kashot-x86_64.AppImage"
+        ));
+        assert!(is_appimage_asset("https://example.com/kashot.appimage?token=abc"));
+        assert!(!is_appimage_asset("https://example.com/kashot-linux-x86_64.tar.gz"));
+        assert!(!is_appimage_asset("https://example.com/Kashot.msi"));
     }
 
     #[test]
