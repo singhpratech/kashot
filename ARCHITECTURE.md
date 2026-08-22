@@ -16,7 +16,7 @@ Cargo workspace under `kashot-rs/` with three crates:
 
 | Crate              | Role                                                                  |
 |--------------------|-----------------------------------------------------------------------|
-| `kashot-core`      | Pure logic: `Tool`, `Annotation`, `AppSettings`, theme, state machine |
+| `kashot-core`      | Pure logic: `Tool`, `Annotation`, `AppSettings`, theme, state machine, annotation hit-testing (`edit.rs`) + undo log (`history.rs`) |
 | `kashot-platform`  | OS shims: capture (xcap), hotkey (global-hotkey), tray, clipboard, recorder |
 | `kashot-app`       | Tray-resident binary; winit event loop, themed dialogs, editor       |
 
@@ -58,7 +58,7 @@ Tray-resident screenshot tool with an annotation editor. The `kashot-app` binary
 |---|---|
 | `main.rs` | Entry. Boots `TrayLoop`, registers global hotkey, runs winit event loop. |
 | `tray_loop.rs` | Owns tray menu state, hotkey routing, lifetime of every window/dialog. The orchestrator. |
-| `editor.rs` | Capture surface + annotation editor. State machine: Idle / Selecting / Selected / Drawing / TextInput / Resizing. |
+| `editor.rs` | Capture surface + annotation editor. State machine: Idle / Selecting / Selected / Drawing / TextInput / Resizing / MovingAnnotation. |
 | `painter.rs` | tiny-skia + softbuffer wrapper. The shared rendering layer every dialog uses. |
 | `settings_form.rs` | Themed Settings dialog (paths, watermark, appearance, marker opacity). Live REBIND widget for the global hotkey, plus an Edit-as-JSON button as an escape hatch. |
 | `about_form.rs` | Themed About dialog. |
@@ -91,11 +91,33 @@ Once a region is selected, single-letter keys switch tools:
 | T | Text |
 | N | Numbered step |
 | B | Blur / pixelate |
+| S | Select mode (pick / move / delete existing annotations) |
 
 Plus:
-- `Esc` — cancel text input / cancel active draw / close overlay
-- `Ctrl+Z` — undo
+- `Esc` — cancel text input, cancel the active draw, drop the select-mode
+  highlight, leave select mode; with annotations on the canvas it then asks
+  before discarding anything (a second `Esc` or `Enter` confirms, any other
+  key keeps editing)
+- `Delete` / `Backspace` — in select mode, remove the selected annotation
+- `Ctrl+Z` — undo (add, move, delete, and a confirmed Esc discard)
 - `Ctrl+Y` or `Ctrl+Shift+Z` — redo
 - `Ctrl+C` — copy final image to clipboard
 - `Ctrl+S` — save final image via file picker
+- `Ctrl+P` — pin the final image to the screen
 - Drag selection edges/corners — resize
+- Drag an annotation in select mode — move it (one undo step per drag)
+
+### Select mode
+
+`S` toggles it. Clicks stop starting new strokes and instead hit-test the
+annotations already on the canvas, picking the topmost one under the cursor;
+the pick gets a dashed laser-green box and can be dragged to a new position
+or removed with `Delete` / `Backspace`. Any tool key (or a click on a tool
+button) leaves select mode, so drawing is never intercepted. Hit-testing,
+the move transform and the undo log live in `kashot-core`
+(`edit.rs`, `history.rs`) and are unit-tested per annotation kind.
+
+Rectangles and ellipses are hit-tested on their outline only — they are
+hollow shapes, so a click in the middle of a big frame reaches whatever is
+underneath it. Pen, marker, line and arrow test against their stroke width;
+text, step markers and blur test against their painted box or disc.

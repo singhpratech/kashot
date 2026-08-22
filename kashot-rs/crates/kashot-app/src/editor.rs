@@ -12,9 +12,11 @@
 //!   7. draw the floating tool-picker toolbar at the top of the screen
 //!   8. on Enter / right-click: composite annotations onto the cropped
 //!      bitmap and return it
-//!   9. on Esc: clear the selection if there is one, else cancel. Clearing
-//!      moves the annotations onto the redo stack instead of dropping them,
-//!      so Ctrl+Y brings the work back after a mis-hit Esc.
+//!   9. on Esc: never destroy work on the first press. With ink on the
+//!      canvas the first Esc arms a confirmation bar; only a second Esc
+//!      (or Enter) goes through with it, and even then the annotations
+//!      are pushed onto the undo stack as one `EditOp::Clear`, so a
+//!      single Ctrl+Z brings the whole session back — selection included.
 //!
 //! The window must share the tray's `EventLoop` (winit forbids two), so
 //! this exposes an `Overlay` struct rather than running its own event
@@ -36,6 +38,8 @@ use std::rc::Rc;
 use anyhow::{anyhow, Result};
 use image::{ImageBuffer, Rgba};
 use kashot_core::annotation::{Annotation, Point2, Stroke};
+use kashot_core::edit;
+use kashot_core::history::{EditOp, History};
 use kashot_core::settings::AppSettings;
 use kashot_core::state::{hit_test_edge, Edge};
 use kashot_core::tool::Tool;
@@ -118,6 +122,22 @@ enum State {
     /// pending Text annotation. Typed characters extend the buffer in
     /// `current`; Backspace deletes; Enter commits; Esc cancels.
     TextInput,
+    /// Select mode: the user grabbed an existing annotation and is
+    /// dragging it. Mouse-move shifts the annotation under the cursor,
+    /// mouse-up records one undoable `EditOp::Move`.
+    MovingAnnotation,
+}
+
+/// What a pending Esc confirmation would throw away if the user goes
+/// through with it. Set by the first Esc, cleared by any key that isn't
+/// Esc / Enter — see `handle_key`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PendingDiscard {
+    /// Screenshot mode with a live selection: clearing drops the region
+    /// and the ink in it (recoverable with Ctrl+Z).
+    ClearSelection,
+    /// Closing the overlay outright. Nothing survives this one.
+    CloseOverlay,
 }
 
 /// Tool / action panel geometry. Mirrors `Kashot/OverlayForm.cs::PositionToolbars`:
@@ -237,10 +257,11 @@ pub struct Overlay {
     tool:        Tool,
     stroke:      Stroke,
     annotations: Vec<Annotation>,
-    /// Stack of annotations that have been undone with Ctrl+Z but can still
-    /// be redone with Ctrl+Y / Ctrl+Shift+Z. Adding any new annotation
-    /// clears this — same convention as `Kashot/OverlayForm.cs`.
-    redo_stack:  Vec<Annotation>,
+    /// Undo/redo log over `annotations`. Holds `EditOp`s rather than bare
+    /// annotations so moving and deleting existing ink is reversible too;
+    /// adding a new annotation clears the redo side, same convention as
+    /// `Kashot/OverlayForm.cs`.
+    history:     History,
     /// In-progress annotation while `state == Drawing`.
     current:     Option<Annotation>,
     /// Next number assigned by `Tool::Step`. Resets to 1 whenever the user
@@ -339,6 +360,23 @@ pub struct Overlay {
     /// When the last self-driven animation frame was presented. Paces the
     /// redraw re-arm to `ANIM_FRAME`.
     last_anim_frame: Option<std::time::Instant>,
+    /// Select mode (S): clicks pick an existing annotation instead of
+    /// starting a new one. Any tool key or tool button leaves it.
+    select_mode: bool,
+    /// Index into `annotations` of the annotation the user selected in
+    /// select mode. Cleared by every undo/redo — indices shift under them.
+    selected_idx: Option<usize>,
+    /// Cursor position the running move drag was last sampled at.
+    move_last: (i32, i32),
+    /// Total offset the running move drag has accumulated, recorded as one
+    /// `EditOp::Move` on mouse-up so undo reverses the whole drag.
+    move_total: (f32, f32),
+    /// Armed Esc confirmation, if any. Non-`None` means the confirmation
+    /// bar is on screen and the next Esc / Enter goes through with it.
+    pending_discard: Option<PendingDiscard>,
+    /// Selection rect at the moment the canvas was last cleared. Undoing
+    /// the clear restores it, so a mis-hit Esc costs nothing at all.
+    last_selection: Option<(i32, i32, i32, i32)>,
 }
 
 impl Drop for Overlay {
@@ -461,7 +499,7 @@ impl Overlay {
             // 4 -> 8 -> 2 from a known position (see `THICKNESSES`).
             stroke:      Stroke { thickness: THICKNESSES[1], ..Stroke::default() },
             annotations: Vec::new(),
-            redo_stack:  Vec::new(),
+            history:     History::new(),
             current:     None,
             step_count:  1,
             mods:        ModifiersState::empty(),
@@ -487,6 +525,12 @@ impl Overlay {
             dim_cache: Vec::new(),
             dim_cache_key: None,
             last_anim_frame: None,
+            select_mode: false,
+            selected_idx: None,
+            move_last: (0, 0),
+            move_total: (0.0, 0.0),
+            pending_discard: None,
+            last_selection: None,
         })
     }
 
@@ -561,7 +605,7 @@ impl Overlay {
 
     pub fn handle_event(&mut self, event: WindowEvent) -> OverlayOutcome {
         match event {
-            WindowEvent::CloseRequested => OverlayOutcome::Cancelled,
+            WindowEvent::CloseRequested => self.request_close(),
 
             WindowEvent::ModifiersChanged(m) => {
                 self.mods = m.state();
@@ -598,6 +642,19 @@ impl Overlay {
                     }
                     State::Resizing => {
                         self.apply_resize();
+                        self.window.request_redraw();
+                    }
+                    State::MovingAnnotation => {
+                        if let Some(idx) = self.selected_idx {
+                            let dx = (self.cursor.0 - self.move_last.0) as f32;
+                            let dy = (self.cursor.1 - self.move_last.1) as f32;
+                            if let Some(a) = self.annotations.get_mut(idx) {
+                                edit::translate(a, dx, dy);
+                            }
+                            self.move_total.0 += dx;
+                            self.move_total.1 += dy;
+                        }
+                        self.move_last = self.cursor;
                         self.window.request_redraw();
                     }
                     State::Selected => {
@@ -665,44 +722,48 @@ impl Overlay {
         if self.state == State::TextInput {
             return self.handle_text_key(key);
         }
+        // An armed Esc confirmation owns the keyboard: Esc / Enter go
+        // through with the discard, anything else calls it off. Bare
+        // modifier presses are ignored so reaching for Ctrl doesn't count
+        // as an answer.
+        if self.pending_discard.is_some() && !is_modifier_key(&key) {
+            return match key {
+                Key::Named(NamedKey::Escape) | Key::Named(NamedKey::Enter) => self.confirm_discard(),
+                _ => {
+                    self.pending_discard = None;
+                    self.window.request_redraw();
+                    OverlayOutcome::Continue
+                }
+            };
+        }
         match key {
-            Key::Named(NamedKey::Escape) => {
-                if self.state == State::Drawing {
-                    self.current = None;
-                    self.state   = State::Selected;
-                    self.window.request_redraw();
-                    OverlayOutcome::Continue
-                } else if self.state == State::Selected {
-                    // Video mode has no "no selection" state to fall back
-                    // to — the frame IS the selection — so Esc just closes.
-                    if self.video_mode {
-                        return OverlayOutcome::Cancelled;
-                    }
-                    self.state       = State::Idle;
-                    self.selection   = None;
-                    self.stash_annotations_for_redo();
-                    self.step_count  = 1;
-                    self.window.request_redraw();
-                    OverlayOutcome::Continue
-                } else {
-                    OverlayOutcome::Cancelled
-                }
-            }
+            Key::Named(NamedKey::Escape) => self.handle_escape(),
             Key::Named(NamedKey::Enter) => self.commit(),
+            // Select mode: Delete / Backspace remove the picked annotation.
+            // Both are undoable; outside select mode neither key does
+            // anything, exactly as before.
+            Key::Named(NamedKey::Delete) | Key::Named(NamedKey::Backspace) => {
+                self.delete_selected_annotation();
+                OverlayOutcome::Continue
+            }
             Key::Character(s) => {
-                if self.state != State::Selected {
-                    return OverlayOutcome::Continue;
-                }
                 let c    = match s.chars().next() { Some(c) => c, None => return OverlayOutcome::Continue };
                 let ctrl = self.mods.control_key();
                 let shift = self.mods.shift_key();
                 let lc    = c.to_ascii_lowercase();
+                // Undo / redo stay live even with no selection on screen —
+                // that is precisely the state a confirmed Esc leaves behind,
+                // and Ctrl+Z is the way back from it.
+                if ctrl && (lc == 'z' || lc == 'y') {
+                    // Ctrl+Z → undo, Ctrl+Y / Ctrl+Shift+Z → redo.
+                    if lc == 'y' || shift { self.redo(); } else { self.undo(); }
+                    return OverlayOutcome::Continue;
+                }
+                if self.state != State::Selected {
+                    return OverlayOutcome::Continue;
+                }
                 if ctrl {
                     match lc {
-                        // Ctrl+Z → undo, Ctrl+Shift+Z → redo
-                        'z' => { if shift { self.redo(); } else { self.undo(); } }
-                        // Ctrl+Y → redo (Windows convention)
-                        'y' => self.redo(),
                         // Ctrl+S → commit-and-save (same as Enter)
                         's' => return self.commit(),
                         // Ctrl+C → commit-and-copy
@@ -711,14 +772,155 @@ impl Overlay {
                         'p' => return self.commit_as_pin(),
                         _ => {}
                     }
+                } else if lc == 's' {
+                    // S → select mode. No tool letter uses it (see
+                    // `Tool::shortcut`), so nothing is shadowed.
+                    self.select_mode = !self.select_mode;
+                    if !self.select_mode { self.selected_idx = None; }
+                    self.window.request_redraw();
                 } else if let Some(t) = Tool::from_key(c) {
                     self.tool = t;
+                    // Picking a drawing tool leaves select mode — otherwise
+                    // the next click would move ink instead of drawing.
+                    self.leave_select_mode();
                     self.window.request_redraw();
                 }
                 OverlayOutcome::Continue
             }
             _ => OverlayOutcome::Continue,
         }
+    }
+
+    /// Esc, outside text input. Ordered cheapest-cancel first: an
+    /// in-progress stroke, then the select-mode highlight, then the mode
+    /// itself, and only after all of those anything that would cost the
+    /// user work — which never happens on this press, it only arms the
+    /// confirmation bar.
+    fn handle_escape(&mut self) -> OverlayOutcome {
+        if self.state == State::Drawing {
+            self.current = None;
+            self.state   = State::Selected;
+            self.window.request_redraw();
+            return OverlayOutcome::Continue;
+        }
+        if self.state == State::MovingAnnotation {
+            // Abort the drag by putting the annotation back where it was.
+            // Nothing was recorded yet, so there is nothing to undo either.
+            if let Some(idx) = self.selected_idx {
+                if let Some(a) = self.annotations.get_mut(idx) {
+                    edit::translate(a, -self.move_total.0, -self.move_total.1);
+                }
+            }
+            self.move_total = (0.0, 0.0);
+            self.state      = State::Selected;
+            self.window.request_redraw();
+            return OverlayOutcome::Continue;
+        }
+        if self.selected_idx.is_some() {
+            self.selected_idx = None;
+            self.window.request_redraw();
+            return OverlayOutcome::Continue;
+        }
+        if self.select_mode {
+            self.select_mode = false;
+            self.window.request_redraw();
+            return OverlayOutcome::Continue;
+        }
+        // Screenshot mode with a live selection: Esc clears the region and
+        // the ink drawn in it. Video mode has no "no selection" state to
+        // fall back to — the frame IS the selection — so there Esc closes.
+        if self.state == State::Selected && !self.video_mode {
+            if self.annotations.is_empty() {
+                // Nothing to lose — clear straight away, as before.
+                return self.confirm_discard_kind(PendingDiscard::ClearSelection);
+            }
+            self.pending_discard = Some(PendingDiscard::ClearSelection);
+            self.window.request_redraw();
+            return OverlayOutcome::Continue;
+        }
+        if self.has_unsaved_work() {
+            self.pending_discard = Some(PendingDiscard::CloseOverlay);
+            self.window.request_redraw();
+            return OverlayOutcome::Continue;
+        }
+        OverlayOutcome::Cancelled
+    }
+
+    /// Go through with whatever the confirmation bar is asking about.
+    fn confirm_discard(&mut self) -> OverlayOutcome {
+        match self.pending_discard.take() {
+            Some(kind) => self.confirm_discard_kind(kind),
+            None       => OverlayOutcome::Continue,
+        }
+    }
+
+    fn confirm_discard_kind(&mut self, kind: PendingDiscard) -> OverlayOutcome {
+        self.pending_discard = None;
+        match kind {
+            PendingDiscard::ClearSelection => {
+                self.discard_annotations_recoverably();
+                self.state        = State::Idle;
+                self.selection    = None;
+                self.step_count   = 1;
+                self.selected_idx = None;
+                self.window.request_redraw();
+                OverlayOutcome::Continue
+            }
+            PendingDiscard::CloseOverlay => OverlayOutcome::Cancelled,
+        }
+    }
+
+    /// Is there annotation work in this session that closing would destroy?
+    /// Counts the canvas, an in-progress annotation, and anything sitting
+    /// in the undo/redo log — a cleared canvas is still one Ctrl+Z away.
+    fn has_unsaved_work(&self) -> bool {
+        !self.annotations.is_empty()
+            || self.current.is_some()
+            || self.history.holds_recoverable_work()
+    }
+
+    /// The Close button and the WM's close request both land here: they
+    /// ask, they never destroy. With nothing to lose the overlay closes
+    /// immediately, exactly as before.
+    fn request_close(&mut self) -> OverlayOutcome {
+        if self.has_unsaved_work() {
+            self.pending_discard = Some(PendingDiscard::CloseOverlay);
+            self.window.request_redraw();
+            return OverlayOutcome::Continue;
+        }
+        OverlayOutcome::Cancelled
+    }
+
+    /// Leave select mode and drop any annotation highlight.
+    fn leave_select_mode(&mut self) {
+        self.select_mode  = false;
+        self.selected_idx = None;
+    }
+
+    /// Index of the topmost annotation under the cursor. Video mode only
+    /// considers ink that is actually visible at the scrub position — the
+    /// user can't click what they can't see.
+    fn hit_annotation_at_cursor(&self) -> Option<usize> {
+        let p = Point2::new(self.cursor.0 as f32, self.cursor.1 as f32);
+        if self.video_mode {
+            self.annotations.iter().enumerate().rev()
+                .find(|(_, a)| annotation_visible_at(a, self.scrub_pos) && edit::hit_test(a, p))
+                .map(|(i, _)| i)
+        } else {
+            edit::hit_test_topmost(&self.annotations, p)
+        }
+    }
+
+    /// Remove the annotation picked in select mode, recording it so both
+    /// Ctrl+Z and Ctrl+Y replay the removal.
+    fn delete_selected_annotation(&mut self) {
+        let Some(idx) = self.selected_idx else { return; };
+        if idx >= self.annotations.len() { self.selected_idx = None; return; }
+        let removed = self.annotations.remove(idx);
+        self.history.record(EditOp::Delete { index: idx, annotation: removed });
+        self.selected_idx = None;
+        self.step_count   = edit::next_step_number(&self.annotations);
+        self.window.request_redraw();
     }
 
     fn handle_text_key(&mut self, key: Key) -> OverlayOutcome {
@@ -779,43 +981,70 @@ impl Overlay {
     }
 
     fn undo(&mut self) {
-        if let Some(a) = self.annotations.pop() {
-            // Step counter follows the visible numbers — popping a Step
-            // brings us back to where we were.
-            if let kashot_core::annotation::AnnotationKind::Step { number, .. } = a.kind {
-                self.step_count = number;
+        let Some(op) = self.history.undo(&mut self.annotations) else { return; };
+        self.after_history_op();
+        // Undoing the clear that Esc (or a click outside the region) did
+        // brings the selection back with the ink, so the user lands exactly
+        // where they were instead of having to re-drag a region first.
+        if matches!(op, EditOp::Clear { .. })
+            && self.state == State::Idle
+            && self.selection.is_none()
+            && !self.annotations.is_empty()
+        {
+            if let Some(rect) = self.last_selection {
+                self.selection = Some(rect);
+                self.state     = State::Selected;
             }
-            self.redo_stack.push(a);
-            self.window.request_redraw();
         }
     }
 
     fn redo(&mut self) {
-        if let Some(a) = self.redo_stack.pop() {
-            if let kashot_core::annotation::AnnotationKind::Step { number, .. } = a.kind {
-                self.step_count = number.saturating_add(1);
-            }
-            self.annotations.push(a);
-            self.window.request_redraw();
+        if self.history.redo(&mut self.annotations).is_some() {
+            self.after_history_op();
         }
+    }
+
+    /// Shared bookkeeping after any undo/redo: step numbering follows the
+    /// markers actually on the canvas, and the select-mode highlight is
+    /// dropped because indices shift under inserts and removals.
+    fn after_history_op(&mut self) {
+        self.step_count   = edit::next_step_number(&self.annotations);
+        self.selected_idx = None;
+        self.window.request_redraw();
     }
 
     /// Drop the committed annotations off the canvas without destroying
-    /// them: both ways of clearing a selection (Esc, or clicking outside it
-    /// to start a fresh drag) used to throw the whole vector away, so one
-    /// stray keypress could wipe minutes of annotating with no way back.
-    /// Everything moves onto the redo stack instead, so re-selecting a
-    /// region and pressing Ctrl+Y once per annotation replays them in the
-    /// order they were drawn. `redo` pops from the back, so the vector goes
-    /// on reversed. Anything already on the stack stays underneath and
-    /// keeps its own order.
-    fn stash_annotations_for_redo(&mut self) {
-        for a in self.annotations.drain(..).rev() {
-            self.redo_stack.push(a);
-        }
+    /// them: both ways of clearing a selection (a confirmed Esc, or
+    /// clicking outside the region to start a fresh drag) used to throw the
+    /// whole vector away, so one stray keypress could wipe minutes of work
+    /// with no way back. The vector moves onto the undo stack as a single
+    /// `EditOp::Clear` instead, so one Ctrl+Z restores every annotation —
+    /// and `undo` puts the selection rect back with them.
+    fn discard_annotations_recoverably(&mut self) {
+        if self.annotations.is_empty() { return; }
+        if self.selection.is_some() { self.last_selection = self.selection; }
+        let cleared = std::mem::take(&mut self.annotations);
+        self.history.record(EditOp::Clear { annotations: cleared });
+        self.selected_idx = None;
     }
 
     fn handle_left_press(&mut self) -> OverlayOutcome {
+        // An armed Esc confirmation owns the click the same way it owns
+        // the keyboard: clicking Close again goes through with it, a click
+        // anywhere else calls it off and is swallowed so the answer can
+        // never double as a drawing gesture.
+        if self.pending_discard.is_some() {
+            let on_close = self.selection.map_or(false, |sel| {
+                let win_w = self.window.inner_size().width  as usize;
+                let win_h = self.window.inner_size().height as usize;
+                action_panel_hit(action_panel_origin(win_w, win_h, sel), self.cursor)
+                    == Some(ActionButton::Close)
+            });
+            if on_close { return self.confirm_discard(); }
+            self.pending_discard = None;
+            self.window.request_redraw();
+            return OverlayOutcome::Continue;
+        }
         // Click anywhere while typing → commit the pending text and keep
         // going. Mirrors the C# TextBox-loses-focus behaviour.
         if self.state == State::TextInput {
@@ -877,7 +1106,7 @@ impl Overlay {
                 // Tool panel.
                 if let Some((_, btn)) = tool_panel_hit(tp_origin, self.cursor) {
                     match btn {
-                        ToolPanelButton::Tool(t) => { self.tool = t; }
+                        ToolPanelButton::Tool(t) => { self.tool = t; self.leave_select_mode(); }
                         ToolPanelButton::Color   => { self.palette_open = !self.palette_open; }
                         ToolPanelButton::Thickness => {
                             // Cycle through the configured stroke widths,
@@ -899,7 +1128,7 @@ impl Overlay {
                         ActionButton::Pin   => self.commit_as_pin(),
                         ActionButton::Copy  => self.commit_as_copy(),
                         ActionButton::Save  => self.commit(),
-                        ActionButton::Close => OverlayOutcome::Cancelled,
+                        ActionButton::Close => self.request_close(),
                     };
                 }
 
@@ -953,8 +1182,10 @@ impl Overlay {
                 // clicking there grabs that edge for resizing. Video mode
                 // locks the selection to the full frame: resizing it would
                 // desync the annotation coordinates from the video, so the
-                // edges are not grabbable there.
-                if let Some(sel) = self.selection.filter(|_| !self.video_mode) {
+                // edges are not grabbable there. Select mode gives the edge
+                // band back to hit-testing so ink drawn against the border
+                // is still reachable.
+                if let Some(sel) = self.selection.filter(|_| !self.video_mode && !self.select_mode) {
                     let hit = hit_test_edge(
                         (sel.0 as f32, sel.1 as f32, sel.2 as f32, sel.3 as f32),
                         (self.cursor.0 as f32, self.cursor.1 as f32),
@@ -965,6 +1196,21 @@ impl Overlay {
                         self.window.request_redraw();
                         return OverlayOutcome::Continue;
                     }
+                }
+                // Select mode intercepts the click before any drawing
+                // starts: hit-test the ink under the cursor, pick the
+                // topmost match and arm a move-drag. A click that lands on
+                // nothing just drops the highlight — it never starts a new
+                // region, so ink can't be lost by a stray click here.
+                if self.select_mode {
+                    self.selected_idx = self.hit_annotation_at_cursor();
+                    if self.selected_idx.is_some() {
+                        self.state      = State::MovingAnnotation;
+                        self.move_last  = self.cursor;
+                        self.move_total = (0.0, 0.0);
+                    }
+                    self.window.request_redraw();
+                    return OverlayOutcome::Continue;
                 }
                 if self.cursor_in_selection() {
                     // Step is click-to-place — never enters `Drawing`. Drop a
@@ -989,11 +1235,14 @@ impl Overlay {
                         self.window.request_redraw();
                     }
                 } else {
-                    // Start a new selection if the click was outside.
+                    // Start a new selection if the click was outside. The
+                    // old region's ink is stashed BEFORE the selection is
+                    // replaced, so undoing the clear restores the rect the
+                    // annotations were drawn in, not the fresh empty one.
+                    self.discard_annotations_recoverably();
                     self.state     = State::Selecting;
                     self.anchor    = self.cursor;
                     self.selection = Some((self.cursor.0, self.cursor.1, 0, 0));
-                    self.stash_annotations_for_redo();
                     self.step_count = 1;
                     self.window.request_redraw();
                 }
@@ -1012,8 +1261,8 @@ impl Overlay {
         if self.video_mode {
             a.time = self.annotation_window();
         }
-        self.annotations.push(a);
-        self.redo_stack.clear();
+        self.annotations.push(a.clone());
+        self.history.record(EditOp::Add { index: self.annotations.len() - 1, annotation: a });
     }
 
     /// The window a new annotation gets at the current scrub position +
@@ -1058,6 +1307,22 @@ impl Overlay {
                     self.add_annotation(a);
                 }
                 self.state = State::Selected;
+                self.window.request_redraw();
+            }
+            State::MovingAnnotation => {
+                self.state = State::Selected;
+                // One `EditOp::Move` per drag, not per mouse-move event, so
+                // a single Ctrl+Z puts the annotation back where it started.
+                if let Some(idx) = self.selected_idx {
+                    if self.move_total != (0.0, 0.0) {
+                        self.history.record(EditOp::Move {
+                            index: idx,
+                            dx:    self.move_total.0,
+                            dy:    self.move_total.1,
+                        });
+                    }
+                }
+                self.move_total = (0.0, 0.0);
                 self.window.request_redraw();
             }
             State::Resizing => {
@@ -1156,6 +1421,17 @@ impl Overlay {
     }
 
     fn update_resize_cursor(&self) {
+        // Select mode has no edge-resize: the cursor reports whether there
+        // is ink under it to grab instead.
+        if self.select_mode {
+            let icon = if self.hit_annotation_at_cursor().is_some() {
+                CursorIcon::Move
+            } else {
+                CursorIcon::Default
+            };
+            self.window.set_cursor(icon);
+            return;
+        }
         let Some(sel) = self.selection else { return; };
         let hit = hit_test_edge(
             (sel.0 as f32, sel.1 as f32, sel.2 as f32, sel.3 as f32),
@@ -1406,6 +1682,28 @@ impl Overlay {
             }
         }
 
+        // Pass 2.5: select-mode highlight — a dashed laser-green box around
+        // the picked annotation's painted bounds, with solid corner ticks so
+        // it reads as "grabbed" rather than as another region rectangle.
+        // Preview only: `compose_final` never draws it, so the saved bitmap
+        // carries the ink alone.
+        if let Some(idx) = self.selected_idx {
+            if let Some(a) = self.annotations.get(idx) {
+                const HILITE: u32 = 0x00_00_FF_95;      // laser green
+                let b   = kashot_core::edit::bounds(a);
+                let pad = 5;
+                let x0  = b.x as i32 - pad;
+                let y0  = b.y as i32 - pad;
+                let x1  = (b.x + b.w) as i32 + pad;
+                let y1  = (b.y + b.h) as i32 + pad;
+                draw_dashed_border(&mut buf, win_w, win_h, x0, y0, x1, y1, HILITE);
+                let tick = 4;
+                for &(hx, hy) in &[(x0, y0), (x1 - tick, y0), (x0, y1 - tick), (x1 - tick, y1 - tick)] {
+                    draw_filled_rect(&mut buf, win_w, win_h, hx, hy, hx + tick, hy + tick, HILITE);
+                }
+            }
+        }
+
         // Pass 3: selection border + 8 handles.
         if let Some((x0, y0, x1, y1)) = sel_rect {
             const BLUE:  u32 = 0x00_64_95_ED;
@@ -1441,7 +1739,9 @@ impl Overlay {
         }
         self.last_was_selected = is_selected_now;
 
-        if matches!(self.state, State::Selected | State::Drawing | State::Resizing | State::TextInput) {
+        if matches!(self.state,
+                    State::Selected | State::Drawing | State::Resizing
+                    | State::TextInput | State::MovingAnnotation) {
             if let Some(sel) = self.selection {
                 draw_tool_panel(&mut buf, win_w, win_h, sel,
                                 self.tool, self.stroke.color, self.stroke.thickness);
@@ -1521,6 +1821,33 @@ impl Overlay {
             if matches!(self.state, State::Selected) {
                 draw_tooltip(&mut buf, win_w, win_h, label, x, y);
             }
+        }
+
+        // Pass 8: the notice bar — the Esc confirmation, or the select-mode
+        // cue when nothing needs confirming. Painted last so it is never
+        // covered by a panel, a popup or the timeline.
+        if let Some(kind) = self.pending_discard {
+            let headline = match kind {
+                PendingDiscard::ClearSelection =>
+                    format!("Discard {} annotation{}?", self.annotations.len(),
+                            if self.annotations.len() == 1 { "" } else { "s" }),
+                PendingDiscard::CloseOverlay => "Close without saving?".to_string(),
+            };
+            draw_notice_bar(
+                &mut buf, win_w, win_h,
+                &[&headline, "Esc or Enter to discard  -  any other key to keep editing"],
+                0x00_FF_B0_20, 0x00_FF_D8_8A,
+            );
+        } else if self.select_mode {
+            // Once something is picked the cue shrinks to a single line —
+            // the user is working under it and doesn't need the recipe any
+            // more.
+            let lines: &[&str] = if self.selected_idx.is_some() {
+                &["Select mode", "drag to move  -  Del removes"]
+            } else {
+                &["Select mode", "click ink to move it  -  Del removes  -  S or a tool key exits"]
+            };
+            draw_notice_bar(&mut buf, win_w, win_h, lines, 0x00_00_FF_95, 0x00_C8_FF_E4);
         }
 
         if let Err(e) = buf.present() {
@@ -2522,6 +2849,85 @@ fn draw_idle_hint(buf: &mut [u32], win_w: usize, win_h: usize) {
     );
 }
 
+/// Bare modifier presses — winit delivers these as ordinary key events, and
+/// they must not count as "any other key" while a confirmation is armed:
+/// reaching for Ctrl+Z would otherwise silently dismiss the prompt.
+fn is_modifier_key(key: &Key) -> bool {
+    matches!(
+        key,
+        Key::Named(
+            NamedKey::Shift
+                | NamedKey::Control
+                | NamedKey::Alt
+                | NamedKey::Super
+                | NamedKey::Meta
+                | NamedKey::Hyper
+                | NamedKey::AltGraph
+                | NamedKey::CapsLock
+                | NamedKey::NumLock
+                | NamedKey::ScrollLock
+                | NamedKey::Fn
+                | NamedKey::FnLock
+                | NamedKey::Symbol
+                | NamedKey::SymbolLock
+        )
+    )
+}
+
+/// Two-line notice chip pinned to the top center of the overlay. Same dark
+/// fill as the tooltip and idle-hint chrome, with a colored hairline so the
+/// Esc confirmation (amber) and the select-mode cue (laser green) are
+/// distinguishable at a glance. ASCII only — the 5x7 font substitutes '?'
+/// for anything outside 0x20..=0x7E.
+fn draw_notice_bar(
+    buf:    &mut [u32],
+    win_w:  usize,
+    win_h:  usize,
+    lines:  &[&str],
+    accent: u32,
+    text:   u32,
+) {
+    const SCALE:  i32 = 2;
+    const PAD_X:  i32 = 14;
+    const PAD_Y:  i32 = 10;
+    const LINE_GAP: i32 = 6;
+    const MARGIN: i32 = 36;          // gap from the top screen edge
+
+    if lines.is_empty() { return; }
+    let line_h  = crate::bitmap_font::GLYPH_H * SCALE;
+    let text_w  = lines.iter()
+        .map(|l| crate::bitmap_font::measure(l, SCALE))
+        .max()
+        .unwrap_or(0);
+    let chip_w = text_w + PAD_X * 2;
+    let chip_h = line_h * lines.len() as i32
+        + LINE_GAP * (lines.len() as i32 - 1)
+        + PAD_Y * 2;
+    let x0 = ((win_w as i32) - chip_w) / 2;
+    let y0 = MARGIN;
+    // A screen too small to hold the chip gets none rather than a clipped
+    // one — same rule as the idle hint.
+    if x0 < 0 || y0 + chip_h > win_h as i32 { return; }
+    draw_filled_rect(buf, win_w, win_h, x0, y0, x0 + chip_w, y0 + chip_h, 0x00_10_10_14);
+    draw_rect_border(buf, win_w, win_h, x0, y0, x0 + chip_w, y0 + chip_h, accent);
+    let text_rgb = kashot_core::color::Rgba::new_opaque(
+        ((text >> 16) & 0xFF) as u8, ((text >> 8) & 0xFF) as u8, (text & 0xFF) as u8,
+    );
+    let accent_rgb = kashot_core::color::Rgba::new_opaque(
+        ((accent >> 16) & 0xFF) as u8, ((accent >> 8) & 0xFF) as u8, (accent & 0xFF) as u8,
+    );
+    let mut surf = crate::painter::U32Surface { buf, stride: win_w as i32, height: win_h as i32 };
+    for (i, line) in lines.iter().enumerate() {
+        let lw = crate::bitmap_font::measure(line, SCALE);
+        let lx = x0 + (chip_w - lw) / 2;
+        let ly = y0 + PAD_Y + i as i32 * (line_h + LINE_GAP);
+        // First line is the headline and takes the accent color; the rest
+        // is the quieter instruction text.
+        let color = if i == 0 { accent_rgb } else { text_rgb };
+        crate::painter::draw_text(&mut surf, lx, ly, SCALE, line, color);
+    }
+}
+
 /// Magnifier lens. Samples the original screenshot in a (2·R+1)² window
 /// around the cursor and draws each source pixel as a `MAG_ZOOM`-sized
 /// square. Adds a 1-px border + crosshair through the center pixel.
@@ -2628,21 +3034,10 @@ fn crop(
 
 /// Translate an annotation by (dx, dy) — used to move window-space coords
 /// into the cropped output's local space when burning into the saved PNG.
+/// The transform itself lives in `kashot-core` so the Select tool's move
+/// and this crop-space shift can never drift apart.
 fn translate_annotation(a: &Annotation, dx: f32, dy: f32) -> Annotation {
-    use kashot_core::annotation::AnnotationKind as K;
-    let shift = |p: Point2| Point2::new(p.x + dx, p.y + dy);
-    let kind = match a.kind.clone() {
-        K::Pen       { stroke, points } => K::Pen       { stroke, points: points.into_iter().map(shift).collect() },
-        K::Marker    { stroke, points } => K::Marker    { stroke, points: points.into_iter().map(shift).collect() },
-        K::Line      { stroke, start, end } => K::Line      { stroke, start: shift(start), end: shift(end) },
-        K::Arrow     { stroke, start, end } => K::Arrow     { stroke, start: shift(start), end: shift(end) },
-        K::Rectangle { stroke, start, end } => K::Rectangle { stroke, start: shift(start), end: shift(end) },
-        K::Ellipse   { stroke, start, end } => K::Ellipse   { stroke, start: shift(start), end: shift(end) },
-        K::Pixelate  { start, end, block_size } => K::Pixelate { start: shift(start), end: shift(end), block_size },
-        K::Text      { color, position, text, font_size } => K::Text { color, position: shift(position), text, font_size },
-        K::Step      { color, center, number } => K::Step { color, center: shift(center), number },
-    };
-    Annotation { kind, time: a.time }
+    edit::translated(a, dx, dy)
 }
 
 /// Width × height chip rendered just outside the bottom-right corner of the
@@ -2932,6 +3327,36 @@ mod tests {
         assert_eq!(stamp_window(0.0, 10.0, Some(3.0)), Some((0.0, 3.0)));
         assert_eq!(stamp_window(2.0, 10.0, Some(3.0)), Some((2.0, 5.0)));
         assert_eq!(stamp_window(2.0, 10.0, None), Some((2.0, f32::INFINITY)));
+    }
+
+    #[test]
+    fn modifier_keys_do_not_answer_a_confirmation() {
+        // "any other key cancels" must not include the modifier half of a
+        // Ctrl+Z the user is reaching for.
+        assert!(is_modifier_key(&Key::Named(NamedKey::Shift)));
+        assert!(is_modifier_key(&Key::Named(NamedKey::Control)));
+        assert!(is_modifier_key(&Key::Named(NamedKey::Alt)));
+        assert!(!is_modifier_key(&Key::Named(NamedKey::Escape)));
+        assert!(!is_modifier_key(&Key::Named(NamedKey::Enter)));
+        assert!(!is_modifier_key(&Key::Character("p".into())));
+    }
+
+    #[test]
+    fn notice_bar_skips_screens_too_small_to_hold_it() {
+        // Must not panic or write out of bounds on a tiny surface.
+        let mut buf = vec![0u32; 40 * 20];
+        draw_notice_bar(&mut buf, 40, 20, &["Discard 2 annotations?", "Esc or Enter"], 0x00_FF_B0_20, 0x00_FF_D8_8A);
+        assert!(buf.iter().all(|&px| px == 0), "no room for the chip means no chip");
+    }
+
+    #[test]
+    fn notice_bar_paints_inside_a_roomy_surface() {
+        let (w, h) = (600usize, 300usize);
+        let mut buf = vec![0u32; w * h];
+        draw_notice_bar(&mut buf, w, h, &["Select mode", "click ink to move it"], 0x00_00_FF_95, 0x00_C8_FF_E4);
+        assert!(buf.iter().any(|&px| px != 0), "the chip should have been drawn");
+        // Bottom rows stay untouched — the bar is pinned to the top.
+        assert!(buf[(h - 1) * w..].iter().all(|&px| px == 0));
     }
 
     #[test]
