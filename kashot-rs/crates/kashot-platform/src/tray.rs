@@ -32,12 +32,29 @@ pub struct Tray {
     pub convert_vid_id: tray_icon::menu::MenuId,
     pub exit_id:       tray_icon::menu::MenuId,
     capture_item:      MenuItem,
+    capture_full_item: MenuItem,
     rec_none_item:     MenuItem,
     rec_mic_item:      MenuItem,
     rec_sys_item:      MenuItem,
     rec_both_item:     MenuItem,
     stop_rec_item:     MenuItem,
     cancel_item:       MenuItem,
+}
+
+/// Text of the three menu rows that quote a global hotkey.
+///
+/// The caller folds the binding into each label (`"Capture (PrintScreen)"`)
+/// so a shortcut is discoverable from the menu the user is already in. They
+/// arrive as plain strings rather than a settings handle so this crate stays
+/// free of UI policy; `Tray::set_hotkey_labels` refreshes them after a
+/// rebind without a restart.
+#[derive(Debug, Clone, Default)]
+pub struct MenuLabels {
+    pub capture:      String,
+    pub capture_full: String,
+    /// Applied to both "Record" and "Stop recording" -- the record hotkey is
+    /// one toggle, so both ends of it advertise the same chord.
+    pub record:       String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -79,12 +96,10 @@ pub enum TrayEvent {
 
 impl Tray {
     /// Build the tray icon with the default Kashot menu. `tooltip` shows the
-    /// current hotkey, e.g. `"KAShot — press PrintScreen to capture"`, and
-    /// `capture_label` is the text of the first menu row — the caller folds
-    /// the hotkey into it (`"Capture (PrintScreen)"`) so the binding is
-    /// discoverable without opening Settings. Both are plain strings rather
-    /// than a settings handle so this crate stays free of UI policy; use
-    /// `set_tooltip` / `set_capture_label` to refresh them after a rebind.
+    /// current capture hotkey, e.g. `"KAShot — press PrintScreen to
+    /// capture"`, and `labels` carries the text of the three rows that quote
+    /// a binding (see [`MenuLabels`]). Use `set_tooltip` /
+    /// `set_hotkey_labels` to refresh them after a rebind.
     ///
     /// Must be called only once the OS event loop is already running. On macOS
     /// an `NSStatusItem` created before `NSApplication` finishes launching is
@@ -96,7 +111,7 @@ impl Tray {
     /// main thread before any menu item is constructed. `gtk::init()` is
     /// idempotent and returns Err only if no display server is reachable, in
     /// which case we surface that as a regular `Tray` init failure.
-    pub fn new(tooltip: impl Into<String>, capture_label: impl Into<String>) -> Result<Self> {
+    pub fn new(tooltip: impl Into<String>, labels: &MenuLabels) -> Result<Self> {
         #[cfg(target_os = "linux")]
         {
             gtk::init().map_err(|e| Error::Tray(format!("gtk::init: {e}")))?;
@@ -112,8 +127,8 @@ impl Tray {
         // Labels intentionally kept tight — Cinnamon's DBusMenu renderer
         // (and a few KDE plasmoids) truncates wider strings with an ellipsis.
         // Every label here is one or two readable phrases at most.
-        let capture   = MenuItem::new(capture_label.into(), true,  None);
-        let capture_full = MenuItem::new("Capture Full Screen", true, None);
+        let capture   = MenuItem::new(&labels.capture,      true,  None);
+        let capture_full = MenuItem::new(&labels.capture_full, true, None);
         let delay_3s  = MenuItem::new("Capture in 3s",     true,  None);
         let delay_5s  = MenuItem::new("Capture in 5s",     true,  None);
         let delay_10s = MenuItem::new("Capture in 10s",    true,  None);
@@ -123,11 +138,11 @@ impl Tray {
 
         // Four record modes flattened to siblings. Plain text labels (no
         // emoji) so they render identically on every backend.
-        let rec_none  = MenuItem::new("Record",            true,  None);
+        let rec_none  = MenuItem::new(&labels.record,      true,  None);
         let rec_mic   = MenuItem::new("Record + mic",      true,  None);
         let rec_sys   = MenuItem::new("Record + audio",    true,  None);
         let rec_both  = MenuItem::new("Record + mic+audio",true,  None);
-        let stop_rec  = MenuItem::new("Stop recording",    false, None);
+        let stop_rec  = MenuItem::new(stop_label(&labels.record), false, None);
         let annotate_rec = MenuItem::new("Annotate last recording", true, None);
 
         let open_fold = MenuItem::new("Open shots",        true,  None);
@@ -217,6 +232,7 @@ impl Tray {
             convert_vid_id,
             exit_id,
             capture_item:  capture,
+            capture_full_item: capture_full,
             rec_none_item: rec_none,
             rec_mic_item:  rec_mic,
             rec_sys_item:  rec_sys,
@@ -265,11 +281,14 @@ impl Tray {
             .map_err(|e| Error::Tray(e.to_string()))
     }
 
-    /// Relabel the first menu row, e.g. after a hotkey rebind changes the
-    /// `"Capture (PrintScreen)"` suffix. Infallible in `muda`, so no restart
-    /// is needed to see a new binding.
-    pub fn set_capture_label(&self, label: &str) {
-        self.capture_item.set_text(label);
+    /// Relabel every menu row that quotes a hotkey, e.g. after a rebind
+    /// changes the `"Capture (PrintScreen)"` suffix. Infallible in `muda`,
+    /// so no restart is needed to see a new binding.
+    pub fn set_hotkey_labels(&self, labels: &MenuLabels) {
+        self.capture_item.set_text(&labels.capture);
+        self.capture_full_item.set_text(&labels.capture_full);
+        self.rec_none_item.set_text(&labels.record);
+        self.stop_rec_item.set_text(stop_label(&labels.record));
     }
 
     /// Toggle the "Cancel pending capture" item — enabled only while a
@@ -303,6 +322,18 @@ impl Tray {
                 gtk::main_iteration_do(false);
             }
         }
+    }
+}
+
+/// "Stop recording" carrying whatever hotkey suffix the "Record" row has.
+///
+/// The record binding is a start/stop toggle, so the same chord is what
+/// stops the take -- but only the trailing `" (chord)"` is reused; the verb
+/// has to change or the menu would read "Record" twice.
+fn stop_label(record_label: &str) -> String {
+    match record_label.find(" (") {
+        Some(i) => format!("Stop recording{}", &record_label[i..]),
+        None    => "Stop recording".to_owned(),
     }
 }
 

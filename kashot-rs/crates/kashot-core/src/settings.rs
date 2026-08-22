@@ -163,6 +163,25 @@ pub struct AppSettings {
     #[serde(rename = "HotkeyVirtualKey", default = "default_vk")]
     pub hotkey_virtual_key: u32,
 
+    /// Optional second binding: capture the whole desktop straight to disk.
+    /// Same Win32 wire encoding as `HotkeyModifiers` / `HotkeyVirtualKey`;
+    /// a virtual key of `0` (the default, and what a file written before
+    /// these keys existed decodes to) means "not bound". See
+    /// `crate::hotkeys` for the accessors.
+    #[serde(rename = "FullScreenHotkeyModifiers", default)]
+    pub fullscreen_hotkey_modifiers: u32,
+
+    #[serde(rename = "FullScreenHotkeyVirtualKey", default)]
+    pub fullscreen_hotkey_virtual_key: u32,
+
+    /// Optional third binding: start the screen recording, or stop the one
+    /// that's running. Encoding and "not bound" rule as above.
+    #[serde(rename = "RecordHotkeyModifiers", default)]
+    pub record_hotkey_modifiers: u32,
+
+    #[serde(rename = "RecordHotkeyVirtualKey", default)]
+    pub record_hotkey_virtual_key: u32,
+
     #[serde(rename = "StartWithWindows", default)]
     pub start_with_windows: bool,
 
@@ -201,6 +220,10 @@ impl Default for AppSettings {
             recordings_directory: String::new(),
             hotkey_modifiers:    default_hotkey_modifiers(),
             hotkey_virtual_key:  default_vk(),
+            fullscreen_hotkey_modifiers:   0,
+            fullscreen_hotkey_virtual_key: 0,
+            record_hotkey_modifiers:       0,
+            record_hotkey_virtual_key:     0,
             start_with_windows:  false,
             watermark_enabled:   true,
             watermark_text:      default_watermark(),

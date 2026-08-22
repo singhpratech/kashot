@@ -10,12 +10,13 @@ use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, Result};
 use chrono::Local;
+use kashot_core::hotkeys::HotkeyAction;
 use kashot_core::AppSettings;
 use kashot_platform::{
     capture::capture_all_screens,
     hotkey::HotkeyManager,
     recorder::Recorder,
-    tray::{Tray, TrayEvent},
+    tray::{MenuLabels, Tray, TrayEvent},
 };
 
 use crate::about_form::{AboutOutcome, AboutView};
@@ -53,12 +54,7 @@ pub fn run() -> Result<()> {
     // try again from the menu later. The tray is built later still — see
     // `TrayApp::ensure_tray`.
     let mut hotkeys = match HotkeyManager::new() {
-        Ok(mut hk) => {
-            if let Err(e) = hk.register(settings.hotkey()) {
-                eprintln!("hotkey register failed: {e} — use tray menu to capture");
-            }
-            Some(hk)
-        }
+        Ok(mut hk) => { apply_hotkeys(&mut hk, &settings); Some(hk) }
         Err(e) => { eprintln!("hotkey init failed: {e} — use tray menu to capture"); None }
     };
 
@@ -156,7 +152,7 @@ pub fn run() -> Result<()> {
             self.tray_built = true;
 
             match Tray::new(tray_tooltip(&self.settings),
-                            capture_label(&self.settings, self.wayland)) {
+                            &menu_labels(&self.settings, self.wayland)) {
                 Ok(t) => self.tray = Some(t),
                 Err(e) => {
                     eprintln!("tray init failed: {e}");
@@ -214,9 +210,14 @@ pub fn run() -> Result<()> {
                     }
                 }
             }
-            if let Some(hk) = &self.hotkeys {
-                if hk.drain_pressed() {
-                    self.capture(loop_target);
+            // Collected before dispatch so the manager borrow is done with
+            // by the time an action mutates `self`.
+            let fired = self.hotkeys.as_ref().map(|hk| hk.drain_pressed()).unwrap_or_default();
+            for action in fired {
+                match action {
+                    HotkeyAction::Capture           => self.capture(loop_target),
+                    HotkeyAction::CaptureFullScreen => self.capture_full_screen(),
+                    HotkeyAction::ToggleRecording   => self.toggle_recording(loop_target),
                 }
             }
             // Nothing else watches the encoder between start and stop, so an
@@ -416,6 +417,23 @@ pub fn run() -> Result<()> {
                     }
                 }
                 Err(e) => eprintln!("Clipboard unavailable: {e}"),
+            }
+        }
+
+        /// One binding, both ends of a take: start a recording, or stop the
+        /// one that's already running.
+        ///
+        /// Starts with no audio, matching the plain "Record" menu row the
+        /// hotkey is advertised on. The three audio variants stay menu-only —
+        /// a single toggle has no way to ask which sources the user wants,
+        /// and silently picking one would make the same key produce different
+        /// files on different days.
+        fn toggle_recording(&mut self, loop_target: &ActiveEventLoop) {
+            if self.recorder.is_recording() {
+                self.stop_recording();
+            } else {
+                self.start_recording(
+                    kashot_platform::recorder::RecordingOptions::NONE, loop_target);
             }
         }
 
@@ -654,18 +672,16 @@ pub fn run() -> Result<()> {
             // capture. The hotkey is re-registered when the dialog closes,
             // whether the user Saves or Cancels.
             if let Some(hk) = self.hotkeys.as_mut() {
-                hk.unregister();
+                hk.unregister_all();
             }
             match SettingsView::new(loop_target, self.settings.clone()) {
                 Ok(view) => self.settings_view = Some(view),
                 Err(e)   => {
                     eprintln!("Settings dialog failed to open: {e}");
-                    // Window failed to open — re-register the hotkey so
+                    // Window failed to open — re-register the hotkeys so
                     // the user isn't stranded with capture disabled.
                     if let Some(hk) = self.hotkeys.as_mut() {
-                        if let Err(e) = hk.register(self.settings.hotkey()) {
-                            eprintln!("Re-register hotkey failed: {e}");
-                        }
+                        apply_hotkeys(hk, &self.settings);
                     }
                 }
             }
@@ -683,30 +699,25 @@ pub fn run() -> Result<()> {
                         eprintln!("Failed to persist settings: {e}");
                     }
                     if let Some(hk) = self.hotkeys.as_mut() {
-                        hk.unregister();
-                        if let Err(e) = hk.register(self.settings.hotkey()) {
-                            eprintln!("Re-register hotkey failed: {e}");
-                        }
+                        apply_hotkeys(hk, &self.settings);
                     }
-                    // Both surfaces that quote the hotkey — the hover tooltip
-                    // and the Capture row label — are rebuilt in place, so a
-                    // rebind is visible without restarting the app.
+                    // Every surface that quotes a hotkey — the hover tooltip
+                    // and the menu rows — is rebuilt in place, so a rebind is
+                    // visible without restarting the app.
                     if let Some(t) = &self.tray {
                         if let Err(e) = t.set_tooltip(&tray_tooltip(&self.settings)) {
                             eprintln!("Tray tooltip update failed: {e}");
                         }
-                        t.set_capture_label(&capture_label(&self.settings, self.wayland));
+                        t.set_hotkey_labels(&menu_labels(&self.settings, self.wayland));
                     }
                     true
                 }
                 SettingsOutcome::Cancelled => {
                     // No persistence, but `show_settings` unregistered the
-                    // global hotkey on open — re-register the previous
-                    // binding so the user can capture again.
+                    // global hotkeys on open — re-register the previous
+                    // bindings so the user can capture again.
                     if let Some(hk) = self.hotkeys.as_mut() {
-                        if let Err(e) = hk.register(self.settings.hotkey()) {
-                            eprintln!("Re-register hotkey failed: {e}");
-                        }
+                        apply_hotkeys(hk, &self.settings);
                     }
                     true
                 }
@@ -1473,19 +1484,48 @@ fn tray_tooltip(s: &AppSettings) -> String {
     format!("KAShot — press {} to capture", s.hotkey().describe())
 }
 
-/// Text of the tray's first menu row. The hotkey rides along in parentheses
-/// so the binding is discoverable from the menu the user is already in,
-/// instead of only from the Settings dialog.
+/// Register every configured binding, reporting the ones the OS refused.
 ///
-/// Under Wayland the binding can't be grabbed at all (see
-/// `kashot_platform::session`), so the label says so rather than advertising
-/// a shortcut that silently does nothing.
-fn capture_label(s: &AppSettings, wayland: bool) -> String {
-    let key = s.hotkey().describe();
-    if wayland {
-        format!("Capture ({key} - X11 only)")
-    } else {
-        format!("Capture ({key})")
+/// A chord another application already owns is the common case here, and it
+/// costs the user only that one shortcut — the tray menu still reaches every
+/// action — so this logs and moves on rather than failing the call.
+fn apply_hotkeys(hk: &mut HotkeyManager, s: &AppSettings) {
+    for (action, e) in hk.register_all(&s.hotkey_bindings()) {
+        eprintln!("hotkey register failed for {}: {e} — use the tray menu instead",
+                  action.label());
+    }
+}
+
+/// Text of the tray rows that quote a hotkey. The binding rides along in
+/// parentheses so it is discoverable from the menu the user is already in,
+/// instead of only from the Settings dialog; an unbound optional action gets
+/// its plain label back.
+///
+/// Under Wayland no binding can be grabbed at all (see
+/// `kashot_platform::session`), so the labels say so rather than advertising
+/// shortcuts that silently do nothing.
+fn menu_labels(s: &AppSettings, wayland: bool) -> MenuLabels {
+    MenuLabels {
+        capture:      hotkey_label(s, HotkeyAction::Capture, "Capture", wayland),
+        capture_full: hotkey_label(s, HotkeyAction::CaptureFullScreen, "Capture Full Screen", wayland),
+        record:       hotkey_label(s, HotkeyAction::ToggleRecording, "Record", wayland),
+    }
+}
+
+/// `"Record (Ctrl + Shift + R)"`, or bare `"Record"` when the action has no
+/// binding. The Wayland suffix is appended per row because every row that
+/// names a key is equally unable to fire in that session.
+fn hotkey_label(s: &AppSettings, action: HotkeyAction, base: &str, wayland: bool) -> String {
+    match s.hotkey_for(action) {
+        None     => base.to_owned(),
+        Some(hk) => {
+            let key = hk.describe();
+            if wayland {
+                format!("{base} ({key} - X11 only)")
+            } else {
+                format!("{base} ({key})")
+            }
+        }
     }
 }
 

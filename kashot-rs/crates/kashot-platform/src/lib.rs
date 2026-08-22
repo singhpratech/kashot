@@ -14,10 +14,10 @@ pub mod tray;
 
 pub use capture::{capture_all_screens, Captured};
 pub use clipboard::copy_image_png;
-pub use hotkey::{HotkeyHandle, HotkeyManager};
+pub use hotkey::HotkeyManager;
 pub use recorder::Recorder;
 pub use session::is_wayland;
-pub use tray::{Tray, TrayEvent};
+pub use tray::{MenuLabels, Tray, TrayEvent};
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
