@@ -23,6 +23,7 @@
 use crate::{Error, Result};
 use image::{ImageBuffer, Rgba};
 use kashot_core::dpi::{effective_scale, sample_index, DisplayMap, MonitorGeometry, PhysicalRect};
+use kashot_core::region::DesktopBounds;
 use kashot_core::virtual_desktop::{DesktopGeometry, MonitorRect};
 
 #[derive(Debug, Clone)]
@@ -40,6 +41,24 @@ pub struct Captured {
     /// Per-monitor frames, in screen order. Already drawn into `bitmap`,
     /// kept around so callers can do per-monitor logic if they need to.
     pub monitors: Vec<MonitorFrame>,
+}
+
+impl Captured {
+    /// The virtual-desktop rectangle this capture covers.
+    ///
+    /// Region recording clamps the user's selection against exactly this — the
+    /// bitmap the selection was dragged over — so the rectangle handed to the
+    /// encoder can never name a pixel that wasn't on screen, and so both sides
+    /// agree on where the desktop's corner is even if the monitor layout
+    /// changes between the capture and the start of the recording.
+    ///
+    /// Device pixels, like `geometry()`: the origin is the display map's
+    /// physical origin and the size is the stitched bitmap's, so a selection
+    /// made on the overlay clamps against the very pixels it was drawn on.
+    pub fn desktop_bounds(&self) -> DesktopBounds {
+        let (ox, oy) = self.map.physical_origin();
+        DesktopBounds::new(ox, oy, self.bitmap.width(), self.bitmap.height())
+    }
 }
 
 #[derive(Debug, Clone)]

@@ -13,6 +13,7 @@ pub mod hotkeys;
 pub mod dpi;
 pub mod edit;
 pub mod history;
+pub mod region;
 pub mod settings;
 pub mod state;
 pub mod theme;
@@ -25,6 +26,7 @@ pub use install_channel::{detect_action, HostOs, InstallChannel, InstallProbe, U
 pub use hotkeys::HotkeyAction;
 pub use dpi::{DisplayMap, GrabRegion, LogicalRect, MonitorGeometry, MonitorPlacement, PhysicalRect};
 pub use history::{EditOp, History};
+pub use region::{CaptureRect, DesktopBounds};
 pub use settings::{AppSettings, Hotkey, Modifiers};
 pub use state::{Edge, State};
 pub use theme::{ThemeColors, ThemeName};

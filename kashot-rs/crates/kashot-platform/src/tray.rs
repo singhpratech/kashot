@@ -21,6 +21,7 @@ pub struct Tray {
     pub rec_mic_id:    tray_icon::menu::MenuId,
     pub rec_sys_id:    tray_icon::menu::MenuId,
     pub rec_both_id:   tray_icon::menu::MenuId,
+    pub rec_region_id: tray_icon::menu::MenuId,
     pub stop_rec_id:   tray_icon::menu::MenuId,
     pub annotate_rec_id: tray_icon::menu::MenuId,
     pub open_folder_id:tray_icon::menu::MenuId,
@@ -37,6 +38,7 @@ pub struct Tray {
     rec_mic_item:      MenuItem,
     rec_sys_item:      MenuItem,
     rec_both_item:     MenuItem,
+    rec_region_item:   MenuItem,
     stop_rec_item:     MenuItem,
     cancel_item:       MenuItem,
 }
@@ -70,8 +72,12 @@ pub enum TrayEvent {
     /// Cancel the in-flight delay capture. Polled during the delay loop —
     /// resets `_capturing` and skips the screenshot.
     CancelPending,
-    /// Begin recording with the given audio sources mixed in.
+    /// Begin recording the whole desktop with the given audio sources mixed in.
     StartRecording(crate::recorder::RecordingOptions),
+    /// Open the region selector, then record only the rectangle the user
+    /// drags. Carries the same audio options as `StartRecording` so the two
+    /// paths share one pipeline — nothing about audio changes with a region.
+    StartRegionRecording(crate::recorder::RecordingOptions),
     StopRecording,
     /// Open the most recent recording in the annotation editor — draw on a
     /// frame, then ffmpeg burns the drawing over the whole clip.
@@ -142,6 +148,12 @@ impl Tray {
         let rec_mic   = MenuItem::new("Record + mic",      true,  None);
         let rec_sys   = MenuItem::new("Record + audio",    true,  None);
         let rec_both  = MenuItem::new("Record + mic+audio",true,  None);
+        // Region recording sits with the record rows rather than getting its
+        // own audio fan-out: four more "Record region + ..." siblings would
+        // double the tallest section of an already-flat menu (submenus are out
+        // — see the note above). The event carries `RecordingOptions` all the
+        // same, so adding those rows later is a one-line change here.
+        let rec_region = MenuItem::new("Record region",    true,  None);
         let stop_rec  = MenuItem::new(stop_label(&labels.record), false, None);
         let annotate_rec = MenuItem::new("Annotate last recording", true, None);
 
@@ -164,6 +176,7 @@ impl Tray {
         let rec_mic_id  = rec_mic.id().clone();
         let rec_sys_id  = rec_sys.id().clone();
         let rec_both_id = rec_both.id().clone();
+        let rec_region_id = rec_region.id().clone();
         let stop_rec_id = stop_rec.id().clone();
         let annotate_rec_id = annotate_rec.id().clone();
         let open_folder_id = open_fold.id().clone();
@@ -186,6 +199,7 @@ impl Tray {
         menu.append(&rec_mic).map_err(|e| Error::Tray(e.to_string()))?;
         menu.append(&rec_sys).map_err(|e| Error::Tray(e.to_string()))?;
         menu.append(&rec_both).map_err(|e| Error::Tray(e.to_string()))?;
+        menu.append(&rec_region).map_err(|e| Error::Tray(e.to_string()))?;
         menu.append(&stop_rec).map_err(|e| Error::Tray(e.to_string()))?;
         menu.append(&annotate_rec).map_err(|e| Error::Tray(e.to_string()))?;
         menu.append(&PredefinedMenuItem::separator()).map_err(|e| Error::Tray(e.to_string()))?;
@@ -221,6 +235,7 @@ impl Tray {
             rec_mic_id,
             rec_sys_id,
             rec_both_id,
+            rec_region_id,
             stop_rec_id,
             annotate_rec_id,
             open_folder_id,
@@ -237,6 +252,7 @@ impl Tray {
             rec_mic_item:  rec_mic,
             rec_sys_item:  rec_sys,
             rec_both_item: rec_both,
+            rec_region_item: rec_region,
             stop_rec_item: stop_rec,
             cancel_item:   cancel,
         })
@@ -256,6 +272,7 @@ impl Tray {
             Ok(ev) if ev.id == self.rec_mic_id   => TrayEvent::StartRecording(crate::recorder::RecordingOptions::MIC_ONLY),
             Ok(ev) if ev.id == self.rec_sys_id   => TrayEvent::StartRecording(crate::recorder::RecordingOptions::SYSTEM_ONLY),
             Ok(ev) if ev.id == self.rec_both_id  => TrayEvent::StartRecording(crate::recorder::RecordingOptions::MIC_AND_SYS),
+            Ok(ev) if ev.id == self.rec_region_id => TrayEvent::StartRegionRecording(crate::recorder::RecordingOptions::NONE),
             Ok(ev) if ev.id == self.stop_rec_id  => TrayEvent::StopRecording,
             Ok(ev) if ev.id == self.annotate_rec_id => TrayEvent::AnnotateLastRecording,
             Ok(ev) if ev.id == self.open_folder_id => TrayEvent::OpenSaveFolder,
@@ -307,6 +324,7 @@ impl Tray {
         self.rec_mic_item .set_enabled(enabled);
         self.rec_sys_item .set_enabled(enabled);
         self.rec_both_item.set_enabled(enabled);
+        self.rec_region_item.set_enabled(enabled);
         self.stop_rec_item.set_enabled(recording);
     }
 

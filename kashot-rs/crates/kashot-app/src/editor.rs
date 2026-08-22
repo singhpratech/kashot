@@ -79,6 +79,12 @@ pub enum OverlayOutcome {
     /// `Accepted` for video sessions so the screenshot save path keeps
     /// its single-bitmap payload.
     AcceptedVideo(VideoCommit),
+    /// User picked a region to **record** rather than to capture: either the
+    /// Record button in the action row of a normal capture session, or Enter /
+    /// Record in a dedicated record-mode overlay (`new_for_region_record`).
+    /// Carries `(x, y, w, h)` in window pixels — the caller clamps it to the
+    /// desktop and hands it to the recorder. No bitmap: nothing is saved.
+    RecordRegion((i32, i32, i32, i32)),
 }
 
 /// One video-burn group: an annotations-only transparent overlay plus its
@@ -232,10 +238,26 @@ const TOOL_PANEL_BUTTONS: [ToolPanelButton; 13] = [
 /// outcomes routed through `tray_loop`. `Close` mirrors C# OverlayForm
 /// "Close (Esc)" — closes the overlay without saving.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ActionButton { Pin, Copy, Save, Close }
+enum ActionButton { Pin, Copy, Save, Record, Close }
 
-const ACTION_BUTTONS: [ActionButton; 4] = [
+/// Screenshot session: the region the user just dragged can be saved, copied,
+/// pinned — or handed straight to the recorder, which is the same rectangle
+/// they already picked and saves them dragging it twice.
+const ACTION_BUTTONS: [ActionButton; 5] = [
+    ActionButton::Pin, ActionButton::Copy, ActionButton::Save,
+    ActionButton::Record, ActionButton::Close,
+];
+
+/// Video-annotate session: recording a region of a frame that is itself a
+/// recording is meaningless, so Record is left out rather than left dead.
+const VIDEO_ACTION_BUTTONS: [ActionButton; 4] = [
     ActionButton::Pin, ActionButton::Copy, ActionButton::Save, ActionButton::Close,
+];
+
+/// Record-mode session: selection only. No annotation tools, and nothing to
+/// save — the rectangle is the entire output of the session.
+const RECORD_ACTION_BUTTONS: [ActionButton; 2] = [
+    ActionButton::Record, ActionButton::Close,
 ];
 
 /// Magnifier — small zoomed lens shown near the cursor in Idle / Selecting,
@@ -348,6 +370,12 @@ pub struct Overlay {
     /// returns the deferred `VideoCommit` payload instead of a cropped
     /// composite.
     video_mode: bool,
+    /// True when the overlay was opened purely to pick a rectangle to record
+    /// (`new_for_region_record`): the tool panel, the annotation tools and the
+    /// Save / Copy / Pin actions are all absent, Enter or the Record button
+    /// confirms, and Esc backs out. Everything else — the drag, the edge
+    /// handles, the magnifier, the dimension chip — is the ordinary selector.
+    record_mode: bool,
     /// Video-annotate context: the clip path, so the editor itself can
     /// re-extract frames when the user scrubs. `None` in screenshot mode.
     video_path: Option<PathBuf>,
@@ -456,6 +484,23 @@ impl Overlay {
         // monitor-less geometry and every coordinate mapping stays identity.
         let desktop = DesktopGeometry::bitmap(frame.width(), frame.height());
         Self::build(loop_target, frame, desktop, settings, true, Some(video), duration_secs)
+    }
+
+    /// Open the overlay as a **recording** region selector.
+    ///
+    /// Same window, same drag, same edge handles as a capture session — the
+    /// user shouldn't have to learn a second selector — but with the drawing
+    /// half switched off, because nothing drawn here could ever end up in the
+    /// video. Confirming returns `OverlayOutcome::RecordRegion`.
+    pub fn new_for_region_record(
+        loop_target: &ActiveEventLoop,
+        desktop: DesktopGeometry,
+        screenshot: ImageBuffer<Rgba<u8>, Vec<u8>>,
+        settings: AppSettings,
+    ) -> Result<Self> {
+        let mut me = Self::build(loop_target, screenshot, desktop, settings, false, None, None)?;
+        me.record_mode = true;
+        Ok(me)
     }
 
     fn build(
@@ -597,6 +642,7 @@ impl Overlay {
             settings,
             dragging_marker_opacity: false,
             video_mode,
+            record_mode: false,
             video_path,
             duration: duration_secs,
             scrub_pos: 0.0,
@@ -763,6 +809,14 @@ impl Overlay {
         self.chrome_bounds((sel.0 + sel.2 / 2, sel.1 + sel.3 / 2))
     }
 
+    /// The action row for this session. Three shapes, one panel — see the
+    /// button-list constants for why each session drops what it drops.
+    fn action_buttons(&self) -> &'static [ActionButton] {
+        if self.record_mode      { &RECORD_ACTION_BUTTONS }
+        else if self.video_mode  { &VIDEO_ACTION_BUTTONS  }
+        else                     { &ACTION_BUTTONS        }
+    }
+
     pub fn handle_event(&mut self, event: WindowEvent) -> OverlayOutcome {
         match event {
             WindowEvent::CloseRequested => self.request_close(),
@@ -907,6 +961,11 @@ impl Overlay {
                 OverlayOutcome::Continue
             }
             Key::Character(s) => {
+                // Record mode has no tools to switch to and nothing to save,
+                // copy or pin, so every character shortcut would be a lie.
+                if self.record_mode {
+                    return OverlayOutcome::Continue;
+                }
                 let c    = match s.chars().next() { Some(c) => c, None => return OverlayOutcome::Continue };
                 let ctrl = self.mods.control_key();
                 let shift = self.mods.shift_key();
@@ -1196,7 +1255,8 @@ impl Overlay {
         if self.pending_discard.is_some() {
             let on_close = self.selection.map_or(false, |sel| {
                 let lb = self.panel_bounds(sel);
-                action_panel_hit(action_panel_origin(lb, sel), self.cursor)
+                let buttons = self.action_buttons();
+                action_panel_hit(action_panel_origin(lb, sel, buttons), self.cursor, buttons)
                     == Some(ActionButton::Close)
             });
             if on_close { return self.confirm_discard(); }
@@ -1261,8 +1321,13 @@ impl Overlay {
                     }
                 }
 
-                // Tool panel.
-                if let Some((_, btn)) = tool_panel_hit(tp_origin, self.cursor) {
+                // Tool panel — absent in record mode, so it can't take clicks
+                // there either. The palette, the marker slider and the timeline
+                // are already unreachable in that mode (no Color button, no
+                // tool letter keys, not a video session).
+                if let Some((_, btn)) = tool_panel_hit(tp_origin, self.cursor)
+                    .filter(|_| !self.record_mode)
+                {
                     match btn {
                         ToolPanelButton::Tool(t) => { self.tool = t; self.leave_select_mode(); }
                         ToolPanelButton::Color   => { self.palette_open = !self.palette_open; }
@@ -1280,13 +1345,14 @@ impl Overlay {
                 }
 
                 // Action panel.
-                let ap_origin = action_panel_origin(lb, sel);
-                if let Some(action) = action_panel_hit(ap_origin, self.cursor) {
+                let ap_origin = action_panel_origin(lb, sel, self.action_buttons());
+                if let Some(action) = action_panel_hit(ap_origin, self.cursor, self.action_buttons()) {
                     return match action {
-                        ActionButton::Pin   => self.commit_as_pin(),
-                        ActionButton::Copy  => self.commit_as_copy(),
-                        ActionButton::Save  => self.commit(),
-                        ActionButton::Close => self.request_close(),
+                        ActionButton::Pin    => self.commit_as_pin(),
+                        ActionButton::Copy   => self.commit_as_copy(),
+                        ActionButton::Save   => self.commit(),
+                        ActionButton::Record => self.commit_as_record(),
+                        ActionButton::Close  => self.request_close(),
                     };
                 }
 
@@ -1372,6 +1438,12 @@ impl Overlay {
                     return OverlayOutcome::Continue;
                 }
                 if self.cursor_in_selection() {
+                    // Nothing to draw in record mode — a click inside the
+                    // rectangle is a no-op rather than a stray annotation the
+                    // video would never carry anyway.
+                    if self.record_mode {
+                        return OverlayOutcome::Continue;
+                    }
                     // Step is click-to-place — never enters `Drawing`. Drop a
                     // numbered marker right where the user clicked and bump
                     // the counter for the next click.
@@ -1522,9 +1594,9 @@ impl Overlay {
     fn compute_hover_tip(&self) -> Option<(&'static str, i32, i32)> {
         let sel = self.selection?;
         let lb  = self.panel_bounds(sel);
-        // Tool panel.
+        // Tool panel — never drawn in record mode, so never hoverable either.
         let tp = tool_panel_origin(lb, sel);
-        if let Some((idx, btn)) = tool_panel_hit(tp, self.cursor) {
+        if let Some((idx, btn)) = tool_panel_hit(tp, self.cursor).filter(|_| !self.record_mode) {
             let (_, _, x1, y1) = tool_panel_button_rect(tp, idx as i32);
             let label = match btn {
                 ToolPanelButton::Tool(Tool::Pen)        => "Pen (P)",
@@ -1544,13 +1616,14 @@ impl Overlay {
             return Some((label, x1 + 6, y1 - 14));
         }
         // Action panel.
-        let ap = action_panel_origin(lb, sel);
-        if let Some(btn) = action_panel_hit(ap, self.cursor) {
+        let ap = action_panel_origin(lb, sel, self.action_buttons());
+        if let Some(btn) = action_panel_hit(ap, self.cursor, self.action_buttons()) {
             let label = match btn {
-                ActionButton::Pin   => "Pin to screen",
-                ActionButton::Copy  => "Copy (Ctrl+C)",
-                ActionButton::Save  => "Save (Ctrl+S)",
-                ActionButton::Close => "Close (Esc)",
+                ActionButton::Pin    => "Pin to screen",
+                ActionButton::Copy   => "Copy (Ctrl+C)",
+                ActionButton::Save   => "Save (Ctrl+S)",
+                ActionButton::Record => "Record region (Enter)",
+                ActionButton::Close  => "Close (Esc)",
             };
             return Some((label, self.cursor.0 + 14, self.cursor.1 + 14));
         }
@@ -1632,6 +1705,11 @@ impl Overlay {
     }
 
     fn commit(&mut self) -> OverlayOutcome {
+        // Record mode: Enter starts a recording of the rectangle instead of
+        // saving a screenshot of it.
+        if self.record_mode {
+            return self.commit_as_record();
+        }
         // Video mode: AcceptedVideo carries the raw annotation list plus
         // the committed background frame. The tray loop's burn worker
         // composes the per-window overlays from it (`compose_overlay_
@@ -1656,6 +1734,21 @@ impl Overlay {
         match self.compose_final() {
             Some(img) => OverlayOutcome::Copied(img),
             None      => OverlayOutcome::Continue,
+        }
+    }
+
+    /// Hand the locked-in rectangle back as a recording region.
+    ///
+    /// Unlike every other commit path this composes no bitmap: the output of
+    /// the session is the rectangle itself. Virtual-screen (device) pixels,
+    /// lifted out of frame space the same way the pin position is — the
+    /// caller clamps them to the desktop and rounds them for the encoder.
+    fn commit_as_record(&mut self) -> OverlayOutcome {
+        if self.state != State::Selected { return OverlayOutcome::Continue; }
+        match self.selection {
+            Some(rect) => OverlayOutcome::RecordRegion(
+                vdesk::frame_rect_to_virtual(self.frame_origin, rect)),
+            None       => OverlayOutcome::Continue,
         }
     }
 
@@ -1762,6 +1855,9 @@ impl Overlay {
                 self.window.request_redraw();
             }
         }
+        // Bound before the framebuffer is borrowed: the list is `'static`, but
+        // reading it off `self` mid-draw would alias the surface borrow.
+        let actions = self.action_buttons();
         let phys = self.window.inner_size();
         let (Some(w), Some(h)) = (NonZeroU32::new(phys.width), NonZeroU32::new(phys.height)) else { return; };
         // Chrome bounds have to be resolved before the framebuffer is
@@ -1934,16 +2030,21 @@ impl Overlay {
                     | State::TextInput | State::MovingAnnotation) {
             if let Some(sel) = self.selection {
                 let lb = sel_bounds.unwrap_or((0, 0, win_w as i32, win_h as i32));
-                draw_tool_panel(&mut buf, win_w, win_h, lb, sel,
-                                self.tool, self.stroke.color, self.stroke.thickness);
-                // Sequential orange-neon halo cycles through every button
-                // (top→bottom, 1 per slot). Mirrors the website's tool-palette
-                // demo so the in-app palette feels alive even when the user
-                // is just hovering. Painted after the panel so the halo sits
-                // on top of the button background but under the icon glyph.
-                let elapsed = self.opened_at.elapsed().as_secs_f32();
-                draw_tool_panel_glow(&mut buf, win_w, win_h, lb, sel, elapsed);
-                draw_action_panel(&mut buf, win_w, win_h, lb, sel);
+                // Record mode is selection-only: no tool column, no glow, no
+                // palette, no per-tool widgets. Just the rectangle and the
+                // two-button action row.
+                if !self.record_mode {
+                    draw_tool_panel(&mut buf, win_w, win_h, lb, sel,
+                                    self.tool, self.stroke.color, self.stroke.thickness);
+                    // Sequential orange-neon halo cycles through every button
+                    // (top→bottom, 1 per slot). Mirrors the website's tool-palette
+                    // demo so the in-app palette feels alive even when the user
+                    // is just hovering. Painted after the panel so the halo sits
+                    // on top of the button background but under the icon glyph.
+                    let elapsed = self.opened_at.elapsed().as_secs_f32();
+                    draw_tool_panel_glow(&mut buf, win_w, win_h, lb, sel, elapsed);
+                }
+                draw_action_panel(&mut buf, win_w, win_h, lb, sel, actions);
                 // Attention pulse on the action panel for the first 3 s after
                 // it appears — the panel auto-positions based on selection +
                 // screen, so first-time users can lose track of where Save /
@@ -1952,13 +2053,13 @@ impl Overlay {
                     if let Some(start) = self.panel_pulse_started {
                         let elapsed = start.elapsed().as_secs_f32();
                         if elapsed < 3.0 {
-                            draw_action_panel_pulse(&mut buf, win_w, win_h, lb, sel, elapsed);
+                            draw_action_panel_pulse(&mut buf, win_w, win_h, lb, sel, elapsed, actions);
                         } else {
                             self.panel_pulse_started = None;
                         }
                     }
                 }
-                if self.palette_open {
+                if self.palette_open && !self.record_mode {
                     let tp_origin = tool_panel_origin(lb, sel);
                     draw_palette_popup(&mut buf, win_w, win_h, lb, tp_origin,
                                        self.stroke.color, self.palette_index);
@@ -1967,7 +2068,7 @@ impl Overlay {
                 // tool is the active selection. The slider track shows the
                 // marker color at the chosen opacity so the user previews
                 // exactly what their next stroke will look like.
-                if self.tool == Tool::Marker {
+                if self.tool == Tool::Marker && !self.record_mode {
                     if let Some(panel) = marker_slider_rect(lb, sel) {
                         draw_marker_opacity_slider(
                             &mut buf, win_w, win_h, panel,
@@ -1983,7 +2084,8 @@ impl Overlay {
         // dragging a region or about the way back out. One dim line spells
         // both out; it disappears the moment the drag starts.
         if matches!(self.state, State::Idle) {
-            draw_idle_hint(&mut buf, win_w, win_h, cursor_bounds);
+            draw_idle_hint(&mut buf, win_w, win_h, cursor_bounds,
+                           if self.record_mode { RECORD_HINT } else { IDLE_HINT });
         }
 
         // Pass 6: magnifier — only useful when the user is positioning the
@@ -2083,8 +2185,8 @@ fn tool_panel_dims() -> (i32, i32) {
     (w, h)
 }
 
-fn action_panel_dims() -> (i32, i32) {
-    let n = ACTION_BUTTONS.len() as i32;
+fn action_panel_dims(buttons: &[ActionButton]) -> (i32, i32) {
+    let n = buttons.len() as i32;
     let w = n * PANEL_BTN + (n - 1) * PANEL_GAP + PANEL_PAD * 2;
     let h = PANEL_BTN + PANEL_PAD * 2;
     (w, h)
@@ -2324,10 +2426,14 @@ pub(crate) fn compose_overlay_groups(commit: &VideoCommit, video: &std::path::Pa
     out_groups
 }
 
-fn action_panel_origin(bounds: (i32, i32, i32, i32), sel: (i32, i32, i32, i32)) -> (i32, i32) {
+fn action_panel_origin(
+    bounds: (i32, i32, i32, i32),
+    sel: (i32, i32, i32, i32),
+    buttons: &[ActionButton],
+) -> (i32, i32) {
     let (bx, by, _bw, bh) = bounds;
     let (sx, sy, sw, sh) = sel;
-    let (pw, ph) = action_panel_dims();
+    let (pw, ph) = action_panel_dims(buttons);
     let mut ax = sx + sw - pw;
     let mut ay = sy + sh + 5;
     if ay + ph > by + bh { ay = sy - ph - 5; }
@@ -2365,8 +2471,12 @@ fn tool_panel_hit(panel_origin: (i32, i32), (cx, cy): (i32, i32)) -> Option<(usi
     None
 }
 
-fn action_panel_hit(panel_origin: (i32, i32), (cx, cy): (i32, i32)) -> Option<ActionButton> {
-    for (i, b) in ACTION_BUTTONS.iter().enumerate() {
+fn action_panel_hit(
+    panel_origin: (i32, i32),
+    (cx, cy): (i32, i32),
+    buttons: &[ActionButton],
+) -> Option<ActionButton> {
+    for (i, b) in buttons.iter().enumerate() {
         let (x0, y0, x1, y1) = action_panel_button_rect(panel_origin, i as i32);
         if cx >= x0 && cx < x1 && cy >= y0 && cy < y1 {
             return Some(*b);
@@ -2563,10 +2673,11 @@ fn draw_action_panel_pulse(
     bounds: (i32, i32, i32, i32),
     sel:    (i32, i32, i32, i32),
     elapsed: f32,
+    buttons: &[ActionButton],
 ) {
     if elapsed >= 3.0 { return; }
-    let origin = action_panel_origin(bounds, sel);
-    let (pw, ph) = action_panel_dims();
+    let origin = action_panel_origin(bounds, sel, buttons);
+    let (pw, ph) = action_panel_dims(buttons);
 
     // Cycle: ~150 ms total; 60% ON, 40% OFF. Solid on the bright phase, faint
     // halo on the dim phase so the panel is always findable even mid-blink.
@@ -2634,23 +2745,28 @@ fn draw_action_panel(
     win_h:  usize,
     bounds: (i32, i32, i32, i32),
     sel:    (i32, i32, i32, i32),
+    buttons: &[ActionButton],
 ) {
     const BG:   u32 = 0x00_22_22_24;
     const BTN:  u32 = 0x00_2E_2E_32;
     const TEXT: u32 = 0x00_E8_E8_EC;
+    // Record red, the same hue as the REC dot in `recording_indicator`, so the
+    // one destructive-ish action in the row is never confused for Save.
+    const REC_DOT: [u8; 4] = [0xFF, 0x3A, 0x3A, 0xFF];
 
-    let origin = action_panel_origin(bounds, sel);
-    let (pw, ph) = action_panel_dims();
+    let origin = action_panel_origin(bounds, sel, buttons);
+    let (pw, ph) = action_panel_dims(buttons);
     draw_rounded_rect(buf, win_w, win_h, origin.0, origin.1, origin.0 + pw, origin.1 + ph, PANEL_RADIUS, BG);
 
-    for (i, b) in ACTION_BUTTONS.iter().enumerate() {
+    for (i, b) in buttons.iter().enumerate() {
         let (x0, y0, x1, y1) = action_panel_button_rect(origin, i as i32);
         draw_rounded_rect(buf, win_w, win_h, x0, y0, x1, y1, 6, BTN);
         match b {
-            ActionButton::Pin   => crate::icons::render_icon(buf, win_w, win_h, x0, y0, x1, y1, crate::icons::IconKind::Pin,   [232,232,236,255], None, 4.0),
-            ActionButton::Copy  => crate::icons::render_icon(buf, win_w, win_h, x0, y0, x1, y1, crate::icons::IconKind::Copy,  [232,232,236,255], None, 4.0),
-            ActionButton::Save  => crate::icons::render_icon(buf, win_w, win_h, x0, y0, x1, y1, crate::icons::IconKind::Save,  [232,232,236,255], None, 4.0),
-            ActionButton::Close => crate::icons::render_icon(buf, win_w, win_h, x0, y0, x1, y1, crate::icons::IconKind::Close, [232,232,236,255], None, 4.0),
+            ActionButton::Pin    => crate::icons::render_icon(buf, win_w, win_h, x0, y0, x1, y1, crate::icons::IconKind::Pin,    [232,232,236,255], None, 4.0),
+            ActionButton::Copy   => crate::icons::render_icon(buf, win_w, win_h, x0, y0, x1, y1, crate::icons::IconKind::Copy,   [232,232,236,255], None, 4.0),
+            ActionButton::Save   => crate::icons::render_icon(buf, win_w, win_h, x0, y0, x1, y1, crate::icons::IconKind::Save,   [232,232,236,255], None, 4.0),
+            ActionButton::Record => crate::icons::render_icon(buf, win_w, win_h, x0, y0, x1, y1, crate::icons::IconKind::Record, [232,232,236,255], Some(REC_DOT), 4.0),
+            ActionButton::Close  => crate::icons::render_icon(buf, win_w, win_h, x0, y0, x1, y1, crate::icons::IconKind::Close,  [232,232,236,255], None, 4.0),
         }
     }
 }
@@ -3030,6 +3146,10 @@ fn draw_tooltip(
 /// so no dashes or arrows beyond the keyboard set.
 const IDLE_HINT: &str = "drag to select a region  -  Esc to close";
 
+/// Record-mode variant: names the confirm key, because there is no Save button
+/// to fall back on and the rectangle alone doesn't say how to start.
+const RECORD_HINT: &str = "drag the area to record  -  Enter to start  -  Esc to close";
+
 /// Bottom-center hint chip, painted only in `State::Idle`. Same dark fill +
 /// hairline border as the tooltip chip so it reads as overlay chrome, but
 /// in a muted grey: it's a nudge for first-time users, not something that
@@ -3039,6 +3159,7 @@ fn draw_idle_hint(
     win_w:  usize,
     win_h:  usize,
     bounds: (i32, i32, i32, i32),
+    hint:   &str,
 ) {
     const SCALE:  i32 = 2;
     const PAD_X:  i32 = 12;
@@ -3046,7 +3167,7 @@ fn draw_idle_hint(
     const MARGIN: i32 = 48;          // gap from the bottom screen edge
 
     let (bx, by, bw, bh) = bounds;
-    let chip_w = crate::bitmap_font::measure(IDLE_HINT, SCALE) + PAD_X * 2;
+    let chip_w = crate::bitmap_font::measure(hint, SCALE) + PAD_X * 2;
     let chip_h = crate::bitmap_font::GLYPH_H * SCALE + PAD_Y * 2;
     // Centered on the monitor the cursor is on, not across the seam of a
     // multi-monitor overlay.
@@ -3061,7 +3182,7 @@ fn draw_idle_hint(
     draw_rect_border(buf, win_w, win_h, x0, y0, x1, y1, 0x00_3A_3A_40);
     let mut surf = crate::painter::U32Surface { buf, stride: win_w as i32, height: win_h as i32 };
     crate::painter::draw_text(
-        &mut surf, x0 + PAD_X, y0 + PAD_Y, SCALE, IDLE_HINT,
+        &mut surf, x0 + PAD_X, y0 + PAD_Y, SCALE, hint,
         kashot_core::color::Rgba::new_opaque(0x9A, 0x9A, 0xA2),
     );
 }

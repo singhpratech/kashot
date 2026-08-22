@@ -28,6 +28,11 @@
 //!     see `start_recording` in tray_loop.rs.
 //! If exclusion fails (e.g. Windows 10 before 2004), `new()` returns Err and
 //! the caller records without a panel rather than burning it into the video.
+//!
+//! A **region** recording changes that calculus on X11: the panel is only a
+//! problem where the recorder is looking, so `new_at` lets the caller park it
+//! at a spot `kashot_core::region::indicator_placement` has certified as
+//! outside the recorded rectangle. `SIZE` is what that placement measures.
 
 use std::num::NonZeroU32;
 use std::rc::Rc;
@@ -45,6 +50,10 @@ use crate::painter;
 
 const WIN_W: u32 = 220;
 const WIN_H: u32 = 56;
+
+/// Outer size of the panel, for callers positioning it around a recorded
+/// region. Same numbers `new()` builds the window with.
+pub const SIZE: (u32, u32) = (WIN_W, WIN_H);
 
 // Colors (matches the void-black / laser-green / record-red palette).
 const BG:          u32 = 0x0010_1614;
@@ -71,17 +80,14 @@ pub struct RecordingIndicator {
 }
 
 impl RecordingIndicator {
-    pub fn new(loop_target: &ActiveEventLoop) -> Result<Self> {
-        // Park it in the top-right of whatever the primary monitor is, with
-        // a small margin so it doesn't kiss the screen edge.
-        let primary = loop_target.primary_monitor()
-            .or_else(|| loop_target.available_monitors().next());
-        let (mon_w, _mon_h) = primary
-            .as_ref()
-            .map(|m| (m.size().width as i32, m.size().height as i32))
-            .unwrap_or((1920, 1080));
-        let x = (mon_w - WIN_W as i32 - 24).max(24);
-        let y = 24;
+    /// Open the panel at a caller-chosen screen position.
+    ///
+    /// The position is not cosmetic: the panel has to land outside the recorded
+    /// rectangle, which is the difference between a visible STOP button and a
+    /// STOP button burned into the user's video on X11. `tray_loop` picks it
+    /// with `kashot_core::region::indicator_placement`.
+    pub fn new_at(loop_target: &ActiveEventLoop, origin: (i32, i32)) -> Result<Self> {
+        let (x, y) = origin;
 
         let attrs = WindowAttributes::default()
             .with_title("KAShot — recording")

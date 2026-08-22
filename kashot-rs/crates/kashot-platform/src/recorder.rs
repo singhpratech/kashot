@@ -43,6 +43,25 @@
 //!                      Windows "Stereo Mix" situation, otherwise it degrades
 //!                      to mic or surfaces an actionable error.
 //!
+//! Recording is full-screen by default and region-limited when `start_region`
+//! is handed a `CaptureRect`. The rectangle is part of the **public start API**
+//! rather than an x11grab detail, because every backend can honour it and a
+//! future PipeWire / xdg-desktop-portal backend will need the same value:
+//!
+//! * Linux  (X11)     : `-video_size WxH -i <display>+X,Y`
+//! * Windows          : `-offset_x X -offset_y Y -video_size WxH -i desktop`
+//! * macOS            : `screencapture -v -R x,y,w,h`, or an ffmpeg
+//!                      `crop=W:H:X:Y` filter when audio routes capture
+//!                      through avfoundation.
+//!
+//! X11 and gdigrab measure from the virtual desktop's corner
+//! (`CaptureRect::offset_x`); `screencapture` measures from the main display's
+//! corner (`CaptureRect::x`). `kashot_core::region` owns that distinction along
+//! with the even-dimension rounding H.264 requires — nothing here re-derives it.
+//!
+//! Audio is untouched by any of this: the same sources, the same best-effort
+//! degradation, the same `amix`. Only the video input differs.
+//!
 //! Stop is graceful per platform: write `q` to `ffmpeg`'s stdin (Linux,
 //! Windows) or send SIGINT to `screencapture` (macOS) so the MP4 moov atom
 //! is finalized. Every wait after that signal is bounded — ~15 s for an
@@ -58,6 +77,7 @@
 //! reported with its actual cause instead of a bare exit code.
 
 use crate::{Error, Result};
+use kashot_core::region::CaptureRect;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 
@@ -358,7 +378,22 @@ impl Recorder {
     pub fn is_recording(&self) -> bool { self.backend.is_some() }
     pub fn output_path(&self) -> Option<&Path> { self.output.as_deref() }
 
-    /// Begin recording the primary display to `output`.
+    /// Begin recording the whole desktop to `output`.
+    ///
+    /// Shorthand for [`Recorder::start_region`] with no rectangle.
+    pub fn start(&mut self, output: PathBuf, options: RecordingOptions)
+        -> Result<RecordingOptions>
+    {
+        self.start_region(output, options, None)
+    }
+
+    /// Begin recording to `output`, optionally limited to `region`.
+    ///
+    /// `region` is `None` for the whole desktop, or a `CaptureRect` in
+    /// virtual-desktop coordinates — already clamped to the desktop and already
+    /// even-sized by `kashot_core::region::record_rect_from_selection`. Each
+    /// backend translates it into its own coordinate convention; see the module
+    /// docs. Audio behaves identically either way.
     ///
     /// Returns the **effective** options — what's actually being recorded, not
     /// what was asked for. Audio is best-effort by design: a box with no
@@ -369,7 +404,10 @@ impl Recorder {
     ///
     /// Errors if a recording is already in progress, if the parent directory
     /// can't be created, or if the platform's recording tool isn't available.
-    pub fn start(&mut self, output: PathBuf, options: RecordingOptions)
+    pub fn start_region(&mut self,
+                        output:  PathBuf,
+                        options: RecordingOptions,
+                        region:  Option<CaptureRect>)
         -> Result<RecordingOptions>
     {
         if self.is_recording() {
@@ -378,7 +416,7 @@ impl Recorder {
         if let Some(parent) = output.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let (backend, effective) = spawn_recorder(&output, options)?;
+        let (backend, effective) = spawn_recorder(&output, options, region)?;
         self.backend = Some(backend);
         self.output  = Some(output);
         Ok(effective)
@@ -497,7 +535,7 @@ fn locate_ffmpeg() -> Option<PathBuf> {
 // ── platform spawn / signal ─────────────────────────────────────────────────
 
 #[cfg(target_os = "linux")]
-fn spawn_recorder(output: &Path, options: RecordingOptions)
+fn spawn_recorder(output: &Path, options: RecordingOptions, region: Option<CaptureRect>)
     -> Result<(Backend, RecordingOptions)>
 {
     // Reject Wayland up-front — `-f x11grab` against XWayland silently
@@ -537,7 +575,7 @@ fn spawn_recorder(output: &Path, options: RecordingOptions)
         }
     } else { None };
 
-    let args = build_linux_ffmpeg_args(&display, path, opt, monitor_source.as_deref());
+    let args = build_linux_ffmpeg_args(&display, path, opt, monitor_source.as_deref(), region);
     let ffmpeg = locate_ffmpeg().unwrap_or_else(|| PathBuf::from("ffmpeg"));
     let res = crate::child_guard::spawn_guarded(
         Command::new(&ffmpeg)
@@ -583,19 +621,33 @@ fn default_pulse_monitor_source() -> Option<String> {
 
 /// Build the ffmpeg argv for Linux X11 capture. Pure function so the test
 /// suite can assert exact argv composition without spawning a process.
+///
+/// `region` limits the grab: x11grab takes the size as `-video_size` *before*
+/// the input and the top-left corner as a `+X,Y` suffix on the display name
+/// (`:0.0+120,80`). Those coordinates are measured from the X root window's
+/// corner, which is the virtual desktop's corner — hence `offset_x/offset_y`
+/// rather than the absolute fields.
 #[cfg(any(target_os = "linux", test))]
 pub(crate) fn build_linux_ffmpeg_args(
     display:        &str,
     output_path:    &str,
     options:        RecordingOptions,
     monitor_source: Option<&str>,
+    region:         Option<CaptureRect>,
 ) -> Vec<String> {
-    let mut a: Vec<String> = Vec::with_capacity(32);
+    let mut a: Vec<String> = Vec::with_capacity(36);
     let push = |a: &mut Vec<String>, s: &str| a.push(s.to_string());
     push(&mut a, "-y");
     push(&mut a, "-f"); push(&mut a, "x11grab");
     push(&mut a, "-framerate"); push(&mut a, "30");
-    push(&mut a, "-i"); push(&mut a, display);
+    match region {
+        Some(r) => {
+            push(&mut a, "-video_size"); a.push(r.video_size());
+            push(&mut a, "-i");
+            a.push(format!("{display}+{},{}", r.offset_x(), r.offset_y()));
+        }
+        None => { push(&mut a, "-i"); push(&mut a, display); }
+    }
     if options.mic {
         push(&mut a, "-f"); push(&mut a, "pulse");
         push(&mut a, "-i"); push(&mut a, "default");
@@ -636,7 +688,7 @@ pub(crate) fn build_linux_ffmpeg_args(
 // works with no BlackHole / Aggregate device. ffmpeg muxes (and `amix`es when
 // both mic and system audio are present), exactly like the Linux path.
 #[cfg(target_os = "macos")]
-fn spawn_recorder(output: &Path, options: RecordingOptions)
+fn spawn_recorder(output: &Path, options: RecordingOptions, region: Option<CaptureRect>)
     -> Result<(Backend, RecordingOptions)>
 {
     let path = output.to_str().ok_or_else(||
@@ -647,7 +699,7 @@ fn spawn_recorder(output: &Path, options: RecordingOptions)
     if !options.has_audio() {
         let child = crate::child_guard::spawn_guarded(
             Command::new("screencapture")
-                .args(["-v", path])
+                .args(build_macos_screencapture_args(path, region))
                 .stdin(Stdio::null())
                 .stdout(Stdio::null())
                 .stderr(Stdio::piped()))
@@ -684,7 +736,7 @@ fn spawn_recorder(output: &Path, options: RecordingOptions)
         system_audio: sck.is_some(),
     };
 
-    let args = build_macos_ffmpeg_args(screen_idx, mic_idx, sck_port, path);
+    let args = build_macos_ffmpeg_args(screen_idx, mic_idx, sck_port, path, region);
     let res = crate::child_guard::spawn_guarded(
         Command::new(&ffmpeg)
             .args(&args)
@@ -708,16 +760,47 @@ fn spawn_recorder(output: &Path, options: RecordingOptions)
     }
 }
 
+/// Build the `screencapture` argv for the dependency-free video-only path.
+///
+/// `-R x,y,w,h` limits the capture to a rectangle in macOS' global display
+/// space, whose origin is the **main display's** top-left corner — the same
+/// space `CaptureRect`'s absolute fields live in, so no translation is needed.
+/// Pure function so the argv can be asserted without a Mac.
+#[cfg(any(target_os = "macos", test))]
+pub(crate) fn build_macos_screencapture_args(
+    output_path: &str,
+    region:      Option<CaptureRect>,
+) -> Vec<String> {
+    let mut a: Vec<String> = Vec::with_capacity(4);
+    a.push("-v".to_string());
+    if let Some(r) = region {
+        // `screencapture` parses its options with getopt, so the rectangle can
+        // ride in its own argv slot rather than being glued to the flag.
+        a.push("-R".to_string());
+        a.push(format!("{},{},{},{}", r.x, r.y, r.width, r.height));
+    }
+    a.push(output_path.to_string());
+    a
+}
+
 /// Build the ffmpeg argv for macOS: avfoundation video (+ optional fused mic)
 /// as input 0, plus an optional ScreenCaptureKit system-audio TCP input. When
 /// both mic and system audio are present they're `amix`ed to one stereo AAC
 /// track. Pure function so the suite can assert argv shape without a Mac.
+///
+/// avfoundation has no capture-rectangle option, so a `region` becomes a
+/// `crop` filter ahead of the usual even-dimension `pad`. Crop coordinates are
+/// relative to the frame the screen device delivers — the main display — which
+/// is also where macOS' global coordinate origin sits, so the absolute fields
+/// go in unchanged. A region living entirely on a *secondary* display is
+/// outside that frame; the video-only `screencapture` path has no such limit.
 #[cfg(any(target_os = "macos", test))]
 pub(crate) fn build_macos_ffmpeg_args(
     screen_idx: usize,
     mic_idx:    Option<usize>,
     sck_port:   Option<u16>,
     output_path: &str,
+    region:     Option<CaptureRect>,
 ) -> Vec<String> {
     let mut a: Vec<String> = Vec::with_capacity(32);
     let push = |a: &mut Vec<String>, s: &str| a.push(s.to_string());
@@ -742,7 +825,7 @@ pub(crate) fn build_macos_ffmpeg_args(
     push(&mut a, "-c:v"); push(&mut a, "libx264");
     push(&mut a, "-preset"); push(&mut a, "ultrafast");
     push(&mut a, "-pix_fmt"); push(&mut a, "yuv420p");
-    push(&mut a, "-vf"); push(&mut a, "pad=ceil(iw/2)*2:ceil(ih/2)*2");
+    push(&mut a, "-vf"); a.push(video_filter_chain(region));
     match (mic_idx.is_some(), sck_port.is_some()) {
         (true, true) => {
             // Mic (avf input 0 audio) + system audio (input 1) → one track.
@@ -772,6 +855,19 @@ pub(crate) fn build_macos_ffmpeg_args(
     }
     push(&mut a, output_path);
     a
+}
+
+/// The `-vf` chain for the macOS avfoundation path: an optional `crop` for a
+/// region, then the even-dimension `pad` every platform applies. `pad` stays
+/// even when cropping — a `CaptureRect` is already even, so it is a no-op there
+/// and a safety net for the full-screen case (an odd-sized display).
+#[cfg(any(target_os = "macos", test))]
+fn video_filter_chain(region: Option<CaptureRect>) -> String {
+    const PAD: &str = "pad=ceil(iw/2)*2:ceil(ih/2)*2";
+    match region {
+        Some(r) => format!("crop={}:{}:{}:{},{PAD}", r.width, r.height, r.x, r.y),
+        None    => PAD.to_string(),
+    }
 }
 
 /// Run `ffmpeg -f avfoundation -list_devices true -i ""`. avfoundation writes
@@ -872,7 +968,7 @@ pub(crate) fn pick_macos_mic_device(audio: &[(usize, String)]) -> Option<usize> 
 // the resample + amix, exactly like the Linux pulse + monitor path.
 
 #[cfg(target_os = "windows")]
-fn spawn_recorder(output: &Path, options: RecordingOptions)
+fn spawn_recorder(output: &Path, options: RecordingOptions, region: Option<CaptureRect>)
     -> Result<(Backend, RecordingOptions)>
 {
     use windows_audio::SourceKind;
@@ -901,7 +997,7 @@ fn spawn_recorder(output: &Path, options: RecordingOptions)
     }
 
     let specs: Vec<WasapiAudioSpec> = started.iter().map(|s| s.spec.clone()).collect();
-    let args = build_windows_ffmpeg_args(path, &specs);
+    let args = build_windows_ffmpeg_args(path, &specs, region);
 
     // CREATE_NO_WINDOW (0x08000000): ffmpeg.exe is a console app, so without
     // this flag Windows allocates a visible black console window that stays up
@@ -945,18 +1041,31 @@ fn spawn_recorder(output: &Path, options: RecordingOptions)
 /// Build the ffmpeg argv for Windows: gdigrab video plus one raw-PCM TCP input
 /// per WASAPI source, mixed down to a single stereo AAC track. Pure function so
 /// the suite can assert exact argv composition without WASAPI or a real device.
+///
+/// A `region` becomes `-offset_x` / `-offset_y` / `-video_size`, all of which
+/// gdigrab reads *before* its `-i desktop`. gdigrab adds the offsets to
+/// `SM_XVIRTUALSCREEN` / `SM_YVIRTUALSCREEN`, i.e. it measures from the virtual
+/// desktop's corner — which is why this uses `offset_x()` and not `x`. On a
+/// layout with a monitor left of the primary one those differ by 1920.
 #[cfg(any(target_os = "windows", test))]
 pub(crate) fn build_windows_ffmpeg_args(
     output_path: &str,
     audio:       &[WasapiAudioSpec],
+    region:      Option<CaptureRect>,
 ) -> Vec<String> {
-    let mut a: Vec<String> = Vec::with_capacity(48);
+    let mut a: Vec<String> = Vec::with_capacity(52);
     let push = |a: &mut Vec<String>, s: &str| a.push(s.to_string());
     push(&mut a, "-y");
-    // Video: GDI grab of the whole desktop at 30 fps. `desktop` is gdigrab's
-    // pseudo-device name for the full virtual screen.
+    // Video: GDI grab of the desktop at 30 fps. `desktop` is gdigrab's
+    // pseudo-device name for the full virtual screen; the offset/size options
+    // below narrow it to the user's rectangle.
     push(&mut a, "-f"); push(&mut a, "gdigrab");
     push(&mut a, "-framerate"); push(&mut a, "30");
+    if let Some(r) = region {
+        push(&mut a, "-offset_x"); a.push(r.offset_x().to_string());
+        push(&mut a, "-offset_y"); a.push(r.offset_y().to_string());
+        push(&mut a, "-video_size"); a.push(r.video_size());
+    }
     push(&mut a, "-i"); push(&mut a, "desktop");
     // Audio: one raw-PCM input per WASAPI source. We're already listening on
     // the loopback port; ffmpeg connects back as the TCP client. The format /
@@ -1009,7 +1118,9 @@ pub(crate) fn build_windows_ffmpeg_args(
 // ── unreachable on the platforms above, kept so non-tier-1 OSes still build ──
 
 #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
-fn spawn_recorder(_output: &Path, _options: RecordingOptions)
+fn spawn_recorder(_output: &Path,
+                  _options: RecordingOptions,
+                  _region:  Option<CaptureRect>)
     -> Result<(Backend, RecordingOptions)>
 {
     Err(Error::Recording(
@@ -1153,13 +1264,23 @@ fn ffmpeg_error_tail(stderr: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use kashot_core::region::{record_rect_from_selection, DesktopBounds};
+
+    /// A 1920x1080 desktop rooted at the origin — the single-monitor case.
+    fn desktop() -> DesktopBounds { DesktopBounds::new(0, 0, 1920, 1080) }
+
+    /// The rectangle a user would drag for "record this window", already
+    /// clamped + even-sized the way the overlay hands it to the recorder.
+    fn region() -> CaptureRect {
+        record_rect_from_selection((320, 180, 640, 480), desktop()).unwrap()
+    }
 
     // Linux argv-builder: assert the shape of the command we hand to ffmpeg
     // for every audio combination, without spawning anything.
 
     #[test]
     fn linux_argv_video_only() {
-        let a = build_linux_ffmpeg_args(":0", "/tmp/out.mp4", RecordingOptions::NONE, None);
+        let a = build_linux_ffmpeg_args(":0", "/tmp/out.mp4", RecordingOptions::NONE, None, None);
         assert!(a.windows(2).any(|w| w == ["-f", "x11grab"]),
                 "missing -f x11grab in: {:?}", a);
         assert!(a.windows(2).any(|w| w == ["-c:v", "libx264"]));
@@ -1170,7 +1291,7 @@ mod tests {
 
     #[test]
     fn linux_argv_mic_only() {
-        let a = build_linux_ffmpeg_args(":0", "/tmp/out.mp4", RecordingOptions::MIC_ONLY, None);
+        let a = build_linux_ffmpeg_args(":0", "/tmp/out.mp4", RecordingOptions::MIC_ONLY, None, None);
         // mic is stream index 1 with `-i default`.
         let i_default_pos = a.iter().position(|s| s == "default")
             .expect("missing pulse mic input");
@@ -1182,7 +1303,7 @@ mod tests {
     #[test]
     fn linux_argv_mic_and_sys_uses_amix() {
         let a = build_linux_ffmpeg_args(":0", "/tmp/out.mp4",
-            RecordingOptions::MIC_AND_SYS, Some("alsa_output.0.monitor"));
+            RecordingOptions::MIC_AND_SYS, Some("alsa_output.0.monitor"), None);
         let fc = a.iter().position(|s| s == "-filter_complex").expect("missing -filter_complex");
         assert!(a[fc + 1].contains("amix=inputs=2"),
                 "expected amix filter, got {:?}", a[fc + 1]);
@@ -1199,7 +1320,7 @@ mod tests {
 
     #[test]
     fn windows_argv_video_only_no_audio_sources() {
-        let a = build_windows_ffmpeg_args("C:/tmp/out.mp4", &[]);
+        let a = build_windows_ffmpeg_args("C:/tmp/out.mp4", &[], None);
         assert!(a.windows(2).any(|w| w == ["-f", "gdigrab"]),
                 "missing -f gdigrab in: {:?}", a);
         assert!(a.windows(2).any(|w| w == ["-i", "desktop"]));
@@ -1215,7 +1336,7 @@ mod tests {
         // One WASAPI source → input index 1 (gdigrab is 0). The declared
         // format/rate/channels are exactly what the device reported.
         let a = build_windows_ffmpeg_args("C:/tmp/out.mp4",
-            &[spec(54123, 48000, 2, "f32le")]);
+            &[spec(54123, 48000, 2, "f32le")], None);
         assert!(a.windows(2).any(|w| w == ["-f", "f32le"]),
                 "audio input format must match the device: {:?}", a);
         assert!(a.windows(2).any(|w| w == ["-ar", "48000"]));
@@ -1232,7 +1353,7 @@ mod tests {
     fn windows_argv_two_sources_uses_amix() {
         // mic + system loopback → two inputs (1 and 2) mixed to one AAC track.
         let a = build_windows_ffmpeg_args("C:/tmp/out.mp4",
-            &[spec(40001, 48000, 2, "f32le"), spec(40002, 44100, 1, "s16le")]);
+            &[spec(40001, 48000, 2, "f32le"), spec(40002, 44100, 1, "s16le")], None);
         let fc = a.iter().position(|s| s == "-filter_complex")
             .expect("missing -filter_complex");
         assert!(a[fc + 1].contains("[1:a][2:a]amix=inputs=2"),
@@ -1249,7 +1370,7 @@ mod tests {
     fn windows_argv_uses_thread_queue_size_per_audio_input() {
         // Guards against demuxer packet drops while the encoder is busy.
         let a = build_windows_ffmpeg_args("C:/tmp/out.mp4",
-            &[spec(50000, 48000, 2, "f32le")]);
+            &[spec(50000, 48000, 2, "f32le")], None);
         assert!(a.windows(2).any(|w| w == ["-thread_queue_size", "1024"]),
                 "audio input should set -thread_queue_size: {:?}", a);
     }
@@ -1261,7 +1382,7 @@ mod tests {
     #[test]
     fn macos_argv_mic_only_uses_avfoundation_fused_input() {
         // Mic, no system audio → just the fused avfoundation input, no TCP.
-        let a = build_macos_ffmpeg_args(1, Some(0), None, "/tmp/out.mp4");
+        let a = build_macos_ffmpeg_args(1, Some(0), None, "/tmp/out.mp4", None);
         assert!(a.windows(2).any(|w| w == ["-f", "avfoundation"]),
                 "missing -f avfoundation in: {:?}", a);
         assert!(a.windows(2).any(|w| w == ["-i", "1:0"]),
@@ -1278,7 +1399,7 @@ mod tests {
     fn macos_argv_system_only_adds_sck_tcp_input() {
         // System audio, no mic → video-only avf input plus the SCK TCP input
         // mapped as the audio track.
-        let a = build_macos_ffmpeg_args(2, None, Some(50321), "/tmp/out.mp4");
+        let a = build_macos_ffmpeg_args(2, None, Some(50321), "/tmp/out.mp4", None);
         assert!(a.windows(2).any(|w| w == ["-i", "2:"]),
                 "expected video-only fused input '2:' in: {:?}", a);
         assert!(a.iter().any(|s| s == "tcp://127.0.0.1:50321"),
@@ -1291,7 +1412,7 @@ mod tests {
     #[test]
     fn macos_argv_mic_and_system_uses_amix() {
         // Mic (avf input 0 audio) + system audio (input 1) → amix to one track.
-        let a = build_macos_ffmpeg_args(1, Some(0), Some(40044), "/tmp/out.mp4");
+        let a = build_macos_ffmpeg_args(1, Some(0), Some(40044), "/tmp/out.mp4", None);
         let fc = a.iter().position(|s| s == "-filter_complex")
             .expect("missing -filter_complex");
         assert!(a[fc + 1].contains("[0:a][1:a]amix=inputs=2"),
@@ -1304,7 +1425,7 @@ mod tests {
     fn macos_argv_video_only_omits_audio_codec() {
         // No mic, no system audio (shouldn't normally reach the builder, but be
         // defensive): video-only input and no audio codec.
-        let a = build_macos_ffmpeg_args(2, None, None, "/tmp/out.mp4");
+        let a = build_macos_ffmpeg_args(2, None, None, "/tmp/out.mp4", None);
         assert!(a.windows(2).any(|w| w == ["-i", "2:"]));
         assert!(!a.iter().any(|s| s == "-c:a"),
                 "audio codec should be absent with no audio: {:?}", a);
@@ -1369,6 +1490,155 @@ mod tests {
     #[test]
     fn pick_macos_mic_none_when_no_audio_devices() {
         assert_eq!(pick_macos_mic_device(&[]), None);
+    }
+
+    // Region recording: the same rectangle has to reach three very different
+    // capture stacks with the right coordinate convention on each, and the
+    // audio wiring must not shift by a single argument.
+
+    #[test]
+    fn linux_argv_region_sets_video_size_and_display_offset() {
+        let a = build_linux_ffmpeg_args(":0", "/tmp/out.mp4", RecordingOptions::NONE,
+                                        None, Some(region()));
+        assert!(a.windows(2).any(|w| w == ["-video_size", "640x480"]),
+                "region size must be declared before the input: {a:?}");
+        // x11grab carries the corner as a +X,Y suffix on the display name.
+        assert!(a.windows(2).any(|w| w == ["-i", ":0+320,180"]),
+                "expected display+offset input: {a:?}");
+        // -video_size only means anything ahead of the -i it applies to.
+        let vs = a.iter().position(|s| s == "-video_size").unwrap();
+        let i  = a.iter().position(|s| s == "-i").unwrap();
+        assert!(vs < i, "-video_size must precede -i: {a:?}");
+        assert_eq!(a.last().unwrap(), "/tmp/out.mp4");
+    }
+
+    #[test]
+    fn linux_argv_full_screen_has_no_region_flags() {
+        let a = build_linux_ffmpeg_args(":0", "/tmp/out.mp4", RecordingOptions::NONE, None, None);
+        assert!(!a.iter().any(|s| s == "-video_size"), "no size for a full grab: {a:?}");
+        assert!(a.windows(2).any(|w| w == ["-i", ":0"]), "bare display input: {a:?}");
+    }
+
+    #[test]
+    fn linux_argv_region_leaves_audio_wiring_alone() {
+        // The whole point of threading the rect through `start` rather than
+        // patching the x11grab branch: audio must be byte-identical.
+        let full = build_linux_ffmpeg_args(":0", "/tmp/o.mp4", RecordingOptions::MIC_AND_SYS,
+                                           Some("alsa_output.0.monitor"), None);
+        let reg  = build_linux_ffmpeg_args(":0", "/tmp/o.mp4", RecordingOptions::MIC_AND_SYS,
+                                           Some("alsa_output.0.monitor"), Some(region()));
+        let audio_of = |a: &[String]| -> Vec<String> {
+            let start = a.iter().position(|s| s == "-c:v").unwrap();
+            a[start..].to_vec()
+        };
+        assert_eq!(audio_of(&full), audio_of(&reg),
+                   "everything from the video codec onward must match");
+        assert!(reg.windows(2).any(|w| w == ["-i", "alsa_output.0.monitor"]));
+    }
+
+    #[test]
+    fn linux_argv_region_offsets_from_the_desktop_corner() {
+        // X11's root window starts at the desktop corner, so a desktop whose
+        // origin is not (0,0) must not be addressed with absolute coordinates.
+        let bounds = DesktopBounds::new(-1920, 0, 3840, 1080);
+        let r = record_rect_from_selection((-1600, 200, 800, 600), bounds).unwrap();
+        let a = build_linux_ffmpeg_args(":0.0", "/tmp/out.mp4", RecordingOptions::NONE,
+                                        None, Some(r));
+        assert!(a.windows(2).any(|w| w == ["-i", ":0.0+320,200"]),
+                "offset must be relative to the desktop corner: {a:?}");
+    }
+
+    #[test]
+    fn windows_argv_region_uses_gdigrab_offsets_before_the_input() {
+        let a = build_windows_ffmpeg_args("C:/tmp/out.mp4", &[], Some(region()));
+        assert!(a.windows(2).any(|w| w == ["-offset_x", "320"]), "{a:?}");
+        assert!(a.windows(2).any(|w| w == ["-offset_y", "180"]), "{a:?}");
+        assert!(a.windows(2).any(|w| w == ["-video_size", "640x480"]), "{a:?}");
+        assert!(a.windows(2).any(|w| w == ["-i", "desktop"]));
+        let ox = a.iter().position(|s| s == "-offset_x").unwrap();
+        let i  = a.iter().position(|s| s == "-i").unwrap();
+        assert!(ox < i, "gdigrab reads its offsets before -i: {a:?}");
+    }
+
+    #[test]
+    fn windows_argv_region_offsets_from_the_virtual_screen_corner() {
+        // gdigrab adds -offset_x to SM_XVIRTUALSCREEN, which is negative when a
+        // monitor sits left of the primary. Absolute coordinates would land the
+        // capture 1920 px to the right of what the user selected.
+        let bounds = DesktopBounds::new(-1920, -120, 3840, 1200);
+        let r = record_rect_from_selection((-1000, 0, 500, 400), bounds).unwrap();
+        let a = build_windows_ffmpeg_args("C:/tmp/out.mp4", &[], Some(r));
+        assert!(a.windows(2).any(|w| w == ["-offset_x", "920"]), "{a:?}");
+        assert!(a.windows(2).any(|w| w == ["-offset_y", "120"]), "{a:?}");
+    }
+
+    #[test]
+    fn windows_argv_region_leaves_audio_wiring_alone() {
+        let specs = [spec(40001, 48000, 2, "f32le"), spec(40002, 44100, 1, "s16le")];
+        let full = build_windows_ffmpeg_args("C:/o.mp4", &specs, None);
+        let reg  = build_windows_ffmpeg_args("C:/o.mp4", &specs, Some(region()));
+        let tail = |a: &[String]| -> Vec<String> {
+            let start = a.iter().position(|s| s == "-c:v").unwrap();
+            a[start..].to_vec()
+        };
+        assert_eq!(tail(&full), tail(&reg));
+        // Audio inputs keep their indices — the region adds no new input.
+        assert!(reg.iter().any(|s| s == "tcp://127.0.0.1:40001"));
+        assert!(reg.iter().any(|s| s == "tcp://127.0.0.1:40002"));
+    }
+
+    #[test]
+    fn windows_argv_full_screen_has_no_offsets() {
+        let a = build_windows_ffmpeg_args("C:/tmp/out.mp4", &[], None);
+        assert!(!a.iter().any(|s| s == "-offset_x"), "{a:?}");
+        assert!(!a.iter().any(|s| s == "-video_size"), "{a:?}");
+    }
+
+    #[test]
+    fn macos_screencapture_argv_region_passes_absolute_rect() {
+        // screencapture measures from the main display's corner, which is the
+        // origin of the absolute coordinates — no translation.
+        let a = build_macos_screencapture_args("/tmp/out.mp4", Some(region()));
+        assert_eq!(a, vec!["-v", "-R", "320,180,640,480", "/tmp/out.mp4"]);
+    }
+
+    #[test]
+    fn macos_screencapture_argv_full_screen_is_unchanged() {
+        let a = build_macos_screencapture_args("/tmp/out.mp4", None);
+        assert_eq!(a, vec!["-v", "/tmp/out.mp4"]);
+    }
+
+    #[test]
+    fn macos_argv_region_crops_before_padding() {
+        // avfoundation has no capture rectangle, so the region is a filter.
+        let a = build_macos_ffmpeg_args(1, Some(0), None, "/tmp/out.mp4", Some(region()));
+        let vf = a.iter().position(|s| s == "-vf").expect("missing -vf");
+        assert_eq!(a[vf + 1], "crop=640:480:320:180,pad=ceil(iw/2)*2:ceil(ih/2)*2");
+        // Audio mapping is untouched by the crop.
+        assert!(a.windows(2).any(|w| w == ["-map", "0:a"]));
+    }
+
+    #[test]
+    fn macos_argv_full_screen_keeps_the_bare_pad_filter() {
+        let a = build_macos_ffmpeg_args(1, None, None, "/tmp/out.mp4", None);
+        let vf = a.iter().position(|s| s == "-vf").expect("missing -vf");
+        assert_eq!(a[vf + 1], "pad=ceil(iw/2)*2:ceil(ih/2)*2");
+    }
+
+    #[test]
+    fn every_backend_receives_even_dimensions() {
+        // The encoder-facing invariant, asserted where it actually reaches an
+        // encoder: an odd drag must never produce an odd -video_size / crop.
+        let r = record_rect_from_selection((11, 23, 401, 303), desktop()).unwrap();
+        assert_eq!(r.video_size(), "400x302");
+        let lin = build_linux_ffmpeg_args(":0", "/o.mp4", RecordingOptions::NONE, None, Some(r));
+        assert!(lin.windows(2).any(|w| w == ["-video_size", "400x302"]));
+        let win = build_windows_ffmpeg_args("C:/o.mp4", &[], Some(r));
+        assert!(win.windows(2).any(|w| w == ["-video_size", "400x302"]));
+        let mac = build_macos_screencapture_args("/o.mp4", Some(r));
+        assert!(mac.iter().any(|s| s == "11,23,400,302"), "{mac:?}");
+        let vf = video_filter_chain(Some(r));
+        assert!(vf.starts_with("crop=400:302:"), "{vf}");
     }
 
     // stderr ring buffer: what turns "recording stopped unexpectedly" into a
@@ -1437,7 +1707,7 @@ mod tests {
         let mut opt = RecordingOptions::MIC_AND_SYS;
         opt.system_audio = false;
         assert_eq!(opt, RecordingOptions::MIC_ONLY);
-        let a = build_linux_ffmpeg_args(":0", "/tmp/out.mp4", opt, None);
+        let a = build_linux_ffmpeg_args(":0", "/tmp/out.mp4", opt, None, None);
         assert!(a.windows(2).any(|w| w == ["-i", "default"]), "mic must survive: {a:?}");
         assert!(!a.iter().any(|s| s.ends_with(".monitor")),
                 "no monitor source should be passed: {a:?}");
