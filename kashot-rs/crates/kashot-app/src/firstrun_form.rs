@@ -228,7 +228,10 @@ fn locator_notes(wayland: bool) -> Vec<String> {
         notes.push("The icon needs an AppIndicator / tray host on your desktop.".to_owned());
         notes.push("GNOME needs the AppIndicator extension to show it.".to_owned());
         if wayland {
-            notes.push("Wayland blocks global hotkeys - capture from the tray menu.".to_owned());
+            // Wayland has no key grab: the shortcut is requested from the
+            // desktop's global-shortcuts portal, and the desktop has the final
+            // say on what it ends up being.
+            notes.push("On Wayland your desktop assigns the capture shortcut.".to_owned());
         }
     }
     notes

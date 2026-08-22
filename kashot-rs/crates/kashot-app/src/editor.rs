@@ -2447,10 +2447,15 @@ fn force_x11_focus(xid: u32) -> anyhow::Result<()> {
 
 /// Drop the X11 keyboard grab when the overlay closes so the next focused
 /// app gets typed input back.
+///
+/// No-op on Wayland: `push_x11_focus` never took a grab there (the window
+/// handle isn't an Xlib one), so there is nothing to release and an X11
+/// connection attempt per closed overlay would only be noise.
 #[cfg(target_os = "linux")]
 fn release_x11_focus() {
     use x11rb::connection::Connection;
     use x11rb::protocol::xproto::ConnectionExt;
+    if kashot_platform::session::is_wayland() { return; }
     let Ok((conn, _)) = x11rb::connect(None) else { return; };
     let _ = conn.ungrab_keyboard(x11rb::CURRENT_TIME);
     let _ = conn.flush();

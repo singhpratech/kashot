@@ -48,23 +48,44 @@ pub fn run() -> Result<()> {
     // Capture row label need it.
     let wayland = kashot_platform::session::is_wayland();
 
-    // Hotkey init is best-effort. If it fails (no display server / the binding
-    // is already taken) the app stays running so the user can fix the issue and
-    // try again from the menu later. The tray is built later still — see
-    // `TrayApp::ensure_tray`.
+    // Hotkey init is best-effort. If it fails (no display server, no portal,
+    // the binding already taken) the app stays running so the user can fix the
+    // issue and try again from the menu later. The failure is *kept*, not just
+    // logged: on Wayland "the shortcut doesn't work" is the single most likely
+    // thing to go wrong, and stderr is not a surface a tray app's user reads.
+    // `ensure_tray` turns whatever is here into one toast.
+    let mut hotkey_error: Option<String> = None;
     let mut hotkeys = match HotkeyManager::new() {
         Ok(mut hk) => {
             if let Err(e) = hk.register(settings.hotkey()) {
                 eprintln!("hotkey register failed: {e} — use tray menu to capture");
+                hotkey_error = Some(e.to_string());
             }
             Some(hk)
         }
-        Err(e) => { eprintln!("hotkey init failed: {e} — use tray menu to capture"); None }
+        Err(e) => {
+            eprintln!("hotkey init failed: {e} — use tray menu to capture");
+            hotkey_error = Some(e.to_string());
+            None
+        }
     };
 
-    if wayland {
-        eprintln!("KAShot is running. Wayland session — the global hotkey can't be \
-                   grabbed; use the tray menu to capture.");
+    // Whether presses arrive through a window-system grab or through the
+    // desktop's global-shortcuts portal. Only the portal can have the
+    // compositor override the requested binding, so only it needs the extra
+    // "your desktop decides" wording.
+    let portal_hotkey = hotkeys.as_ref()
+        .map(|hk| hk.backend().is_portal())
+        .unwrap_or(false);
+
+    if hotkey_error.is_some() {
+        eprintln!("KAShot is running. The capture shortcut is unavailable — \
+                   use the tray menu to capture.");
+    } else if portal_hotkey {
+        eprintln!("KAShot is running. Wayland session — {} was requested from the \
+                   desktop's global-shortcuts portal; your desktop decides the final \
+                   binding and lists it under its keyboard settings.",
+            settings.hotkey().describe());
     } else {
         eprintln!("KAShot is running. Press {} or use the tray menu to capture.",
             settings.hotkey().describe());
@@ -81,8 +102,17 @@ pub fn run() -> Result<()> {
         /// Whether `ensure_tray` has already run. Distinguishes "not built
         /// yet" from "built and failed", which `tray: None` alone can't.
         tray_built: bool,
-        /// Wayland session — the global hotkey can't be grabbed here.
+        /// Wayland session. Capture and recording both route through
+        /// xdg-desktop-portal here rather than through X11.
         wayland:    bool,
+        /// Set when hotkey setup failed, so `ensure_tray` can say what went
+        /// wrong once instead of leaving a shortcut that never fires
+        /// unexplained. Cleared after it has been shown.
+        hotkey_error: Option<String>,
+        /// Whether presses come from the global-shortcuts portal rather than a
+        /// window-system grab. Changes what the tray's Capture row can honestly
+        /// promise about the binding.
+        portal_hotkey: bool,
         recorder:   Recorder,
         /// Active overlay editor window, if a capture-and-edit is in flight.
         /// Holds the captured screenshot and the user's selection state until
@@ -156,7 +186,7 @@ pub fn run() -> Result<()> {
             self.tray_built = true;
 
             match Tray::new(tray_tooltip(&self.settings),
-                            capture_label(&self.settings, self.wayland)) {
+                            capture_label(&self.settings, self.portal_hotkey)) {
                 Ok(t) => self.tray = Some(t),
                 Err(e) => {
                     eprintln!("tray init failed: {e}");
@@ -174,12 +204,12 @@ pub fn run() -> Result<()> {
                 }
             }
 
-            if self.wayland {
-                notify("KAShot — hotkey unavailable on Wayland",
-                    "Wayland doesn't let an application grab a global hotkey, so the \
-                     capture shortcut won't fire in this session. Everything else works \
-                     — capture from the tray menu instead.",
-                    true);
+            // One toast, only when there is something the user has to act on.
+            // A portal binding that went through needs no announcement — it
+            // just works — and the old unconditional "Wayland can't do this"
+            // notice is no longer true.
+            if let Some(reason) = self.hotkey_error.take() {
+                notify("KAShot — capture shortcut unavailable", &reason, true);
             }
         }
 
@@ -686,6 +716,13 @@ pub fn run() -> Result<()> {
                         hk.unregister();
                         if let Err(e) = hk.register(self.settings.hotkey()) {
                             eprintln!("Re-register hotkey failed: {e}");
+                            // A rebind the user just performed by hand is the
+                            // one failure they will definitely notice and least
+                            // expect an explanation for — on the portal backend
+                            // it can be refused outright. Say so where they are
+                            // looking, not on stderr.
+                            notify("KAShot — couldn't set that shortcut",
+                                   &e.to_string(), true);
                         }
                     }
                     // Both surfaces that quote the hotkey — the hover tooltip
@@ -695,7 +732,7 @@ pub fn run() -> Result<()> {
                         if let Err(e) = t.set_tooltip(&tray_tooltip(&self.settings)) {
                             eprintln!("Tray tooltip update failed: {e}");
                         }
-                        t.set_capture_label(&capture_label(&self.settings, self.wayland));
+                        t.set_capture_label(&capture_label(&self.settings, self.portal_hotkey));
                     }
                     true
                 }
@@ -1118,6 +1155,8 @@ pub fn run() -> Result<()> {
         tray: None,
         tray_built: false,
         wayland,
+        hotkey_error,
+        portal_hotkey,
         recorder: Recorder::new(),
         overlay: None,
         pinned:  Vec::new(),
@@ -1477,13 +1516,13 @@ fn tray_tooltip(s: &AppSettings) -> String {
 /// so the binding is discoverable from the menu the user is already in,
 /// instead of only from the Settings dialog.
 ///
-/// Under Wayland the binding can't be grabbed at all (see
-/// `kashot_platform::session`), so the label says so rather than advertising
-/// a shortcut that silently does nothing.
-fn capture_label(s: &AppSettings, wayland: bool) -> String {
+/// On the portal backend the compositor has the last word on what the shortcut
+/// actually is — we can only ask (see `kashot_platform::hotkey_portal`) — so
+/// the label marks it as requested rather than stating it as fact.
+fn capture_label(s: &AppSettings, portal_hotkey: bool) -> String {
     let key = s.hotkey().describe();
-    if wayland {
-        format!("Capture ({key} - X11 only)")
+    if portal_hotkey {
+        format!("Capture ({key} - set by your desktop)")
     } else {
         format!("Capture ({key})")
     }
