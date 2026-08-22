@@ -75,6 +75,26 @@ Tray-resident screenshot tool with an annotation editor. The `kashot-app` binary
 - **Settings** persist to `ProjectDirs::from("org", "kashot", "Kashot").config_dir()` (`~/.config/kashot/settings.json` on Linux).
 - **Theme colors** — each dialog currently re-declares its laser-green palette as private constants. Promoting to a shared `kashot-core/src/theme.rs` is a deferred cleanup item ([[feedback-release-gate]] fact-check, claim 13).
 - **Recording**: Linux X11 via `ffmpeg -f x11grab` (PulseAudio mic + default-sink monitor source — `pactl` must be on PATH or audio is silently dropped, which is why the snap stages `pulseaudio-utils`); Windows native via `ffmpeg -f gdigrab` + `-f dshow` mic, system audio via WASAPI loopback piped to ffmpeg over TCP; macOS via built-in `screencapture -v` for the video-only case, switching to `ffmpeg -f avfoundation` when audio is requested, with system audio from a ScreenCaptureKit session over the same TCP path. **Wayland (Linux) capture is still queued** (`recorder.rs`). Audio is best-effort on Linux and for the macOS microphone — a source that won't open is dropped and the recording starts without it; on Windows, and for macOS system audio, a source that can't be opened fails the whole recording with an actionable error instead. Either way `Recorder::start` returns the *effective* options, so toasts must be rendered from its return value rather than from what was asked for.
+- **Single instance**: `kashot-platform::instance` holds an advisory lock on
+  `<config dir>/instance.lock` for the process lifetime — `flock(LOCK_EX|LOCK_NB)`
+  on Unix, an exclusive `CreateFileW` share mode on Windows. A second launch
+  drops a `capture.request` file next to it and exits; the running instance
+  claims that file from its poll loop and opens the capture overlay. The
+  self-updater's relaunch is the one legitimate overlap and waits out the
+  handover (`RELAUNCH_ENV`).
+- **Settings writes are atomic** — `kashot-core::atomic_file::write_atomic`
+  (temp file in the same directory, fsync, rename). A crash mid-write leaves
+  the previous settings intact instead of a truncated JSON that `load()` can
+  only answer with `Default`.
+- **The recorder child dies with the app**: `kashot-platform::child_guard`
+  applies `PR_SET_PDEATHSIG` (Linux, via `pre_exec`), a Job Object with
+  `KILL_ON_JOB_CLOSE` (Windows) or a detached `/bin/sh` pid watchdog (macOS),
+  and records the live encoder's pid in `<config dir>/recorder.pid`. Startup
+  reaps a record left by a previous run, but only after confirming the pid
+  still runs a known recorder image — never a blind kill of a recycled pid.
+- **User-visible failures**: save / copy / pin / settings-write failures are
+  toasted through `tray_loop::notify`, with the wording built in
+  `kashot-core::failure` so each message names the path and the OS reason.
 
 ## Keyboard shortcuts
 

@@ -77,5 +77,14 @@ fn main() -> Result<()> {
         Instance::Unsupported => None,
     };
 
+    // A recording only survives our death if we died without cleaning up
+    // (crash, SIGKILL, power loss). The pid was recorded when it started, so
+    // stop it now rather than leaving an encoder running with no UI attached
+    // to it. Safe here and nowhere else: we hold the instance lock, so there
+    // is no live sibling whose recorder this could be.
+    if let Some(pid) = kashot_platform::reap_orphaned_recorder() {
+        eprintln!("Stopped a screen recording left over from a previous run (pid {pid}).");
+    }
+
     tray_loop::run()
 }

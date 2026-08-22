@@ -154,6 +154,7 @@ impl Backend {
                 for p in &mut pumps { p.join(); }
                 #[cfg(target_os = "macos")]
                 if let Some(s) = sck { s.stop(); }
+                crate::child_guard::clear_live();
                 if exited {
                     Ok(())
                 } else {
@@ -195,6 +196,7 @@ impl Backend {
                 for p in &mut pumps { p.join(); }
                 #[cfg(target_os = "macos")]
                 if let Some(s) = sck { s.stop(); }
+                crate::child_guard::clear_live();
             }
         }
     }
@@ -223,6 +225,7 @@ impl Backend {
                 for p in &mut pumps { p.signal_stop(); p.join(); }
                 #[cfg(target_os = "macos")]
                 if let Some(s) = sck { s.stop(); }
+                crate::child_guard::clear_live();
             }
         }
     }
@@ -536,12 +539,12 @@ fn spawn_recorder(output: &Path, options: RecordingOptions)
 
     let args = build_linux_ffmpeg_args(&display, path, opt, monitor_source.as_deref());
     let ffmpeg = locate_ffmpeg().unwrap_or_else(|| PathBuf::from("ffmpeg"));
-    let res = Command::new(&ffmpeg)
-        .args(&args)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped())
-        .spawn();
+    let res = crate::child_guard::spawn_guarded(
+        Command::new(&ffmpeg)
+            .args(&args)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped()));
 
     match res {
         Ok(c) => {
@@ -642,12 +645,12 @@ fn spawn_recorder(output: &Path, options: RecordingOptions)
     // Video-only: keep the dependency-free built-in. stdin stays null, which
     // is how `graceful_signal` tells the two backends apart.
     if !options.has_audio() {
-        let child = Command::new("screencapture")
-            .args(["-v", path])
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::piped())
-            .spawn()
+        let child = crate::child_guard::spawn_guarded(
+            Command::new("screencapture")
+                .args(["-v", path])
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::piped()))
             .map_err(|e| Error::Recording(format!("failed to spawn screencapture: {e}")))?;
         let (child, stderr) = watch_recorder_startup(child)?;
         return Ok((Backend::Process { child, stderr, sck: None }, RecordingOptions::NONE));
@@ -682,12 +685,12 @@ fn spawn_recorder(output: &Path, options: RecordingOptions)
     };
 
     let args = build_macos_ffmpeg_args(screen_idx, mic_idx, sck_port, path);
-    let res = Command::new(&ffmpeg)
-        .args(&args)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped())
-        .spawn();
+    let res = crate::child_guard::spawn_guarded(
+        Command::new(&ffmpeg)
+            .args(&args)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped()));
 
     match res {
         Ok(child) => match watch_recorder_startup(child) {
@@ -904,13 +907,13 @@ fn spawn_recorder(output: &Path, options: RecordingOptions)
     // this flag Windows allocates a visible black console window that stays up
     // for the whole recording. Suppress it.
     use std::os::windows::process::CommandExt;
-    let res = Command::new(&ffmpeg)
-        .args(&args)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped())
-        .creation_flags(0x0800_0000)
-        .spawn();
+    let res = crate::child_guard::spawn_guarded(
+        Command::new(&ffmpeg)
+            .args(&args)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .creation_flags(0x0800_0000));
 
     match res {
         Ok(child) => match watch_recorder_startup(child) {
@@ -1070,6 +1073,9 @@ fn watch_recorder_startup(mut child: Child) -> Result<(Child, StderrTail)> {
     for _ in 0..8 {
         match child.try_wait() {
             Ok(Some(status)) => {
+                // The child we just recorded as live is already dead; drop the
+                // record now so the next launch doesn't try to reap its pid.
+                crate::child_guard::clear_live();
                 let mut buf = String::new();
                 if let Some(mut e) = stderr.take() { let _ = e.read_to_string(&mut buf); }
                 return Err(Error::Recording(format!(

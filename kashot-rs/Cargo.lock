@@ -1812,6 +1812,7 @@ dependencies = [
  "thiserror 1.0.69",
  "tray-icon",
  "wasapi",
+ "windows 0.62.2",
  "xcap",
 ]
 

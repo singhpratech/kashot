@@ -37,6 +37,14 @@ gtk = "0.18"
 # socket (see recorder_windows_audio.rs). No Media Foundation / COM hand-rolling.
 [target.'cfg(target_os = "windows")'.dependencies]
 wasapi = "0.15"
+# Job Objects, so the recorder child is terminated by the kernel when our
+# process handle to the job closes (see child_guard.rs).
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_Security",          # SECURITY_ATTRIBUTES in the CreateJobObjectW signature
+    "Win32_System_JobObjects",
+    "Win32_System_Threading",  # IO_COUNTERS inside JOBOBJECT_EXTENDED_LIMIT_INFORMATION
+] }
 
 # macOS system-audio capture. ScreenCaptureKit captures the system audio mix
 # without a loopback driver (BlackHole / Aggregate); we pull the PCM out of the

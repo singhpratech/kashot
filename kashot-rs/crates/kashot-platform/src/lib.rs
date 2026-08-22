@@ -6,6 +6,7 @@
 //! crate behind a thin trait-shaped API.
 
 pub mod capture;
+pub mod child_guard;
 pub mod clipboard;
 pub mod hotkey;
 pub mod instance;
@@ -14,6 +15,7 @@ pub mod session;
 pub mod tray;
 
 pub use capture::{capture_all_screens, Captured};
+pub use child_guard::reap_orphaned_recorder;
 pub use clipboard::copy_image_png;
 pub use hotkey::{HotkeyHandle, HotkeyManager};
 pub use instance::{Instance, InstanceLock};
