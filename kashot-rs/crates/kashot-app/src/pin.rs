@@ -14,6 +14,7 @@ use std::rc::Rc;
 
 use anyhow::{anyhow, Result};
 use image::{ImageBuffer, Rgba};
+use kashot_core::dpi::sample_index;
 use softbuffer::{Context, Surface};
 use winit::dpi::{PhysicalPosition, PhysicalSize};
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
@@ -29,8 +30,15 @@ pub struct PinView {
 }
 
 impl PinView {
-    /// Pin the image at the given desktop coordinates. The window is the
-    /// same size as the bitmap, borderless, and always-on-top.
+    /// Pin the image at the given desktop position, in **device pixels**.
+    ///
+    /// The bitmap is in device pixels too (it was cut out of the capture,
+    /// which the display map builds at device resolution), so a window whose
+    /// *physical* inner size is the bitmap's size covers exactly the region
+    /// the user selected on any display — a 2x panel gets a 2x bitmap in a
+    /// window that is half as many logical points across, i.e. the same
+    /// physical rectangle. `redraw` handles the case where the window manager
+    /// hands back a different size anyway.
     pub fn new(
         loop_target: &ActiveEventLoop,
         image:       ImageBuffer<Rgba<u8>, Vec<u8>>,
@@ -129,22 +137,34 @@ impl PinView {
 
         let win_w = w.get() as usize;
         let win_h = h.get() as usize;
-        let img_w = self.image.width()  as usize;
-        let img_h = self.image.height() as usize;
+        let img_w = self.image.width();
+        let img_h = self.image.height();
         let raw   = self.image.as_raw();
 
+        if img_w == 0 || img_h == 0 {
+            buf.fill(0x0010_1014);
+            if let Err(e) = buf.present() {
+                eprintln!("pin: buf.present: {e}");
+            }
+            return;
+        }
+
+        // Fit the bitmap to whatever size we actually got. It normally is the
+        // bitmap's own size (see `new`), and then this is a straight copy —
+        // but a window manager that clamps the window, or a move onto a
+        // display with a different scale factor, would otherwise crop the
+        // pinned image instead of showing all of it.
         for y in 0..win_h {
+            let sy = sample_index(y as u32, win_h as u32, img_h) as usize;
+            let src_row = sy * img_w as usize * 4;
+            let dst_row = y * win_w;
             for x in 0..win_w {
-                let dst = y * win_w + x;
-                if x < img_w && y < img_h {
-                    let src = (y * img_w + x) * 4;
-                    let r = raw[src]     as u32;
-                    let g = raw[src + 1] as u32;
-                    let b = raw[src + 2] as u32;
-                    buf[dst] = (r << 16) | (g << 8) | b;
-                } else {
-                    buf[dst] = 0x0010_1014;
-                }
+                let sx = sample_index(x as u32, win_w as u32, img_w) as usize;
+                let src = src_row + sx * 4;
+                let r = raw[src]     as u32;
+                let g = raw[src + 1] as u32;
+                let b = raw[src + 2] as u32;
+                buf[dst_row + x] = (r << 16) | (g << 8) | b;
             }
         }
 

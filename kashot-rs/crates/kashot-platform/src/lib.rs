@@ -12,7 +12,7 @@ pub mod recorder;
 pub mod session;
 pub mod tray;
 
-pub use capture::{capture_all_screens, Captured};
+pub use capture::{capture_all_screens, Captured, MonitorFrame};
 pub use clipboard::copy_image_png;
 pub use hotkey::{HotkeyHandle, HotkeyManager};
 pub use recorder::Recorder;

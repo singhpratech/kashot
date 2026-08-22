@@ -308,7 +308,14 @@ pub fn run() -> Result<()> {
             // surface a tray-resident app's user ever reads.
             match capture_all_screens() {
                 Ok(shot) => match Overlay::new(loop_target, shot.bitmap, self.settings.clone()) {
-                    Ok(ov) => self.overlay = Some(ov),
+                    // The capture's logical/physical map travels with the
+                    // frame: on a scaled display the bitmap is in device
+                    // pixels and the editor needs the mapping to hand a
+                    // selection back to the rest of the desktop.
+                    Ok(mut ov) => {
+                        ov.set_display_map(shot.map);
+                        self.overlay = Some(ov);
+                    }
                     Err(e) => {
                         eprintln!("Overlay open failed: {e}");
                         notify("KAShot — capture failed",
