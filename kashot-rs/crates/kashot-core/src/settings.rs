@@ -286,15 +286,23 @@ impl AppSettings {
         }
     }
 
-    /// Best-effort save; never propagates I/O errors. Mirrors the C# behavior
-    /// where `AppSettings.Save()` swallows exceptions ("the app should never
-    /// crash because of settings persistence").
+    /// Persist settings to `settings.json`.
+    ///
+    /// The write is atomic (see [`crate::atomic_file::write_atomic`]): the
+    /// JSON goes to a temp file alongside the destination and is renamed over
+    /// it. A crash mid-write therefore leaves the *previous* settings intact
+    /// instead of a truncated document that `load` can only answer with
+    /// `Default` — which reads to the user as "KAShot forgot my save folder,
+    /// my hotkey and my watermark".
+    ///
+    /// Errors are returned rather than swallowed so the caller can tell the
+    /// user their change won't survive a restart.
     pub fn save(&self) -> io::Result<()> {
         let dir  = Self::config_dir().ok_or_else(|| io::Error::other("no config dir"))?;
         fs::create_dir_all(&dir)?;
         let path = dir.join("settings.json");
         let json = serde_json::to_string_pretty(self).map_err(io::Error::other)?;
-        fs::write(path, json)
+        crate::atomic_file::write_atomic(&path, json.as_bytes())
     }
 
     pub fn theme(&self) -> ThemeName {

@@ -5,6 +5,7 @@
 //! one-for-one so the two implementations stay legible side-by-side.
 
 pub mod annotation;
+pub mod atomic_file;
 pub mod color;
 pub mod failure;
 pub mod settings;
