@@ -64,13 +64,24 @@ pub enum CursorHint {
 
 /// Hit-test a point against the edges/corners of `selection` using the standard threshold.
 pub fn hit_test_edge(selection: (f32, f32, f32, f32), p: (f32, f32)) -> Edge {
+    hit_test_edge_scaled(selection, p, 1.0)
+}
+
+/// Same hit-test, with the threshold expressed in *physical* pixels for a
+/// display of the given scale.
+///
+/// The selection and the cursor both live in captured-bitmap pixels, so on a
+/// 2× display a fixed 8-pixel threshold is physically half the grab area it is
+/// at 1×. Multiplying by the scale keeps an edge as easy to catch on a Retina
+/// panel as on a plain one. `scale` of 1.0 reproduces `hit_test_edge` exactly.
+pub fn hit_test_edge_scaled(selection: (f32, f32, f32, f32), p: (f32, f32), scale: f32) -> Edge {
     let (x, y, w, h) = selection;
     if w <= 0.0 || h <= 0.0 {
         return Edge::None;
     }
     let (left, right) = (x, x + w);
     let (top,  bottom) = (y, y + h);
-    let t = Edge::HIT_THRESHOLD;
+    let t = Edge::HIT_THRESHOLD * if scale.is_finite() && scale > 0.0 { scale } else { 1.0 };
 
     let near_left   = (p.0 - left).abs()   <= t;
     let near_right  = (p.0 - right).abs()  <= t;
@@ -112,6 +123,18 @@ mod tests {
         assert_eq!(hit_test_edge(sel, (100.0, 50.0)), Edge::Right);
         assert_eq!(hit_test_edge(sel, (50.0, 0.0)),   Edge::Top);
         assert_eq!(hit_test_edge(sel, (50.0, 100.0)), Edge::Bottom);
+    }
+
+    #[test]
+    fn edge_hit_test_threshold_follows_the_display_scale() {
+        let sel = (100.0, 100.0, 200.0, 200.0);
+        // 12 px away: outside the 1x threshold, inside the 2x one.
+        assert_eq!(hit_test_edge_scaled(sel, (112.0, 200.0), 1.0), Edge::None);
+        assert_eq!(hit_test_edge_scaled(sel, (112.0, 200.0), 2.0), Edge::Left);
+        // A nonsense scale must not widen or collapse the threshold.
+        assert_eq!(hit_test_edge_scaled(sel, (112.0, 200.0), 0.0), Edge::None);
+        assert_eq!(hit_test_edge_scaled(sel, (112.0, 200.0), f32::NAN), Edge::None);
+        assert_eq!(hit_test_edge_scaled(sel, (100.0, 100.0), 1.0), Edge::TopLeft);
     }
 
     #[test]
