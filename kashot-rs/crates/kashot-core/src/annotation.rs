@@ -112,8 +112,16 @@ impl Annotation {
         };
         Annotation { kind: AnnotationKind::Marker { stroke, points: vec![p] }, time: None }
     }
+    /// Text at the default em-size. `font_size` is a pixel em-size handed
+    /// straight to the rasterizer (`crate::text`), not a point size.
     pub fn text(color: Rgba, p: Point2, text: impl Into<String>) -> Annotation {
-        Annotation { kind: AnnotationKind::Text { color, position: p, text: text.into(), font_size: 14.0 }, time: None }
+        Annotation::text_sized(color, p, text, crate::text::DEFAULT_PX)
+    }
+    /// Text at an explicit em-size — the editor derives it from the current
+    /// stroke thickness via `crate::text::font_size_for_thickness`.
+    pub fn text_sized(color: Rgba, p: Point2, text: impl Into<String>, font_size: f32) -> Annotation {
+        let font_size = crate::text::clamp_px(font_size);
+        Annotation { kind: AnnotationKind::Text { color, position: p, text: text.into(), font_size }, time: None }
     }
     pub fn step(color: Rgba, center: Point2, number: u32) -> Annotation {
         Annotation { kind: AnnotationKind::Step { color, center, number }, time: None }
@@ -247,6 +255,32 @@ mod tests {
         a.extend(Point2::new(5.0, 6.0));
         match a.kind {
             AnnotationKind::Pen { points, .. } => assert_eq!(points.len(), 3),
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn text_font_size_is_a_rasterizable_pixel_size() {
+        // Serialization shape is unchanged — `font_size` is still one f32 on
+        // the Text variant — but it now means pixels, and the constructors
+        // guarantee the rasterizer will accept it.
+        let p = Point2::new(0.0, 0.0);
+        match Annotation::text(Rgba::RED, p, "hi").kind {
+            AnnotationKind::Text { font_size, .. } => {
+                assert_eq!(font_size, crate::text::DEFAULT_PX);
+            }
+            _ => panic!("wrong variant"),
+        }
+        match Annotation::text_sized(Rgba::RED, p, "hi", 1.0e9).kind {
+            AnnotationKind::Text { font_size, .. } => {
+                assert_eq!(font_size, crate::text::MAX_PX);
+            }
+            _ => panic!("wrong variant"),
+        }
+        match Annotation::text_sized(Rgba::RED, p, "hi", f32::NAN).kind {
+            AnnotationKind::Text { font_size, .. } => {
+                assert_eq!(font_size, crate::text::DEFAULT_PX);
+            }
             _ => panic!("wrong variant"),
         }
     }

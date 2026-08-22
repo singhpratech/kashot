@@ -8,6 +8,7 @@ pub mod annotation;
 pub mod color;
 pub mod settings;
 pub mod state;
+pub mod text;
 pub mod theme;
 pub mod tool;
 
@@ -15,5 +16,6 @@ pub use annotation::{Annotation, AnnotationKind, ColorPalette, Palettes};
 pub use color::Rgba;
 pub use settings::{AppSettings, Hotkey, Modifiers};
 pub use state::{Edge, State};
+pub use text::{PlacedGlyph, TextBlock, TextRect};
 pub use theme::{ThemeColors, ThemeName};
 pub use tool::Tool;

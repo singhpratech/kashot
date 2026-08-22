@@ -3,6 +3,26 @@
 Kashot itself is licensed under **Apache-2.0** (see `LICENSE`). It bundles and
 invokes the following third-party software.
 
+## Noto Sans (bundled font)
+
+Kashot compiles **Noto Sans** (Regular, static hinted TTF) into the binary and
+rasterizes it at runtime for the annotation **Text** tool, so typed text renders
+identically on Windows, Linux and macOS without depending on any system font.
+
+- File: `kashot-rs/crates/kashot-core/assets/fonts/NotoSans-Regular.ttf`
+- Project: <https://github.com/notofonts/latin-greek-cyrillic>
+- License: **SIL Open Font License, Version 1.1 (OFL-1.1)** — full text ships
+  next to the font at `kashot-rs/crates/kashot-core/assets/fonts/OFL.txt`
+- Copyright 2022 The Noto Project Authors
+- The font is used unmodified and is not sold separately, as OFL-1.1 requires.
+
+The rasterizer itself is the pure-Rust **fontdue** crate (`MIT OR Apache-2.0 OR
+Zlib`, pulling in **ttf-parser**, `MIT OR Apache-2.0`), with grapheme
+segmentation from **unicode-segmentation** (`MIT OR Apache-2.0`). All three are
+ordinary Cargo dependencies under permissive licenses, compiled into the
+binary; none of them needs a system font stack, so the Text tool behaves the
+same on all three platforms.
+
 ## FFmpeg
 
 Kashot bundles a prebuilt **FFmpeg** binary next to the application and calls it
