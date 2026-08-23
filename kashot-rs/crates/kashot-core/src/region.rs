@@ -31,17 +31,29 @@
 pub const MIN_RECORD_SIDE: u32 = 16;
 
 /// Bounding box of every monitor, in virtual-desktop coordinates.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct DesktopBounds {
     pub x:      i32,
     pub y:      i32,
     pub width:  u32,
     pub height: u32,
+    /// Device pixels per logical point for the desktop these coordinates
+    /// were measured on — `1.0` unless the capture was stitched at a higher
+    /// density. Backends that address the screen in points rather than
+    /// pixels (macOS `screencapture -R`) divide by this.
+    pub scale:  f32,
 }
 
 impl DesktopBounds {
     pub fn new(x: i32, y: i32, width: u32, height: u32) -> Self {
-        Self { x, y, width, height }
+        Self { x, y, width, height, scale: 1.0 }
+    }
+
+    /// Same bounds, measured on a desktop with `scale` device pixels per
+    /// point. Non-finite or non-positive scales are treated as `1.0`.
+    pub fn with_scale(mut self, scale: f32) -> Self {
+        self.scale = if scale.is_finite() && scale > 0.0 { scale } else { 1.0 };
+        self
     }
 
     /// One past the right-most pixel column.
@@ -54,7 +66,7 @@ impl DesktopBounds {
 /// A rectangle to record, already clamped to the desktop and already sized to
 /// even dimensions. Construct it through [`record_rect_from_selection`] rather
 /// than by hand — the invariants above are the whole point of the type.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct CaptureRect {
     /// Left edge in absolute virtual-desktop coordinates.
     pub x: i32,
@@ -69,9 +81,27 @@ pub struct CaptureRect {
     /// without querying the monitor layout a second time (and getting a
     /// different answer if the user re-arranged displays in between).
     pub desktop_origin: (i32, i32),
+    /// Device pixels per point on the desktop this rectangle was picked on
+    /// (see [`DesktopBounds::scale`]).
+    pub scale: f32,
 }
 
 impl CaptureRect {
+    /// The same rectangle in logical points: `(x, y, width, height)` divided
+    /// by `scale` and rounded to the nearest whole point. At 1x this is the
+    /// pixel rectangle unchanged. For a backend whose capture API speaks
+    /// points (macOS `screencapture -R`); the pixel fields stay authoritative
+    /// everywhere else.
+    pub fn points(&self) -> (i32, i32, u32, u32) {
+        let s = self.scale;
+        (
+            (self.x as f32 / s).round() as i32,
+            (self.y as f32 / s).round() as i32,
+            (self.width as f32 / s).round().max(1.0) as u32,
+            (self.height as f32 / s).round().max(1.0) as u32,
+        )
+    }
+
     /// One past the right-most pixel column, absolute.
     pub fn right(&self) -> i32 { self.x.saturating_add(self.width as i32) }
 
@@ -142,6 +172,7 @@ pub fn record_rect_from_selection(
         width,
         height,
         desktop_origin: (bounds.x, bounds.y),
+        scale: bounds.scale,
     })
 }
 
@@ -214,6 +245,28 @@ mod tests {
     fn desktop() -> DesktopBounds { DesktopBounds::new(0, 0, 1920, 1080) }
 
     // ── even dimensions ────────────────────────────────────────────────────
+
+    #[test]
+    fn points_divide_by_scale() {
+        let bounds = DesktopBounds::new(0, 0, 2880, 1800).with_scale(2.0);
+        let r = record_rect_from_selection((200, 100, 800, 600), bounds).unwrap();
+        assert_eq!((r.x, r.y, r.width, r.height), (200, 100, 800, 600));
+        assert_eq!(r.points(), (100, 50, 400, 300));
+    }
+
+    #[test]
+    fn points_are_pixels_at_one_x() {
+        let r = record_rect_from_selection((200, 100, 800, 600), desktop()).unwrap();
+        assert_eq!(r.scale, 1.0);
+        assert_eq!(r.points(), (200, 100, 800, 600));
+    }
+
+    #[test]
+    fn with_scale_rejects_nonsense() {
+        assert_eq!(DesktopBounds::new(0, 0, 10, 10).with_scale(0.0).scale, 1.0);
+        assert_eq!(DesktopBounds::new(0, 0, 10, 10).with_scale(f32::NAN).scale, 1.0);
+        assert_eq!(DesktopBounds::new(0, 0, 10, 10).with_scale(1.5).scale, 1.5);
+    }
 
     #[test]
     fn even_dimension_rounds_down_and_leaves_even_alone() {

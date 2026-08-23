@@ -965,7 +965,11 @@ fn spawn_recorder(output: &Path, options: RecordingOptions, region: Option<Captu
 ///
 /// `-R x,y,w,h` limits the capture to a rectangle in macOS' global display
 /// space, whose origin is the **main display's** top-left corner — the same
-/// space `CaptureRect`'s absolute fields live in, so no translation is needed.
+/// origin `CaptureRect`'s absolute fields use, so no translation is needed.
+/// That space is measured in *points*, though, while the rectangle arrives in
+/// device pixels (the overlay is stitched at device resolution), so on a
+/// Retina / scaled display the fields are divided by the capture scale first
+/// — otherwise the recorded area lands 2x too far right/down and 2x too big.
 /// Pure function so the argv can be asserted without a Mac.
 #[cfg(any(target_os = "macos", test))]
 pub(crate) fn build_macos_screencapture_args(
@@ -978,7 +982,8 @@ pub(crate) fn build_macos_screencapture_args(
         // `screencapture` parses its options with getopt, so the rectangle can
         // ride in its own argv slot rather than being glued to the flag.
         a.push("-R".to_string());
-        a.push(format!("{},{},{},{}", r.x, r.y, r.width, r.height));
+        let (x, y, w, h) = r.points();
+        a.push(format!("{x},{y},{w},{h}"));
     }
     a.push(output_path.to_string());
     a
@@ -993,7 +998,8 @@ pub(crate) fn build_macos_screencapture_args(
 /// `crop` filter ahead of the usual even-dimension `pad`. Crop coordinates are
 /// relative to the frame the screen device delivers — the main display — which
 /// is also where macOS' global coordinate origin sits, so the absolute fields
-/// go in unchanged. A region living entirely on a *secondary* display is
+/// go in unchanged. That frame is delivered at device resolution, so unlike
+/// `screencapture -R` the pixel fields are the right unit here. A region living entirely on a *secondary* display is
 /// outside that frame; the video-only `screencapture` path has no such limit.
 #[cfg(any(target_os = "macos", test))]
 pub(crate) fn build_macos_ffmpeg_args(
@@ -1880,6 +1886,19 @@ mod tests {
         // origin of the absolute coordinates — no translation.
         let a = build_macos_screencapture_args("/tmp/out.mp4", Some(region()));
         assert_eq!(a, vec!["-v", "-R", "320,180,640,480", "/tmp/out.mp4"]);
+    }
+
+    #[test]
+    fn macos_screencapture_argv_region_is_in_points_on_scaled_displays() {
+        // A 2x capture: the overlay handed back device pixels, screencapture
+        // wants points, so every field halves.
+        let bounds = DesktopBounds::new(0, 0, 2880, 1800).with_scale(2.0);
+        let r = record_rect_from_selection((200, 100, 800, 600), bounds).unwrap();
+        let a = build_macos_screencapture_args("/tmp/out.mp4", Some(r));
+        assert_eq!(a, vec!["-v", "-R", "100,50,400,300", "/tmp/out.mp4"]);
+        // The avfoundation crop stays in device pixels — that frame is
+        // delivered at device resolution.
+        assert!(video_filter_chain(Some(r)).starts_with("crop=800:600:200:100,"));
     }
 
     #[test]

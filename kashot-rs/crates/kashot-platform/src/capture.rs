@@ -55,9 +55,12 @@ impl Captured {
     /// Device pixels, like `geometry()`: the origin is the display map's
     /// physical origin and the size is the stitched bitmap's, so a selection
     /// made on the overlay clamps against the very pixels it was drawn on.
+    /// The map's scale rides along so a backend that addresses the screen in
+    /// points (macOS `screencapture`) can convert back.
     pub fn desktop_bounds(&self) -> DesktopBounds {
         let (ox, oy) = self.map.physical_origin();
         DesktopBounds::new(ox, oy, self.bitmap.width(), self.bitmap.height())
+            .with_scale(self.map.scale())
     }
 }
 
