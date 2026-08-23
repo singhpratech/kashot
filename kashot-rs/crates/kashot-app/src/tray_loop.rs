@@ -173,6 +173,8 @@ pub fn run() -> Result<()> {
         /// never name a pixel that wasn't on screen. Also where the REC
         /// indicator is placed relative to.
         overlay_desktop: Option<DesktopBounds>,
+        /// When this instance came up — see the capture-request poll.
+        started_at: Instant,
         /// Audio sources the tray asked for when it opened a record-region
         /// overlay. Taken when that overlay commits; `None` for the Record
         /// button in an ordinary capture session, which records silently — the
@@ -277,9 +279,16 @@ pub fn run() -> Result<()> {
             // A second launch of KAShot doesn't open a second tray icon — it
             // leaves a capture request beside the instance lock and exits.
             // Claim it here so re-running the app (double-clicked desktop
-            // icon, a second autostart entry) captures instead of doing
-            // nothing. Costs one failing `unlink` per tick when idle.
-            if kashot_platform::instance::take_capture_request() {
+            // icon, `kashot` typed again) captures instead of doing nothing.
+            // Costs one failing `unlink` per tick when idle. Requests that
+            // land in our first seconds of life are dropped unanswered: two
+            // launches that close together are a login that started KAShot
+            // twice (duplicate autostart entries), not someone asking for a
+            // screenshot, and a dimmed full-screen overlay is the wrong
+            // thing to greet a fresh desktop with.
+            if kashot_platform::instance::take_capture_request()
+                && self.started_at.elapsed() >= STARTUP_CAPTURE_GRACE
+            {
                 self.capture(loop_target);
             }
             // Nothing else watches the encoder between start and stop, so an
@@ -630,8 +639,12 @@ pub fn run() -> Result<()> {
                            opts: kashot_platform::recorder::RecordingOptions,
                            loop_target: &ActiveEventLoop,
                            region: Option<CaptureRect>) {
+            // Reachable from the overlay's Record button, which is offered
+            // in every capture session — including one opened while a
+            // recording is running — so this has to say so, not just log.
             if self.recorder.is_recording() {
-                eprintln!("Already recording.");
+                notify("KAShot — already recording",
+                    "Stop the current recording before starting another one.", true);
                 return;
             }
             let dir   = recordings_directory_for(&self.settings);
@@ -662,8 +675,12 @@ pub fn run() -> Result<()> {
                     // X11 has no capture-exclusion API, so there the panel is
                     // only safe when it lands entirely outside the recorded
                     // rectangle — which a region recording usually allows and a
-                    // full-screen one never does. Best-effort either way: log +
-                    // carry on if the OS won't give us another window.
+                    // full-screen one never does. Wayland is worse: the
+                    // compositor ignores the position we ask for, so "outside
+                    // the rectangle" is a wish, not a fact, and the ScreenCast
+                    // path has no exclusion either — no panel there at all.
+                    // Best-effort either way: log + carry on if the OS won't
+                    // give us another window.
                     let place = indicator_placement(
                         self.indicator_bounds(loop_target, region),
                         region,
@@ -671,14 +688,15 @@ pub fn run() -> Result<()> {
                         24,
                     );
                     let capture_safe = cfg!(not(target_os = "linux"))
-                        || (region.is_some() && place.clear_of_region);
+                        || (region.is_some() && place.clear_of_region
+                            && !kashot_platform::session::is_wayland());
                     if capture_safe {
                         match RecordingIndicator::new_at(loop_target, (place.x, place.y)) {
                             Ok(v)  => self.recording_view = Some(v),
                             Err(e) => eprintln!("Recording indicator failed: {e} — stop via tray menu."),
                         }
                     } else if cfg!(target_os = "linux") {
-                        eprintln!("Recording indicator skipped on Linux (x11grab would capture it) — stop via tray menu.");
+                        eprintln!("Recording indicator skipped on Linux (it would be captured) — stop via tray menu.");
                     }
                     let stop_hint = if self.recording_view.is_some() {
                         "Click the floating STOP button (it won't appear in the video) or use the tray menu to finish."
@@ -1269,7 +1287,13 @@ pub fn run() -> Result<()> {
                             UpdatesOutcome::CopyCommand(cmd) => {
                                 match kashot_platform::copy_text(&cmd) {
                                     Ok(()) => notify("Update command copied", &cmd, false),
-                                    Err(e) => eprintln!("updates: clipboard copy failed: {e}"),
+                                    // The command is the only thing this
+                                    // dialog offers on a package-managed
+                                    // install, so a failed copy must still
+                                    // show it somewhere the user can read.
+                                    Err(e) => notify("KAShot — copy failed",
+                                        &format!("Couldn't copy the update command to the clipboard: {e}\n\nRun this yourself:\n{cmd}"),
+                                        true),
                                 }
                             }
                         }
@@ -1401,6 +1425,7 @@ pub fn run() -> Result<()> {
         capturing: false,
         last_recording: None,
         overlay_desktop: None,
+        started_at: Instant::now(),
         pending_region_audio: None,
         video_annotate: None,
     };
@@ -1563,6 +1588,12 @@ fn probe_duration(video: &std::path::Path) -> Result<f32> {
 /// session extracts many scrub frames, or when a burn is still encoding
 /// on its worker thread while a newer session commits its own.
 static FRAME_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// How long after start-up a second-launch capture request is ignored. Long
+/// enough to cover a login session starting KAShot twice (two autostart
+/// entries, a launcher that retries), short enough that a deliberate
+/// re-launch a moment after the tray icon appeared still works.
+const STARTUP_CAPTURE_GRACE: Duration = Duration::from_secs(10);
 
 /// Extract the frame at `secs` (clip seconds) at native resolution via
 /// ffmpeg. The PNG round-trips through the OS temp dir; the editor gets
