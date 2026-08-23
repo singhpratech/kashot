@@ -75,9 +75,12 @@ const WIN_W: u32 = 640;
 // padding band rather than the taller footer strip the convert dialogs
 // reserve: the only message this dialog shows inline is the hotkey-conflict
 // one, and that renders under the HOTKEYS block next to the rows it is
-// about. Keeping the window under ~700 px matters — it doesn't scroll, so a
-// 768-tall screen has to fit the whole thing.
-const WIN_H: u32 = 710;
+// about. Keeping the window at or under 680 px matters — it doesn't scroll,
+// and a 768-tall screen has to fit the whole thing *plus* a title bar and a
+// 40-48 px panel, so the inter-row gap is 6 px rather than the 8 px the
+// other dialogs use.
+const WIN_H: u32 = 680;
+const ROW_GAP: i32 = 6;
 const PAD:   i32 = 22;
 const ROW_H: i32 = 34;
 const LABEL_W: i32 = 200;
@@ -583,7 +586,7 @@ impl SettingsView {
         let mut y = HEADER_H + 14 + 18;
 
         // PATHS
-        rows.push(Row { kind: WidgetKind::SaveFolder,       label: "Screenshots folder", rect: (x, y, row_w, ROW_H) }); y += ROW_H + 8;
+        rows.push(Row { kind: WidgetKind::SaveFolder,       label: "Screenshots folder", rect: (x, y, row_w, ROW_H) }); y += ROW_H + ROW_GAP;
         rows.push(Row { kind: WidgetKind::RecordingsFolder, label: "Recordings folder",  rect: (x, y, row_w, ROW_H) }); y += ROW_H + 22;
 
         // HOTKEYS — one row per action: a display box filling the left part
@@ -605,7 +608,7 @@ impl SettingsView {
                                 label: "CLEAR",
                                 rect:  (rebind_x - 8 - CLEAR_W, y, CLEAR_W, ROW_H) });
             }
-            y += ROW_H + 8;
+            y += ROW_H + ROW_GAP;
         }
         // Taller than the usual inter-section gap: the hotkey-conflict
         // message renders in here, between the last binding row and the
@@ -614,14 +617,14 @@ impl SettingsView {
 
         // WATERMARK header takes 18px above its first row.
         y += 18;
-        rows.push(Row { kind: WidgetKind::WatermarkToggle,  label: "Enabled",   rect: (x, y, row_w, ROW_H) }); y += ROW_H + 8;
-        rows.push(Row { kind: WidgetKind::WatermarkText,    label: "Text",      rect: (x, y, row_w, ROW_H) }); y += ROW_H + 8;
-        rows.push(Row { kind: WidgetKind::WatermarkPos,     label: "Position",  rect: (x, y, row_w, ROW_H) }); y += ROW_H + 8;
+        rows.push(Row { kind: WidgetKind::WatermarkToggle,  label: "Enabled",   rect: (x, y, row_w, ROW_H) }); y += ROW_H + ROW_GAP;
+        rows.push(Row { kind: WidgetKind::WatermarkText,    label: "Text",      rect: (x, y, row_w, ROW_H) }); y += ROW_H + ROW_GAP;
+        rows.push(Row { kind: WidgetKind::WatermarkPos,     label: "Position",  rect: (x, y, row_w, ROW_H) }); y += ROW_H + ROW_GAP;
         rows.push(Row { kind: WidgetKind::WatermarkOpacity, label: "Opacity",   rect: (x, y, row_w, ROW_H) }); y += ROW_H + 22;
 
         // APPEARANCE
         y += 18;
-        rows.push(Row { kind: WidgetKind::ThemeCycle,  label: "Theme",             rect: (x, y, row_w, ROW_H) }); y += ROW_H + 8;
+        rows.push(Row { kind: WidgetKind::ThemeCycle,  label: "Theme",             rect: (x, y, row_w, ROW_H) }); y += ROW_H + ROW_GAP;
         rows.push(Row { kind: WidgetKind::StartWithOs, label: "Start with system", rect: (x, y, row_w, ROW_H) }); y += ROW_H;
 
         let _ = y;
