@@ -566,7 +566,14 @@ impl Overlay {
         // display — `sync_frame_origin` re-derives the mapping from where
         // the window actually landed, so the crop still matches what the
         // user selected instead of silently sliding to another monitor.
-        let attrs = if desktop.spans_multiple_monitors() {
+        // Wayland refuses client-side positioning altogether, so the union
+        // window would be an undecorated toplevel the compositor parks
+        // wherever it likes, and `sync_frame_origin` could not even read
+        // where. There the fullscreen-on-primary window is the only shape
+        // the compositor will honour, exactly as before this branch.
+        let span_union = desktop.spans_multiple_monitors()
+            && !kashot_platform::session::is_wayland();
+        let attrs = if span_union {
             attrs
                 .with_inner_size(winit::dpi::PhysicalSize::new(
                     desktop_size.0.max(1), desktop_size.1.max(1)))
@@ -590,7 +597,7 @@ impl Overlay {
         // Several WMs apply size/position only once the window is mapped and
         // ignore what the create request asked for. Re-assert both; the
         // request is a no-op when the window already covers the desktop.
-        if desktop.spans_multiple_monitors() {
+        if span_union {
             window.set_outer_position(PhysicalPosition::new(desktop_origin.0, desktop_origin.1));
             let _ = window.request_inner_size(winit::dpi::PhysicalSize::new(
                 desktop_size.0.max(1), desktop_size.1.max(1)));
@@ -1018,19 +1025,33 @@ impl Overlay {
         if self.state == State::TextInput {
             return self.handle_text_key(key);
         }
-        // An armed Esc confirmation owns the keyboard: Esc / Enter go
-        // through with the discard, anything else calls it off. Bare
+        // An armed Esc confirmation owns the keyboard: only a second Esc
+        // goes through with the discard, anything else calls it off. Enter
+        // deliberately does *not* confirm — everywhere else in the overlay
+        // Enter means save/commit, so a mis-hit Esc followed by the Enter
+        // the user meant all along must never throw their work away. Bare
         // modifier presses are ignored so reaching for Ctrl doesn't count
         // as an answer.
         if self.pending_discard.is_some() && !is_modifier_key(&key) {
             return match key {
-                Key::Named(NamedKey::Escape) | Key::Named(NamedKey::Enter) => self.confirm_discard(),
+                Key::Named(NamedKey::Escape) => self.confirm_discard(),
                 _ => {
                     self.pending_discard = None;
                     self.window.request_redraw();
                     OverlayOutcome::Continue
                 }
             };
+        }
+        // A drag in flight has already translated the annotation on screen
+        // but not yet logged the `EditOp::Move` (that happens on release).
+        // Delete / undo / redo all clear `selected_idx`, which would make the
+        // release drop the record and leave the canvas out of step with the
+        // undo log — so settle the drag first, as if the button came up.
+        if self.state == State::MovingAnnotation
+            && (matches!(key, Key::Named(NamedKey::Delete) | Key::Named(NamedKey::Backspace))
+                || (matches!(key, Key::Character(_)) && self.mods.control_key()))
+        {
+            self.finish_annotation_drag();
         }
         match key {
             Key::Named(NamedKey::Escape) => self.handle_escape(),
@@ -1210,6 +1231,25 @@ impl Overlay {
         } else {
             edit::hit_test_topmost(&self.annotations, p)
         }
+    }
+
+    /// End a select-mode drag: one `EditOp::Move` per drag, not per
+    /// mouse-move event, so a single Ctrl+Z puts the annotation back where
+    /// it started. Called on mouse-up and before any key that would
+    /// otherwise clear the selection mid-drag.
+    fn finish_annotation_drag(&mut self) {
+        self.state = State::Selected;
+        if let Some(idx) = self.selected_idx {
+            if self.move_total != (0.0, 0.0) {
+                self.history.record(EditOp::Move {
+                    index: idx,
+                    dx:    self.move_total.0,
+                    dy:    self.move_total.1,
+                });
+            }
+        }
+        self.move_total = (0.0, 0.0);
+        self.window.request_redraw();
     }
 
     /// Remove the annotation picked in select mode, recording it so both
@@ -1631,20 +1671,7 @@ impl Overlay {
                 self.window.request_redraw();
             }
             State::MovingAnnotation => {
-                self.state = State::Selected;
-                // One `EditOp::Move` per drag, not per mouse-move event, so
-                // a single Ctrl+Z puts the annotation back where it started.
-                if let Some(idx) = self.selected_idx {
-                    if self.move_total != (0.0, 0.0) {
-                        self.history.record(EditOp::Move {
-                            index: idx,
-                            dx:    self.move_total.0,
-                            dy:    self.move_total.1,
-                        });
-                    }
-                }
-                self.move_total = (0.0, 0.0);
-                self.window.request_redraw();
+                self.finish_annotation_drag();
             }
             State::Resizing => {
                 self.state       = State::Selected;
@@ -1712,7 +1739,7 @@ impl Overlay {
                 ActionButton::Pin    => "Pin to screen",
                 ActionButton::Copy   => "Copy (Ctrl+C)",
                 ActionButton::Save   => "Save (Ctrl+S)",
-                ActionButton::Record => "Record region (Enter)",
+                ActionButton::Record => if self.record_mode { "Record (Enter)" } else { "Record this region" },
                 ActionButton::Close  => "Close (Esc)",
             };
             return Some((label, self.cursor.0 + 14, self.cursor.1 + 14));
@@ -2243,7 +2270,7 @@ impl Overlay {
             };
             draw_notice_bar(
                 &mut buf, win_w, win_h, cursor_bounds,
-                &[&headline, "Esc or Enter to discard  -  any other key to keep editing"],
+                &[&headline, "Esc again to discard  -  any other key to keep editing"],
                 0x00_FF_B0_20, 0x00_FF_D8_8A,
             );
         } else if self.select_mode {
