@@ -9,7 +9,7 @@
 #
 #   dist/macos/make-app.sh \
 #     --binary kashot-rs/target/release/kashot \
-#     --version 0.6.0 \
+#     --version 0.7.0 \
 #     --arch arm64 \
 #     --out-dir kashot-rs/dist
 #

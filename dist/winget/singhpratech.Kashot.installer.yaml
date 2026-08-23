@@ -5,7 +5,7 @@
 # This is the installer manifest — fill in the actual SHA256 from the published
 # release and update version to match.
 PackageIdentifier: singhpratech.Kashot
-PackageVersion: 0.6.0
+PackageVersion: 0.7.0
 # `msi` (not `wix`) — winget treats both as MSI installers, but `msi` is
 # the canonical value once the manifest is published and is what winget's
 # validation pipeline expects for a hand-rolled WiX-generated .msi.
@@ -15,7 +15,7 @@ InstallerLocale: en-US
 
 Installers:
   - Architecture: x64
-    InstallerUrl:    https://github.com/singhpratech/kashot/releases/download/v0.6.0/Kashot.msi
+    InstallerUrl:    https://github.com/singhpratech/kashot/releases/download/v0.7.0/Kashot.msi
     InstallerSha256: 79D61037AC969ADAAE69E49F014B2EF88B910381CC5ABF247BDE988B02E704ED
     # ProductCode is intentionally omitted: WiX regenerates it every build
     # (Product/@Id='*' in kashot-rs/wix/main.wxs), winget reads it from the MSI

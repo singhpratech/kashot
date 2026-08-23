@@ -67,6 +67,11 @@
   <content_rating type="oars-1.1"/>
 
   <releases>
+    <release version="0.7.0" date="2026-08-22">
+      <description>
+        <p>Wayland support (portal hotkey and recording), high-DPI and multi-monitor capture fixes, region recording, selectable and movable annotations with an Esc safety prompt, Unicode text tool, separate full-screen and record hotkeys, atomic settings, single-instance guard, and a channel-aware updater.</p>
+      </description>
+    </release>
     <release version="0.6.0" date="2026-08-08">
       <description><p>Reliability and first-run release. The app now introduces itself: a one-time welcome window shows the capture hotkey, the save folder, and where to find the tray icon on your platform. Saves and capture failures show notifications instead of failing silently. Recording is honest end-to-end: a crashed encoder is detected within a second and reported with the real reason, stopping a recording can no longer freeze the app, and the start notification reflects the audio sources actually captured (snap installs regain audio recording). On macOS the menu-bar icon is created the way the platform requires, the default hotkey is now Cmd+Shift+7 (PrintScreen does not exist on Mac keyboards), dialogs open focused, and the app can always be quit even if the menu-bar icon fails. In the editor, Esc no longer destroys annotations (redo restores them), idle CPU use while a selection is open is fixed, and an on-screen hint makes the keyboard shortcuts discoverable.</p></description>
     </release>
